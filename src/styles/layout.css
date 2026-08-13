@@ -41,6 +41,12 @@
   letter-spacing: -2px;
 }
 .topbar-spacer { flex: 1; }
+.topbar-sep {
+  width: 2px;
+  align-self: stretch;
+  margin: 0 2px;
+  background: var(--ink);
+}
 
 .toast {
   font-size: 9px;

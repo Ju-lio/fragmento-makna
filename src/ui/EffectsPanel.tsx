@@ -7,7 +7,8 @@ import type { Effect, Layer, LayerPatch } from '../engine/types.ts';
 
 interface EffectsPanelProps {
   layer: Layer | null;
-  onChange: (id: number, patch: LayerPatch) => void;
+  /** `coalesce: false` porque adicionar/remover efeito é ação discreta. */
+  onChange: (id: number, patch: LayerPatch, coalesce?: boolean) => void;
 }
 
 export function EffectsPanel({ layer, onChange }: EffectsPanelProps) {
@@ -19,12 +20,14 @@ export function EffectsPanel({ layer, onChange }: EffectsPanelProps) {
   const effects = layer.effects || [];
 
   const addEffect = (eff: Effect) => {
-    onChange(layer.id, { effects: [...effects, eff] });
+    // Sem o `false`, clicar em dois presets em sequência rápida viraria um
+    // único passo de histórico e o Ctrl+Z removeria os dois.
+    onChange(layer.id, { effects: [...effects, eff] }, false);
     player.seek(layer.start);   // jump to the start so you actually see it fire
   };
 
   const removeEffect = (i: number) => {
-    onChange(layer.id, { effects: effects.filter((_, k) => k !== i) });
+    onChange(layer.id, { effects: effects.filter((_, k) => k !== i) }, false);
   };
 
   const applyJson = () => {

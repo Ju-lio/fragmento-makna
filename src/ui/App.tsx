@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer } from '../engine/project.ts';
 import { moveItem } from '../engine/trackDrag.ts';
-import type { Layer, LayerPatch } from '../engine/types.ts';
+import { History } from '../engine/history.ts';
+import type { Layer, LayerPatch, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
@@ -31,6 +32,63 @@ export default function App() {
   const projectRef = useRef(project);
   projectRef.current = project;
 
+  const historyRef = useRef<History<Project> | null>(null);
+  historyRef.current ??= new History(project);
+  const history = historyRef.current;
+
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  useEffect(() => history.subscribe(() => {
+    setCanUndo(history.canUndo);
+    setCanRedo(history.canRedo);
+  }), [history]);
+
+  /**
+   * O funil ÚNICO por onde toda edição passa. Nada chama `setProject` direto.
+   *
+   * Registra no histórico *fora* do updater do `setState`: em StrictMode o
+   * React chama o updater duas vezes pra flagrar efeito colateral, e um
+   * `push` ali dentro entraria duplicado na pilha. Por isso o estado anterior
+   * vem de `projectRef`, que já era mantido pra outros usos.
+   *
+   * `mergeKey` marca "a mesma ação continuando" — ver `history.ts`. Ações
+   * discretas passam `null` e viram um passo cada.
+   */
+  const commit = useCallback((update: (p: Project) => Project, mergeKey: string | null = null) => {
+    const prev = projectRef.current;
+    const next = update(prev);
+    if (next === prev) return;          // no-op não suja o histórico
+
+    projectRef.current = next;
+    history.push(next, { mergeKey });
+    setProject(next);
+  }, [history]);
+
+  const restore = useCallback((state: Project | null) => {
+    if (!state) return;
+    projectRef.current = state;
+    setProject(state);
+  }, []);
+
+  const undo = useCallback(() => restore(history.undo()), [history, restore]);
+  const redo = useCallback(() => restore(history.redo()), [history, restore]);
+
+  // Ctrl+Z / Ctrl+Shift+Z (e Ctrl+Y, pra quem vem do Windows). Fora de campos
+  // de texto, onde o undo nativo do navegador é o que você espera.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [undo, redo]);
+
   useEffect(() => {
     player.start();
     setSelectedId(p => p ?? project.layers[0]?.id ?? null);
@@ -52,29 +110,40 @@ export default function App() {
 
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 1600); };
 
-  const updateLayer = useCallback((id: number, patch: LayerPatch) => {
-    setProject(p => ({
+  /**
+   * `coalesce` liga a fusão de passos no histórico, e é o padrão porque a
+   * maioria das edições é contínua: arrastar uma alça de trim ou digitar num
+   * campo numérico dispara dezenas de chamadas que são UMA ação pro usuário.
+   * A chave sai da layer + os campos tocados, então gestos diferentes nunca
+   * se misturam.
+   *
+   * Quem edita em cliques discretos (adicionar/remover efeito) passa `false`,
+   * senão dois cliques rápidos viram um passo só.
+   */
+  const updateLayer = useCallback((id: number, patch: LayerPatch, coalesce = true) => {
+    const mergeKey = coalesce ? `layer:${id}:${Object.keys(patch).sort().join(',')}` : null;
+    commit(p => ({
       ...p,
       // O cast é o preço de um patch que atende os três tipos de layer: o
       // spread preserva o `type`, mas o compilador não consegue provar isso
       // sozinho sobre uma união.
       layers: p.layers.map(l => (l.id === id ? { ...l, ...patch } as Layer : l)),
-    }));
-  }, []);
+    }), mergeKey);
+  }, [commit]);
 
   const addText = () => {
     const layer = makeTextLayer({
       name: `Texto ${project.layers.length + 1}`,
       start: +player.t.toFixed(2),
     });
-    setProject(p => ({ ...p, layers: [...p.layers, layer] }));
+    commit(p => ({ ...p, layers: [...p.layers, layer] }));
     setSelectedId(layer.id);
     setTab('props');
   };
 
   const addLayer = (layer: Layer) => {
     // New media goes underneath existing layers so it never buries your titles.
-    setProject(p => ({ ...p, layers: [layer, ...p.layers] }));
+    commit(p => ({ ...p, layers: [layer, ...p.layers] }));
     setSelectedId(layer.id);
     setTab('props');
   };
@@ -109,26 +178,23 @@ export default function App() {
    * obrigaria a traduzir um salto de três faixas em três chamadas.
    */
   const reorderLayer = useCallback((id: number, drawIndex: number) => {
-    setProject(p => {
+    commit(p => {
       const from = p.layers.findIndex(l => l.id === id);
       if (from < 0) return p;
       return { ...p, layers: moveItem(p.layers, from, drawIndex) };
     });
-  }, []);
+  }, [commit]);
 
   const deleteLayer = (id: number) => {
-    setProject(p => {
-      const gone = p.layers.find(l => l.id === id);
-      if (gone?.type === 'video' && gone.video) {
-        gone.video.pause();
-        URL.revokeObjectURL(gone.video.src);
-        gone.video.removeAttribute('src');
-        gone.video.load();          // frees the decoder instead of leaking it
-      }
+    commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
+      if (layers.length === p.layers.length) return p;
       setSelectedId(cur => (cur === id ? layers[layers.length - 1]?.id ?? null : cur));
       return { ...p, layers };
     });
+    // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
+    // elemento com o src revogado voltaria preto e sem áudio. O decoder é
+    // solto quando o projeto inteiro é trocado, não a cada exclusão.
   };
 
   const copySchema = async () => {
@@ -160,8 +226,10 @@ export default function App() {
   };
 
   const resizeProject = useCallback((width: number, height: number) => {
-    setProject(p => ({ ...p, width, height }));
-  }, []);
+    // Digitar "1080" num campo de dimensão passa por 1, 10, 108, 1080 — um
+    // passo de histórico por tecla seria inútil.
+    commit(p => ({ ...p, width, height }), 'resize');
+  }, [commit]);
 
   const selected = project.layers.find(l => l.id === selectedId) || null;
 
@@ -176,6 +244,10 @@ export default function App() {
         <button className="btn" onClick={addText}>+ TEXTO</button>
         <button className="btn" onClick={() => fileRef.current?.click()}>+ MÍDIA</button>
         <input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={onFile} />
+
+        <span className="topbar-sep" />
+        <button className="btn" onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)">↶</button>
+        <button className="btn" onClick={redo} disabled={!canRedo} title="Refazer (Ctrl+Shift+Z)">↷</button>
 
         <div className="topbar-spacer" />
 
