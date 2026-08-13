@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FrameCache, renderSignature, frameIndexAt, timeAtFrameIndex, CACHE_FPS,
-  estimateRange, formatBytes,
+  estimateRange, formatBytes, stepFrame,
 } from '../src/engine/frameCache.ts';
 import type { FakeBitmap } from './fixtures.ts';
 import { fakeBitmap, project, textLayer, videoLayer } from './fixtures.ts';
@@ -296,4 +296,34 @@ test('retainRange não mexe em nada quando tudo já está no trecho', () => {
   for (let i = 0; i < 3; i++) c.set('s', i, fakeBitmap(), 10);
   c.retainRange(0, 10);
   assert.equal(c.size, 3);
+});
+
+// --- passo de quadro (setas do teclado) ---------------------------------
+
+test('stepFrame anda um quadro exato a partir da grade', () => {
+  assert.equal(stepFrame(1, 30, 1), timeAtFrameIndex(31, 30));
+  assert.equal(stepFrame(1, 30, -1), timeAtFrameIndex(29, 30));
+});
+
+test('stepFrame encaixa na grade quando o cursor está entre quadros', () => {
+  // O cursor chega fora da grade por arrasto. Somar 1/fps manteria o
+  // desalinhamento pra sempre, e o preview recomporia quadros que o cache tem.
+  const solto = 1.017;                       // entre os quadros 30 e 31
+  const depois = stepFrame(solto, 30, 1);
+  assert.equal(depois * 30, Math.round(depois * 30), 'pousou exatamente na grade');
+});
+
+test('stepFrame com passo zero apenas encaixa na grade', () => {
+  assert.equal(stepFrame(1.017, 30, 0), timeAtFrameIndex(31, 30));
+});
+
+test('stepFrame respeita o fps do projeto', () => {
+  assert.equal(stepFrame(0, 60, 1), 1 / 60, 'a 60fps o passo é a metade');
+  assert.equal(stepFrame(0, 24, 1), 1 / 24);
+});
+
+test('stepFrame pode atravessar o zero — quem prende é o player', () => {
+  // `seek` já limita em [0, duration]; duplicar o limite aqui só criaria dois
+  // lugares pra discordar.
+  assert.ok(stepFrame(0, 30, -1) < 0);
 });

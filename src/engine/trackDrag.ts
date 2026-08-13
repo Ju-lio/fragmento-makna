@@ -71,7 +71,14 @@ export function clipDragPlan({
   // dele, senão a cauda sairia da linha.
   const nextStart = clamp(start + seconds, 0, Math.max(0, duration - span));
 
-  const tracksMoved = trackPitch > 0 ? Math.round(dy / trackPitch) : 0;
+  /**
+   * O sinal é invertido, e não é descuido: as faixas numeram ao CONTRÁRIO das
+   * linhas na tela. A faixa 0 desenha no fundo e por isso aparece embaixo,
+   * então descer com o ponteiro (`dy` positivo) **diminui** a faixa.
+   *
+   * Sem essa inversão, arrastar pra baixo mandava o clipe pra cima.
+   */
+  const tracksMoved = trackPitch > 0 ? -Math.round(dy / trackPitch) : 0;
   const nextTrack = clamp(track + tracksMoved, 0, Math.max(0, maxTrack));
 
   // 3 casas: a timeline trabalha em milissegundos, e sem isso o `start`

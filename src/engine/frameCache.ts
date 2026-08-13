@@ -27,6 +27,21 @@ const DEFAULT_BUDGET_BYTES = 320 * 1024 * 1024;
 export const frameIndexAt = (t: number, fps: number = CACHE_FPS): number => Math.round(t * fps);
 export const timeAtFrameIndex = (i: number, fps: number = CACHE_FPS): number => i / fps;
 
+/**
+ * Anda `frames` quadros a partir de `t`, pousando SEMPRE na grade.
+ *
+ * Somar `frames / fps` ao tempo atual seria mais curto e estaria errado: um
+ * cursor que chegou ali por arrasto está entre dois quadros, e somar manteria
+ * o desalinhamento pra sempre — cada passo continuaria fora da grade, e o
+ * preview passaria a recompor quadros que o cache já tem.
+ *
+ * Arredondar primeiro resolve os dois casos: da grade, anda exato; fora dela,
+ * o primeiro passo já encaixa.
+ */
+export function stepFrame(t: number, fps: number, frames: number): number {
+  return timeAtFrameIndex(frameIndexAt(t, fps) + frames, fps);
+}
+
 export interface RangeEstimate {
   frames: number;
   bytes: number;

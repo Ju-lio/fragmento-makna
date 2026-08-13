@@ -49,21 +49,39 @@ test('sem escala, o clipe fica onde está em vez de saltar pra zero', () => {
 
 // --- troca de faixa -----------------------------------------------------
 
+/**
+ * Estes testes falam em CIMA e BAIXO, não em número de faixa.
+ *
+ * Não é preciosismo de redação: a versão anterior afirmava "dy positivo
+ * aumenta a faixa", que descrevia a implementação e não o gesto — e por isso
+ * passava alegremente enquanto arrastar pra baixo mandava o clipe pra cima. As
+ * faixas numeram ao contrário das linhas na tela, e é essa inversão que o teste
+ * tem que fixar.
+ */
+
+test('arrastar pra BAIXO desce de faixa', () => {
+  // A faixa 0 desenha no fundo e aparece embaixo, então descer diminui o número.
+  assert.equal(drag({ dy: 28 }).track, 1, 'uma linha pra baixo');
+  assert.equal(drag({ dy: 56 }).track, 0, 'duas linhas pra baixo');
+});
+
+test('arrastar pra CIMA sobe de faixa', () => {
+  assert.equal(drag({ dy: -28 }).track, 3);
+});
+
 test('a faixa é discreta: encaixa na mais próxima, nunca no meio', () => {
-  assert.equal(drag({ dy: 10 }).track, 2, 'menos de meia faixa não conta');
-  assert.equal(drag({ dy: 15 }).track, 3, 'passou da metade, muda');
-  assert.equal(drag({ dy: 28 }).track, 3, 'uma faixa exata');
-  assert.equal(drag({ dy: -28 }).track, 1);
+  assert.equal(drag({ dy: 10 }).track, 2, 'menos de meia linha não conta');
+  assert.equal(drag({ dy: 15 }).track, 1, 'passou da metade, desce');
 });
 
 test('a faixa é limitada às que aceitam o clipe', () => {
-  assert.equal(drag({ dy: -9999 }).track, 0, 'não desce da faixa 0');
-  assert.equal(drag({ dy: 9999 }).track, 3, 'nem passa da mais alta permitida');
+  assert.equal(drag({ dy: 9999 }).track, 0, 'não desce da faixa 0');
+  assert.equal(drag({ dy: -9999 }).track, 3, 'nem passa da mais alta permitida');
 });
 
 test('as duas direções valem no mesmo gesto', () => {
   // É o ponto da feature: reposicionar no tempo e trocar de faixa de uma vez.
-  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 3, valid: true });
+  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 1, valid: true });
 });
 
 // --- colisão ------------------------------------------------------------
@@ -79,7 +97,7 @@ test('cair em cima de outro clipe da mesma faixa é inválido', () => {
 });
 
 test('o mesmo lugar em outra faixa é livre', () => {
-  const plan = drag({ dx: 450, dy: -28, others: [ocupante({ track: 2 })] });
+  const plan = drag({ dx: 450, dy: 28, others: [ocupante({ track: 2 })] });
   assert.equal(plan.track, 1);
   assert.equal(plan.valid, true, 'a colisão é por faixa, não por instante');
 });

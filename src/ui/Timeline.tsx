@@ -8,6 +8,7 @@ import { pauseAllVideo } from '../engine/videoSync.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
 import { topTrack, freeWindow } from '../engine/project.ts';
+import { stepFrame } from '../engine/frameCache.ts';
 import type { Layer, LayerPatch, Project } from '../engine/types.ts';
 
 interface TimelineProps {
@@ -47,6 +48,9 @@ export function Timeline({
   // Guarda o handler de play: o atalho de teclado precisa enxergar o estado
   // atual sem religar o listener a cada render.
   const playRef = useRef<(() => Promise<void>) | null>(null);
+  // Mesma razão: o passo de quadro precisa do fps do projeto atual.
+  const fpsRef = useRef(project.fps);
+  fpsRef.current = project.fps;
 
   useEffect(() => {
     const unsubFrame = player.onFrame(t => {
@@ -99,13 +103,36 @@ export function Timeline({
 
   playRef.current = handlePlay;
 
+  /**
+   * Transporte pelo teclado: espaço reproduz, setas andam quadro a quadro.
+   *
+   * O passo usa `stepFrame`, que pousa na grade — e não `t ± 1/fps`, que
+   * arrastaria pra sempre um desalinhamento herdado de um arrasto do cursor.
+   */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (e.code === 'Space' && tag !== 'INPUT' && tag !== 'TEXTAREA') {
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // Ctrl/Cmd é de outros atalhos (undo, corte, zoom); não disputa.
+      if (e.ctrlKey || e.metaKey) return;
+
+      if (e.code === 'Space') {
         e.preventDefault();
         playRef.current?.();
+        return;
       }
+
+      const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!dir) return;
+      e.preventDefault();
+
+      // Andar quadro a quadro com o vídeo rodando não faz sentido: o relógio
+      // desfaria o passo no quadro seguinte. Parar primeiro é o que todo
+      // editor faz, e é o que você quis dizer ao apertar a seta.
+      player.pause();
+      // Shift dá o salto grande, pra atravessar o projeto sem soltar a tecla.
+      const frames = e.shiftKey ? fpsRef.current : 1;
+      player.seek(stepFrame(player.t, fpsRef.current, dir * frames));
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);

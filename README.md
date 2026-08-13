@@ -182,6 +182,19 @@ impossíveis de criar depois que tudo se juntasse. Ela tem a mesma altura das
 outras de propósito — o cálculo do arrasto mede o espaçamento entre as duas
 primeiras linhas e assume que vale pra todas.
 
+## Navegar quadro a quadro
+
+Setas ← → andam um quadro; com Shift, um segundo. O passo usa `stepFrame`, que
+**pousa na grade** em vez de somar `1/fps` ao tempo atual.
+
+A diferença importa: um cursor que chegou ali arrastando está entre dois
+quadros, e somar manteria o desalinhamento pra sempre — cada passo continuaria
+fora da grade, e o preview recomporia quadros que o cache já tem. Arredondar
+primeiro resolve os dois casos de uma vez.
+
+Andar com o vídeo rodando pausa antes: o relógio desfaria o passo no quadro
+seguinte.
+
 ## Cortar no cursor (Ctrl+B)
 
 `splitLayer` divide um clipe em dois que se encostam exatamente: o primeiro
