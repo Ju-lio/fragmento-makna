@@ -20,6 +20,8 @@ interface TimelineProps {
   onMoveClip: (id: number, to: { start: number; track: number }) => void;
   /** Corta o clipe selecionado no cursor (Ctrl+B). */
   onSplit: () => void;
+  /** Mostra um aviso passageiro na barra de cima. */
+  onMessage: (text: string) => void;
 }
 
 /**
@@ -30,7 +32,7 @@ interface TimelineProps {
  * across a 60s project costs zero React renders.
  */
 export function Timeline({
-  project, selectedId, onSelect, onChange, onMoveClip, onSplit,
+  project, selectedId, onSelect, onChange, onMoveClip, onSplit, onMessage,
 }: TimelineProps) {
   const headRef = useRef<HTMLDivElement>(null);
   const tcRef = useRef<HTMLSpanElement>(null);
@@ -405,7 +407,7 @@ export function Timeline({
         <div className="playhead" ref={headRef} />
       </div>
 
-      <PrerenderBar project={project} />
+      <PrerenderBar project={project} onMessage={onMessage} />
     </div>
   );
 }

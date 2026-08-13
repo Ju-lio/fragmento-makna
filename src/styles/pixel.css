@@ -208,6 +208,14 @@ button, input, select, textarea {
     inset -2px -2px 0 var(--coral-d),
     3px 3px 0 var(--shadow);
 }
+.btn-mint {
+  background: var(--mint);
+  color: var(--ink);
+  box-shadow:
+    inset 2px 2px 0 #8fdcaa,
+    inset -2px -2px 0 #3f8b5e,
+    3px 3px 0 var(--shadow);
+}
 
 .btn-sm { padding: 2px 5px; font-size: 9px; box-shadow: none; border-width: 2px; }
 .btn-sm:active { transform: translate(1px, 1px); box-shadow: none; }

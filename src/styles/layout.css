@@ -551,6 +551,7 @@
 }
 /* Determinada: aqui sabemos exatamente quantos frames faltam, então a barra
    mostra progresso real em vez de uma animação genérica. */
+.prerender-progress-fill.is-export { background: var(--mint); }
 .prerender-progress-fill {
   height: 100%;
   background: repeating-linear-gradient(

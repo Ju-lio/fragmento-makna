@@ -466,6 +466,7 @@ export default function App() {
         onChange={updateLayer}
         onMoveClip={moveClip}
         onSplit={splitSelected}
+        onMessage={flash}
       />
     </div>
   );

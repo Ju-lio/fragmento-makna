@@ -5,10 +5,9 @@ import {
 import { isLayerActive, sourceTimeAt, claimVideoElements, releaseVideoElements } from './videoSync.ts';
 import type { Project, VideoLayer } from './types.ts';
 import type { Range } from './player.ts';
+import { Progress } from './progress.ts';
 
-export type PrerenderListener = (status: PrerenderStatus) => void;
-
-/** Permite abortar um pré-render de fora — e identifica quem tem os `<video>`. */
+/** Permite abortar um trabalho de fora — e identifica quem tem os `<video>`. */
 export interface CancelToken { cancelled: boolean }
 
 export interface PrerenderResult {
@@ -24,19 +23,7 @@ export interface PrerenderOptions extends Range {
   fps?: number;
 }
 
-/**
- * Pré-render: percorre um trecho quadro a quadro, espera cada vídeo realmente
- * entregar o frame pedido, compõe e guarda o resultado.
- *
- * É lento de propósito — está pagando adiantado, uma vez só, o custo que hoje
- * você paga toda vez que passa por ali. Depois disso a reprodução vira só
- * copiar bitmap pra tela, sem decoder no caminho.
- *
- * Roda em qualidade cheia (`fastPreview: false`), inclusive com desfoque: o
- * sentido de pré-renderizar é justamente poder ver o resultado final fluido,
- * não uma versão simplificada dele.
- */
-
+/** Quanto tempo esperar um seek antes de desistir dele. */
 const SEEK_TIMEOUT_MS = 3000;
 
 /** Quanto tempo trabalhar antes de devolver a vez ao navegador. */
@@ -46,38 +33,7 @@ const SLICE_MS = 12;
  * Estado do pré-render, compartilhado entre quem dispara (o botão de play, o
  * botão de pré-render) e quem mostra progresso. Fora do React, como os demais.
  */
-class PrerenderStatus {
-  running = false;
-  done = 0;
-  total = 0;
-  private _subs = new Set<PrerenderListener>();
-
-  subscribe(cb: PrerenderListener): () => void {
-    this._subs.add(cb);
-    return () => { this._subs.delete(cb); };
-  }
-
-  private _emit(): void { for (const cb of this._subs) cb(this); }
-
-  begin(total: number): void {
-    this.running = true;
-    this.done = 0;
-    this.total = total;
-    this._emit();
-  }
-
-  progress(done: number): void {
-    this.done = done;
-    this._emit();
-  }
-
-  end(): void {
-    this.running = false;
-    this._emit();
-  }
-}
-
-export const prerenderStatus = new PrerenderStatus();
+export const prerenderStatus = new Progress();
 
 let activeToken: CancelToken | null = null;
 
@@ -152,8 +108,15 @@ function seekVideoTo(video: HTMLVideoElement, time: number): Promise<void> {
   });
 }
 
-/** Põe todos os vídeos ativos em `t` na posição certa, em paralelo. */
-async function stageVideosAt(project: Project, t: number): Promise<void> {
+/**
+ * Põe todos os vídeos ativos em `t` na posição certa, em paralelo.
+ *
+ * Exportado porque é a parte genuinamente difícil de compor quadro a quadro —
+ * levar cada `<video>` ao instante exato e esperar o frame existir de verdade
+ * — e o exportador precisa dela idêntica. Duas implementações disso divergiriam
+ * e o arquivo exportado deixaria de bater com o preview.
+ */
+export async function stageVideosAt(project: Project, t: number): Promise<void> {
   const waits: Array<Promise<void>> = [];
   const active = project.layers.filter(
     (l): l is VideoLayer => l.type === 'video' && Boolean(l.video) && isLayerActive(l, t),
@@ -212,7 +175,7 @@ export async function prerenderRange(project: Project, {
       if (frameCache.has(sig, i)) {
         rendered++;
         onProgress?.(rendered, total);
-        prerenderStatus.progress(rendered);
+        prerenderStatus.advance(rendered);
         continue;
       }
 
@@ -229,7 +192,7 @@ export async function prerenderRange(project: Project, {
 
       rendered++;
       onProgress?.(rendered, total);
-      prerenderStatus.progress(rendered);
+      prerenderStatus.advance(rendered);
 
       // Devolve a vez ao navegador em fatias de tempo, não a cada quadro: um
       // `setTimeout` por frame custa ~4ms de espera imposta pelo próprio

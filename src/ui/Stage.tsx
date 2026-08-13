@@ -4,10 +4,11 @@ import { viewport, renderScale } from '../engine/viewport.ts';
 import { previewMode } from '../engine/previewMode.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
 import { drawFrame } from '../engine/renderer.ts';
-import { syncVideoLayers, previewBusyState, hasActiveVideo } from '../engine/videoSync.ts';
+import {
+  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner,
+} from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource } from '../engine/frameSource.ts';
-import { prerenderStatus } from '../engine/prerender.ts';
 import { StageBar } from './StageBar.tsx';
 import type { Project } from '../engine/types.ts';
 
@@ -69,19 +70,23 @@ export function Stage({ project, onResize }: StageProps) {
     };
     const unsub = player.onFrame((rawT: number) => {
       /**
-       * Enquanto o pré-render roda, ele é o DONO dos elementos `<video>`.
+       * Alguém está posicionando os `<video>` quadro a quadro: sai da frente.
        *
-       * Os dois usam os mesmos elementos: o pré-render leva cada um ao
-       * instante exato e espera o `seeked` antes de capturar, enquanto este
-       * loop os empurraria de volta pra posição do cursor. O resultado eram
-       * quadros gravados com o vídeo no lugar errado — e a reprodução saía
-       * pulando pra frente e voltando, só nas layers de vídeo.
+       * Vale pro pré-render e pro export, que levam cada elemento ao instante
+       * exato e esperam o `seeked` antes de capturar — enquanto este loop os
+       * empurraria de volta pra posição do cursor. O resultado eram quadros
+       * gravados com o vídeo no lugar errado, e a reprodução saía pulando pra
+       * frente e voltando, só nas layers de vídeo.
+       *
+       * A pergunta é sobre a POSSE, não sobre qual trabalho está rodando: é a
+       * condição real, e um trabalho novo que reivindique os elementos passa a
+       * ser respeitado sem ninguém precisar lembrar de vir aqui.
        *
        * (O gatilho era sutil: o vídeo em `seeking` acendia a barra de
        * atividade, que re-renderiza este componente, que invalida o quadro,
        * que trazia o loop de volta pra brigar pelo elemento.)
        */
-      if (prerenderStatus.running) return;
+      if (videoElementsOwner() !== null) return;
 
       const project = projectRef.current;
       const sig = signatureOf(project);
@@ -151,11 +156,11 @@ export function Stage({ project, onResize }: StageProps) {
   // tem que decidir se aparece. Só lê propriedades do <video>, não desenha.
   useEffect(() => {
     const unsubTick = player.onTick((t: number) => {
-      // Durante o pré-render quem comunica é a barra de progresso, que sabe
-      // exatamente quanto falta. Acender a barra genérica aqui, além de
+      // Durante pré-render ou export quem comunica é a barra de progresso, que
+      // sabe exatamente quanto falta. Acender a barra genérica aqui, além de
       // redundante, re-renderizava este componente e reacordava o loop de
-      // desenho no meio do trabalho do pré-render.
-      if (prerenderStatus.running) { previewStatus.report(false); return; }
+      // desenho no meio do trabalho.
+      if (videoElementsOwner() !== null) { previewStatus.report(false); return; }
 
       // Frame que vem do cache não espera por nada — mesmo que o <video> por
       // trás ainda esteja buscando, não é uma espera que você percebe.

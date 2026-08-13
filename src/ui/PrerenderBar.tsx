@@ -3,13 +3,17 @@ import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
 import { frameCache, signatureOf, estimateRange, formatBytes } from '../engine/frameCache.ts';
+import {
+  exportVideo, cancelExport, exportStatus, exportSupport, downloadBlob,
+} from '../engine/videoExport.ts';
 import type { Project } from '../engine/types.ts';
 
 interface PrerenderBarProps {
   project: Project;
+  onMessage: (text: string) => void;
 }
 
-/** Progresso do pré-render em curso. null = parado. */
+/** Progresso de um trabalho em curso. null = parado. */
 interface Progress {
   done: number;
   total: number;
@@ -21,7 +25,7 @@ interface Progress {
  * O pré-render é assíncrono e cancelável: um trecho longo pode levar bastante
  * tempo, e prender o usuário até acabar seria pior que a lentidão original.
  */
-export function PrerenderBar({ project }: PrerenderBarProps) {
+export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
   const [range, setRange] = useState(() => player.effectiveRange());
   const [hasRange, setHasRange] = useState(player.hasRange);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -30,8 +34,13 @@ export function PrerenderBar({ project }: PrerenderBarProps) {
   // render). Sem escutar o viewport, o aviso fica congelado no zoom inicial e
   // passa a mentir — chegou a acusar "1.9 GB, não cabe" num trecho que cabia.
   const [zoom, setZoom] = useState(viewport.zoom);
+  const [exporting, setExporting] = useState<Progress | null>(null);
 
   useEffect(() => viewport.subscribe(v => setZoom(v.zoom)), []);
+
+  useEffect(() => exportStatus.subscribe(s => {
+    setExporting(s.running ? { done: s.done, total: s.total } : null);
+  }), []);
 
   useEffect(() => {
     const unsub = player.onState(p => {
@@ -75,6 +84,34 @@ export function PrerenderBar({ project }: PrerenderBarProps) {
 
   const cancel = () => cancelPrerender();
 
+  /**
+   * Exporta o trecho marcado, sempre em resolução CHEIA.
+   *
+   * A escala do preview (que segue o zoom, pra render barato) não entra aqui:
+   * o arquivo final é o produto, e ninguém quer entregar um vídeo na resolução
+   * que por acaso deixava o preview fluido na hora.
+   */
+  const startExport = async () => {
+    const support = exportSupport();
+    if (!support.ok) return onMessage(support.reason ?? 'Export indisponível');
+
+    const { from, to } = player.effectiveRange();
+    player.pause();
+
+    try {
+      const result = await exportVideo(project, { from, to, scale: 1 });
+      if (!result) return onMessage('Export cancelado');
+
+      downloadBlob(result.blob, result.fileName);
+      onMessage(`${result.frames} quadros em ${result.codec}`);
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Falhou ao exportar');
+    } finally {
+      // O preview parou de desenhar enquanto o export era dono dos <video>.
+      player.invalidate();
+    }
+  };
+
   const clearCache = () => {
     frameCache.clear();
     setCached(0);
@@ -83,6 +120,10 @@ export function PrerenderBar({ project }: PrerenderBarProps) {
 
   const pct = progress?.total
     ? Math.round((progress.done / progress.total) * 100)
+    : 0;
+
+  const exportPct = exporting?.total
+    ? Math.round((exporting.done / exporting.total) * 100)
     : 0;
 
   const estimate = estimateRange({
@@ -112,7 +153,18 @@ export function PrerenderBar({ project }: PrerenderBarProps) {
         {range.from.toFixed(2)}s → {range.to.toFixed(2)}s
       </span>
 
-      {running ? (
+      {exporting ? (
+        <>
+          <div className="prerender-progress">
+            <div
+              className="prerender-progress-fill is-export"
+              style={{ width: `${exportPct}%` }}
+            />
+            <span className="prerender-progress-label">EXPORTANDO {exportPct}%</span>
+          </div>
+          <button className="btn btn-sm btn-coral" onClick={cancelExport}>PARAR</button>
+        </>
+      ) : running ? (
         <>
           <div className="prerender-progress">
             <div className="prerender-progress-fill" style={{ width: `${pct}%` }} />
@@ -123,6 +175,7 @@ export function PrerenderBar({ project }: PrerenderBarProps) {
       ) : (
         <>
           <button className="btn btn-sm btn-gold" onClick={start}>⚙ PRÉ-RENDER</button>
+          <button className="btn btn-sm btn-mint" onClick={startExport}>⬛ EXPORTAR</button>
           <span className={`prerender-est${estimate.fits ? '' : ' over'}`}>
             {estimate.fits
               ? `≈ ${formatBytes(estimate.bytes)}`

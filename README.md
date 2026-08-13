@@ -40,6 +40,9 @@ src/
     frameCache.ts      cache de frames compostos + assinatura
     frameSource.ts     de onde tirar cada quadro (cache ou ao vivo)
     prerender.ts       preenche um trecho quadro a quadro
+    videoExport.ts     compõe o trecho e codifica (WebCodecs)
+    exportPlan.ts      as decisões do export que não dependem do browser
+    progress.ts        observável de progresso (pré-render, export)
     trackDrag.ts       para onde vai um clipe arrastado na timeline
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
@@ -73,8 +76,9 @@ Três decisões deliberadas:
 ### Preview = Export
 
 `drawFrame(ctx, project, t)` é função pura de `(projeto, tempo)` — não lê relógio
-nem estado global. É o que vai permitir que o exportador futuro produza exatamente
-o que o preview mostra, rodando o mesmo código quadro a quadro.
+nem estado global. É o que permite o exportador produzir exatamente o que o
+preview mostra, rodando o mesmo código quadro a quadro. Deixou de ser promessa:
+ver "Export de vídeo" abaixo.
 
 Cuidado já resolvido: **canvas não dispara carregamento de `@font-face`.** O
 browser só busca a fonte quando um nó do DOM a usa, então uma fonte usada só no
@@ -181,6 +185,55 @@ onde arrastar um clipe que está numa faixa cheia, e faixas novas seriam
 impossíveis de criar depois que tudo se juntasse. Ela tem a mesma altura das
 outras de propósito — o cálculo do arrasto mede o espaçamento entre as duas
 primeiras linhas e assume que vale pra todas.
+
+## Export de vídeo
+
+O pré-render já era 80% de um exportador, e essa foi a razão de fazê-lo antes de
+qualquer efeito novo. Ele percorre um trecho quadro a quadro, leva cada
+`<video>` ao instante exato, **espera o `seeked` de verdade** e compõe em
+qualidade cheia. O exportador reusa `stageVideosAt` — a parte genuinamente
+difícil — e só troca o destino: em vez de guardar o bitmap no cache, o quadro
+vai pro `VideoEncoder` e do encoder pro muxer.
+
+Duas implementações desse seek divergiriam, e o arquivo deixaria de bater com o
+preview. Como é uma só, "Preview = Export" passou de afirmação no README pra
+propriedade verificável.
+
+`exportPlan.ts` guarda as decisões que **não** dependem do navegador, separadas
+justamente porque são as que produzem um arquivo silenciosamente errado:
+
+- **Dimensões pares.** H.264 guarda croma em metade da resolução, então uma
+  dimensão ímpar não existe pro formato: o encoder recusa a configuração e a
+  mensagem não diz por quê. Um projeto 1080×607 é normal de montar e impossível
+  de exportar sem isso.
+- **Timestamps a partir do primeiro quadro exportado**, não do zero da timeline
+  — quem exporta de 8s a 12s quer um arquivo de 4s, não quatro segundos de nada
+  na frente.
+- **Keyframe a cada dois segundos.** Espaçá-los demais faz o arrasto na barra do
+  player travar; nunca forçá-los deixa o arquivo impossível de navegar.
+- **Bitrate por pixels-por-segundo** (~0,1 bit por pixel por quadro, ~6 Mbps em
+  1080p30). Escala sozinho: um vertical curto e um 4K não podem usar o mesmo
+  número.
+
+O codec é escolhido perguntando ao navegador, **com as dimensões junto** — o
+suporte não é propriedade do codec sozinho, já que o nível declarado no nome
+limita a resolução. H.264 vem primeiro porque abre em qualquer lugar; VP9 é a
+reserva pra builds sem encoder H.264 licenciado.
+
+Dois freios que a aba não sobrevive sem:
+
+- **Fila do encoder.** `encode()` não bloqueia. Enfileirar 4000 quadros de 1080p
+  é enfileirar gigabytes de bitmap cru, e a aba morre antes de terminar.
+- **`frame.close()` em `finally`.** Um `VideoFrame` não liberado segura a
+  memória do quadro inteiro até o coletor passar, e o export estoura muito antes
+  disso.
+
+E o loop do preview sai da frente durante o export. A condição virou "eu sou o
+dono dos `<video>`?" em vez de "o pré-render está rodando?" — é a condição real,
+e um trabalho novo que reivindique os elementos passa a ser respeitado sem
+ninguém precisar lembrar de ir lá mexer.
+
+**Sem áudio ainda**, e é a maior lacuna do arquivo exportado hoje.
 
 ## Navegar quadro a quadro
 
@@ -549,12 +602,13 @@ e resolução de render adaptativa, resolução de projeto, marcação de trecho
 (in/out), pré-render com cache de frames, export de frame PNG, **arrastar
 layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
-**faixas com vários clipes** e **corte no cursor** (Ctrl+B). Base inteira em
-TypeScript `strict`, com 189 testes.
+**faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
+quadro** (setas) e **export de vídeo MP4** via WebCodecs. Base inteira em
+TypeScript `strict`, com 218 testes.
 
-**Próximo:** export de vídeo via WebCodecs → efeitos CSS personalizáveis
-(abrir o vocabulário de filtros) → gizmo de transform e crop → chroma key
-(shader WebGL) → áudio (uma trilha na v1).
+**Próximo:** áudio (uma trilha na v1 — é o que falta pro arquivo exportado
+ficar completo) → efeitos CSS personalizáveis (abrir o vocabulário de filtros) →
+gizmo de transform e crop → chroma key (shader WebGL).
 
 **No radar:** snap magnético entre clipes ao arrastar, e o arrasto empurrar o
 vizinho em vez de recusar — os dois deixam o gesto mais parecido com o CapCut,
