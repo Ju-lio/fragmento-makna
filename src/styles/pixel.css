@@ -212,6 +212,15 @@ button, input, select, textarea {
 .btn-sm { padding: 2px 5px; font-size: 9px; box-shadow: none; border-width: 2px; }
 .btn-sm:active { transform: translate(1px, 1px); box-shadow: none; }
 
+/* Persistent toggles (fast preview, fit) need a colour cue, not just a
+   pressed-looking inset — ".on" alone reads the same whether it's a momentary
+   click state or a switch left engaged. */
+.btn-sm.on {
+  background: var(--mint);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
 /* =========================================================================
    FIELDS
    ========================================================================= */

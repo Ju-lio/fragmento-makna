@@ -1,0 +1,118 @@
+/**
+ * O modelo de domínio, num arquivo só de tipos.
+ *
+ * Fica separado de propósito: `effects.ts` precisa saber o que é uma Layer e
+ * `project.ts` precisa saber o que é um Effect. Com as duas definições aqui,
+ * os dois lados se referenciam sem ninguém importar o runtime do outro — e o
+ * arquivo desaparece inteiro na compilação, então não existe ciclo em tempo
+ * de execução pra dar errado.
+ */
+
+import type { EaseName } from './easings.ts';
+
+// --- efeitos ------------------------------------------------------------
+
+/** As únicas propriedades que um efeito pode animar. Ver SCHEMA_DOC. */
+export type AnimProp =
+  | 'x' | 'y' | 'scale' | 'rotate'
+  | 'opacity' | 'blur' | 'brightness' | 'letterSpacing';
+
+/** Estado animado completo de uma layer num instante. */
+export type LayerState = Record<AnimProp, number>;
+
+/** Par [tempo normalizado 0..1, valor]. */
+export type Keyframe = readonly [number, number];
+
+export interface Track {
+  prop: AnimProp;
+  keys: Keyframe[];
+  ease?: EaseName;
+}
+
+export interface Effect {
+  name?: string;
+  /** Segundos. Ausente = 1. */
+  duration?: number;
+  /** `'end'` ancora no fim da layer — é como se escreve uma animação de saída. */
+  anchor?: 'start' | 'end';
+  delay?: number;
+  loop?: boolean;
+  tracks: Track[];
+}
+
+// --- layers -------------------------------------------------------------
+
+export type LayerType = 'text' | 'image' | 'video';
+
+/** O mínimo pra situar algo na linha do tempo — o que a maioria da engine lê. */
+export interface TimeSpan {
+  start: number;
+  duration: number;
+}
+
+interface LayerBase extends TimeSpan {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  effects: Effect[];
+}
+
+export interface TextLayer extends LayerBase {
+  type: 'text';
+  text: string;
+  size: number;
+  color: string;
+  font: string;
+}
+
+export interface ImageLayer extends LayerBase {
+  type: 'image';
+  /** Fração da composição que a mídia ocupa antes dos efeitos. */
+  fit: number;
+  img: HTMLImageElement;
+}
+
+export interface VideoLayer extends LayerBase {
+  type: 'video';
+  fit: number;
+  video: HTMLVideoElement;
+  /** Ponto do arquivo em que o clipe começa a ler. */
+  trimStart: number;
+  sourceDuration: number;
+}
+
+export type Layer = TextLayer | ImageLayer | VideoLayer;
+
+/** Layers com material de origem — as que têm trim e duração limitada. */
+export type MediaLayer = ImageLayer | VideoLayer;
+
+/** Patch parcial aplicado por `updateLayer`. O `id` nunca muda. */
+export type LayerPatch = Partial<Omit<TextLayer, 'id' | 'type'>>
+  & Partial<Omit<ImageLayer, 'id' | 'type'>>
+  & Partial<Omit<VideoLayer, 'id' | 'type'>>;
+
+export interface Project {
+  width: number;
+  height: number;
+  /** Taxa de quadros da composição: preview, cache e export se alinham nela. */
+  fps: number;
+  background: string;
+  layers: Layer[];
+}
+
+// --- recortes estruturais -----------------------------------------------
+// A engine lê pedaços de uma layer, não a layer inteira. Pedir só o pedaço
+// mantém as funções puras testáveis com objetos mínimos, sem cast.
+
+/** O que `sourceTimeAt` / `videoSyncPlan` precisam saber sobre o clipe. */
+export interface VideoTiming extends TimeSpan {
+  trimStart?: number;
+  sourceDuration?: number;
+}
+
+/** O que a sonda de atividade lê de um `<video>` — nada além disso. */
+export interface VideoProbe {
+  seeking: boolean;
+  readyState: number;
+}

@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    /**
+     * Imports carregam a extensão real (`./player.ts`), não `./player.js`.
+     *
+     * É o que permite o mesmo arquivo rodar em três lugares sem etapa de build:
+     * o Vite resolve, o `tsc --noEmit` confere, e o `node --test` executa
+     * direto por type stripping — que exige o caminho existir como está escrito.
+     */
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    /**
+     * Barra a sintaxe TS que NÃO é só anotação (enum, namespace, parameter
+     * property). O `node --test` roda os fontes por type stripping, que
+     * apenas apaga tipos — qualquer construção que precise ser *compilada*
+     * quebra em runtime. Com isto, o erro aparece no typecheck, não no teste.
+     */
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["src", "test", "vite.config.ts"]
+}
