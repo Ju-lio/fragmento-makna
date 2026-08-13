@@ -1,0 +1,379 @@
+/* =========================================================================
+   APP LAYOUT
+   ========================================================================= */
+.app {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 8px;
+}
+
+/* --- top bar --- */
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  background: var(--plum);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 var(--plum-hi),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.4),
+    var(--u) var(--u) 0 var(--shadow);
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--paper);
+  padding-right: 6px;
+  user-select: none;
+}
+.logo-marks {
+  color: var(--gold);
+  letter-spacing: -2px;
+}
+.topbar-spacer { flex: 1; }
+
+.toast {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--mint);
+  border: 2px solid var(--ink);
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+/* --- workspace --- */
+.workspace {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  min-height: 0;
+}
+
+.stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--void);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 rgba(0, 0, 0, 0.5),
+    inset -2px -2px 0 var(--plum-lt);
+  overflow: hidden;
+}
+
+/* The clipping window. Everything inside is moved by one CSS transform. */
+.stage-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  /* checkerboard, so transparent areas read as transparent */
+  background-color: #0d0916;
+  background-image:
+    linear-gradient(45deg, #1b1428 25%, transparent 25%),
+    linear-gradient(-45deg, #1b1428 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1b1428 75%),
+    linear-gradient(-45deg, transparent 75%, #1b1428 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  cursor: grab;
+}
+.stage-viewport.grabbing { cursor: grabbing; }
+
+.stage-holder {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  line-height: 0;
+  border: 2px solid var(--ink);
+  box-shadow: var(--u) var(--u) 0 var(--shadow);
+}
+
+.stage-canvas {
+  display: block;
+  /* Deliberately NOT pixelated: the pixel-art styling is the editor chrome,
+     not the footage. The preview must show what actually gets exported. */
+  image-rendering: auto;
+}
+
+/* --- stage footer --- */
+.stagebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  background: var(--plum);
+  border-top: 2px solid var(--ink);
+}
+.stagebar-spacer { flex: 1; }
+.stagebar-select { width: auto; min-width: 168px; font-size: 9px; padding: 2px 4px; }
+.stagebar-custom { display: flex; align-items: center; gap: 3px; }
+.stagebar-custom .inp { width: 62px; font-size: 9px; padding: 2px 4px; }
+.stagebar-x { color: var(--cream-d); font-size: 9px; }
+
+.zoom-readout {
+  min-width: 46px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--mint);
+  background: var(--void);
+  border: 2px solid var(--ink);
+  padding: 2px 4px;
+}
+
+/* --- sidebar --- */
+.sidebar {
+  flex: 0 0 300px;
+  display: flex;
+  min-height: 0;
+}
+.sidebar-win { flex: 1; min-height: 0; }
+
+.tabstrip { display: flex; gap: 2px; flex: 0 0 auto; }
+.tabbtn {
+  background: var(--plum-lt);
+  color: var(--cream-d);
+  border: 2px solid var(--ink);
+  border-bottom: none;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+}
+.tabbtn:hover { background: var(--plum-hi); color: var(--paper); }
+.tabbtn.on { background: var(--cream); color: var(--ink); }
+
+/* --- layer list --- */
+.layer-list { display: flex; flex-direction: column; gap: 4px; }
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 5px;
+  background: var(--paper);
+  border: 2px solid var(--cream-dd);
+  cursor: pointer;
+}
+.layer-item:hover { border-color: var(--ink-mute); }
+.layer-item.sel {
+  border-color: var(--ink);
+  background: var(--gold);
+  box-shadow: inset 2px 2px 0 #ffe08a, inset -2px -2px 0 var(--gold-d);
+}
+.layer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 10px;
+}
+.layer-fx {
+  font-size: 8px;
+  color: var(--ink-mute);
+  flex: 0 0 auto;
+}
+
+/* --- swatches --- */
+.swatches { display: flex; gap: 3px; margin-bottom: 4px; flex-wrap: wrap; }
+.swatch {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--ink);
+  cursor: pointer;
+  padding: 0;
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,.4);
+}
+.swatch.on { box-shadow: 0 0 0 2px var(--gold), inset 1px 1px 0 rgba(255,255,255,.4); }
+
+/* --- effects --- */
+.fx-list { display: flex; flex-direction: column; gap: 4px; }
+.fx-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  background: var(--paper);
+  border: 2px solid var(--cream-dd);
+}
+.fx-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 9.5px;
+}
+.fx-badge {
+  font-size: 8px;
+  font-weight: 700;
+  background: var(--sky);
+  color: var(--ink);
+  padding: 0 3px;
+  border: 1px solid var(--ink);
+}
+.fx-badge-out { background: var(--coral); color: var(--paper); }
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+}
+.preset-btn {
+  justify-content: flex-start;
+  text-transform: none;
+  font-size: 8.5px;
+  letter-spacing: 0;
+}
+
+/* =========================================================================
+   TIMELINE
+   ========================================================================= */
+.timeline {
+  flex: 0 0 auto;
+  background: var(--plum);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 var(--plum-hi),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.4),
+    var(--u) var(--u) 0 var(--shadow);
+  padding: 8px;
+  user-select: none;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.transport-spacer { flex: 1; }
+.tc {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  background: var(--void);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 rgba(0,0,0,.6);
+  padding: 3px 7px;
+  color: var(--mint);
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 118px;
+}
+.tc-sep { color: var(--ink-mute); }
+
+.tl-wrap { position: relative; }
+
+.ruler {
+  position: relative;
+  height: 16px;
+  background: var(--plum-lt);
+  border: 2px solid var(--ink);
+  border-bottom-width: 2px;
+  cursor: pointer;
+  margin-bottom: 5px;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--plum-hi);
+}
+.tick-lab {
+  position: absolute;
+  left: 3px;
+  top: 0;
+  font-size: 8px;
+  color: var(--cream-d);
+  white-space: nowrap;
+}
+
+.tracks { display: flex; flex-direction: column; gap: 4px; }
+.track {
+  position: relative;
+  height: 24px;
+  background: var(--void);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+.clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 5px;
+  overflow: hidden;
+  cursor: grab;
+  background: var(--sky);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 rgba(255, 255, 255, 0.45),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.3);
+}
+.clip:active { cursor: grabbing; }
+.clip-img { background: var(--mint); }
+.clip-sel {
+  background: var(--gold);
+  box-shadow:
+    inset 2px 2px 0 #ffe08a,
+    inset -2px -2px 0 var(--gold-d),
+    0 0 0 2px var(--paper);
+}
+.clip-name {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--coral);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 5;
+}
+.playhead::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -4px;
+  width: 10px;
+  height: 8px;
+  background: var(--coral);
+  border: 2px solid var(--ink);
+}
+
+@media (max-width: 900px) {
+  .sidebar { flex-basis: 240px; }
+}

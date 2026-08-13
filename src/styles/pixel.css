@@ -1,0 +1,290 @@
+/* =========================================================================
+   PIXEL UI — design system
+   Rules of the look: zero border-radius, hard shadows (never blurred),
+   bevels made of 2px inset box-shadows, and a locked palette.
+   ========================================================================= */
+
+@font-face {
+  font-family: 'Silkscreen';
+  src: url('../fonts/Silkscreen-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: 'Silkscreen';
+  src: url('../fonts/Silkscreen-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: block;
+}
+:root {
+  /* --- palette --- */
+  --void:     #171021;
+  --plum:     #2e2140;
+  --plum-lt:  #443055;
+  --plum-hi:  #5b4270;
+
+  --cream:    #e6d8bd;
+  --cream-d:  #bda98a;
+  --cream-dd: #8e7c62;
+  --paper:    #f7efdc;
+
+  --ink:      #241a33;
+  --ink-soft: #5a4a6e;
+  --ink-mute: #6d5c85;
+
+  --gold:     #f0c04a;
+  --gold-d:   #b07f22;
+  --coral:    #e2615c;
+  --coral-d:  #a33b3b;
+  --mint:     #64c48a;
+  --sky:      #6ba9d6;
+
+  --shadow:   rgba(10, 5, 18, 0.55);
+
+  --u: 4px;  /* base pixel unit */
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--cream);
+  font-family: 'Silkscreen', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow: hidden;
+  /* pixel fonts must never be smoothed */
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  text-rendering: geometricPrecision;
+}
+
+/* Dotted "desktop" backdrop, like an old workstation wallpaper */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(var(--plum-lt) 1px, transparent 1px);
+  background-size: 8px 8px;
+  opacity: 0.35;
+  pointer-events: none;
+  z-index: 0;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  -webkit-font-smoothing: none;
+}
+
+/* =========================================================================
+   BEVELS
+   ========================================================================= */
+.bevel-out {
+  box-shadow:
+    inset 2px 2px 0 rgba(255, 255, 255, 0.35),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.35);
+}
+.bevel-in {
+  box-shadow:
+    inset -2px -2px 0 rgba(255, 255, 255, 0.22),
+    inset 2px 2px 0 rgba(0, 0, 0, 0.42);
+}
+.drop {
+  box-shadow: var(--u) var(--u) 0 var(--shadow);
+}
+
+/* =========================================================================
+   WINDOW
+   ========================================================================= */
+.win {
+  background: var(--cream);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 var(--paper),
+    inset -2px -2px 0 var(--cream-d),
+    var(--u) var(--u) 0 var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.win-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px;
+  background: var(--plum);
+  border-bottom: 2px solid var(--ink);
+  color: var(--paper);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+  user-select: none;
+}
+
+/* the classic hatched filler in a title bar */
+.win-title .stripes {
+  flex: 1;
+  height: 9px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--plum-hi) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.85;
+}
+
+.win-body {
+  padding: 8px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* =========================================================================
+   BUTTON
+   ========================================================================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 9px;
+  background: var(--cream);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  box-shadow:
+    inset 2px 2px 0 var(--paper),
+    inset -2px -2px 0 var(--cream-d),
+    3px 3px 0 var(--shadow);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  user-select: none;
+}
+.btn:hover { background: var(--paper); }
+.btn:active,
+.btn.on {
+  transform: translate(2px, 2px);
+  box-shadow:
+    inset -2px -2px 0 var(--paper),
+    inset 2px 2px 0 var(--cream-d),
+    0 0 0 var(--shadow);
+}
+.btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+.btn-gold {
+  background: var(--gold);
+  box-shadow:
+    inset 2px 2px 0 #ffe08a,
+    inset -2px -2px 0 var(--gold-d),
+    3px 3px 0 var(--shadow);
+}
+.btn-gold:hover { background: #f8cf6a; }
+.btn-gold:active {
+  box-shadow:
+    inset -2px -2px 0 #ffe08a,
+    inset 2px 2px 0 var(--gold-d),
+    0 0 0 var(--shadow);
+}
+
+.btn-coral {
+  background: var(--coral);
+  color: var(--paper);
+  box-shadow:
+    inset 2px 2px 0 #f08d85,
+    inset -2px -2px 0 var(--coral-d),
+    3px 3px 0 var(--shadow);
+}
+
+.btn-sm { padding: 2px 5px; font-size: 9px; box-shadow: none; border-width: 2px; }
+.btn-sm:active { transform: translate(1px, 1px); box-shadow: none; }
+
+/* =========================================================================
+   FIELDS
+   ========================================================================= */
+.field { margin-bottom: 7px; }
+.field-label {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 3px;
+}
+
+.inp {
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 var(--cream-d);
+  outline: none;
+  font-size: 10px;
+}
+.inp:focus { background: #fff; box-shadow: inset 2px 2px 0 var(--gold); }
+
+textarea.inp {
+  resize: vertical;
+  line-height: 1.5;
+  white-space: pre;
+  font-size: 9.5px;
+}
+
+.row { display: flex; gap: 6px; }
+.row > * { flex: 1; min-width: 0; }
+
+/* =========================================================================
+   SCROLLBARS — chunky, no rounding
+   ========================================================================= */
+.win-body::-webkit-scrollbar { width: 14px; height: 14px; }
+.win-body::-webkit-scrollbar-track {
+  background: var(--cream-d);
+  border-left: 2px solid var(--ink);
+}
+.win-body::-webkit-scrollbar-thumb {
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 #ffe08a, inset -2px -2px 0 var(--gold-d);
+}
+.win-body::-webkit-scrollbar-corner { background: var(--cream-d); }
+
+/* =========================================================================
+   MISC
+   ========================================================================= */
+.hint {
+  font-size: 9px;
+  color: var(--ink-mute);
+  line-height: 1.7;
+}
+.err {
+  font-size: 9px;
+  color: var(--coral-d);
+  min-height: 12px;
+  font-weight: 700;
+}
+.tag {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 4px;
+  background: var(--plum);
+  color: var(--paper);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex: 0 0 auto;
+}
+.tag-img { background: var(--mint); color: var(--ink); }
