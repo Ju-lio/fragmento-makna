@@ -3,17 +3,18 @@ import { player } from '../engine/player.ts';
 import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
-import { compactTracks, splitLayer, topTrack } from '../engine/project.ts';
+import { clone, compactTracks, nextId, splitLayer, topTrack } from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError,
 } from '../engine/serialize.ts';
+import type { MediaElement } from '../engine/serialize.ts';
 import {
   newMediaId, putMedia, allMedia, urlFor, releaseAll, pruneMedia,
   saveProject, loadProject, clearProject,
 } from '../engine/mediaStore.ts';
-import type { Layer, LayerPatch, Project } from '../engine/types.ts';
+import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
@@ -22,14 +23,14 @@ import { attachAudioElement, syncSoundLayers, stopAllSound } from '../engine/aud
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
-import { LayersPanel } from './LayersPanel.tsx';
+import { MediaPanel } from './MediaPanel.tsx';
 import { PropsPanel } from './PropsPanel.tsx';
 import { EffectsPanel } from './EffectsPanel.tsx';
 
-type TabId = 'layers' | 'props' | 'fx';
+type TabId = 'media' | 'props' | 'fx';
 
 const TABS: Array<{ id: TabId; label: string }> = [
-  { id: 'layers', label: 'Layers' },
+  { id: 'media', label: 'Mídia' },
   { id: 'props', label: 'Props' },
   { id: 'fx', label: 'Efeitos' },
 ];
@@ -37,11 +38,20 @@ const TABS: Array<{ id: TabId; label: string }> = [
 export default function App() {
   const [project, setProject] = useState(defaultProject);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [tab, setTab] = useState<TabId>('layers');
+  const [tab, setTab] = useState<TabId>('media');
   const [toast, setToast] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
+
+  /**
+   * Elemento vivo de cada mídia do acervo.
+   *
+   * Fica fora do projeto porque não é dado do projeto: é o objeto de DOM desta
+   * sessão, que morre com a aba. O que o projeto guarda é o `mediaId`; isto
+   * aqui é o que traduz um de volta pro outro na hora de criar uma layer.
+   */
+  const elementsRef = useRef(new Map<string, MediaElement>());
 
   const historyRef = useRef<History<Project> | null>(null);
   historyRef.current ??= new History(project);
@@ -118,11 +128,16 @@ export default function App() {
         // Cada mídia guardada vira um elemento antes de montar as layers: a
         // desserialização é síncrona e precisa dos elementos já resolvidos.
         const media = await allMedia();
-        const elements = new Map<string, HTMLImageElement | HTMLVideoElement>();
+        const elements = new Map<string, MediaElement>();
 
         await Promise.all(media.map(m => new Promise<void>(done => {
           const url = urlFor(m.id, m.blob);
-          if (m.type.startsWith('video/')) {
+          if (m.type.startsWith('audio/')) {
+            const a = attachAudioElement(new Audio());
+            a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
+            a.addEventListener('error', () => done(), { once: true });
+            a.src = url;
+          } else if (m.type.startsWith('video/')) {
             const v = attachVideoElement(document.createElement('video'));
             v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
             v.addEventListener('error', () => done(), { once: true });
@@ -137,6 +152,9 @@ export default function App() {
         if (cancelled) return;
 
         const { project: loaded, missingMedia } = deserializeProject(saved, id => elements.get(id) ?? null);
+
+        // O acervo do painel usa este registro pra reencontrar os elementos.
+        elementsRef.current = elements;
 
         projectRef.current = loaded;
         setProject(loaded);
@@ -276,7 +294,57 @@ export default function App() {
     putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
 
     const url = urlFor(mediaId, file);
-    attachMedia(file.type, url, mediaId, file.name);
+    attachMedia(file.type, url, mediaId, file.name, element => {
+      // Entra no acervo E na linha do tempo. Importar pra depois posicionar é
+      // um fluxo válido, mas o comum é querer ver na hora.
+      registerAsset({ id: mediaId, name: file.name, type: file.type, duration: durationOf(element) });
+      addLayerFor(mediaId, file.type, element, file.name);
+    });
+  };
+
+  const durationOf = (el: HTMLImageElement | HTMLMediaElement) =>
+    'duration' in el && Number.isFinite(el.duration) ? el.duration : 0;
+
+  const registerAsset = (asset: MediaAsset) => {
+    commit(p => (
+      p.media.some(m => m.id === asset.id) ? p : { ...p, media: [...p.media, asset] }
+    ));
+  };
+
+  /** Cria a layer certa pro tipo do arquivo e a coloca no cursor. */
+  const addLayerFor = (
+    mediaId: string,
+    type: string,
+    element: MediaElement,
+    name: string,
+  ) => {
+    const start = +player.t.toFixed(2);
+    if (type.startsWith('audio/')) {
+      addLayer(makeAudioLayer(element as HTMLAudioElement, mediaId, { name, start }));
+    } else if (type.startsWith('video/')) {
+      addLayer(makeVideoLayer(element as HTMLVideoElement, mediaId, { name, start }));
+      player.invalidate();
+    } else {
+      addLayer(makeImageLayer(element as HTMLImageElement, mediaId, { name, start }));
+    }
+  };
+
+  /** Reutiliza um arquivo do acervo — sem reimportar, sem guardar outra cópia. */
+  const useAsset = (asset: MediaAsset) => {
+    const element = elementsRef.current.get(asset.id);
+    if (!element) return flash('Esse arquivo ainda está carregando');
+    addLayerFor(asset.id, asset.type, element, asset.name);
+  };
+
+  /** Tira do acervo junto com os clipes que o usam — um só passo de histórico. */
+  const removeAsset = (asset: MediaAsset) => {
+    commit(p => ({
+      ...p,
+      media: p.media.filter(m => m.id !== asset.id),
+      layers: compactTracks(
+        p.layers.filter(l => l.type === 'text' || l.mediaId !== asset.id),
+      ),
+    }));
   };
 
   /**
@@ -317,30 +385,38 @@ export default function App() {
     for (const file of e.dataTransfer.files) importFile(file);
   };
 
-  /** Monta o elemento certo pro tipo do arquivo e devolve uma layer pronta. */
-  const attachMedia = (type: string, url: string, mediaId: string, name: string) => {
+  /**
+   * Cria o elemento de DOM pro arquivo e avisa quando ele estiver pronto.
+   *
+   * `ready` só dispara depois dos metadados: antes disso a duração é `NaN` e a
+   * layer nasceria com tamanho inválido.
+   */
+  const attachMedia = (
+    type: string,
+    url: string,
+    mediaId: string,
+    name: string,
+    ready: (el: MediaElement) => void,
+  ) => {
+    const remember = (el: MediaElement) => {
+      elementsRef.current.set(mediaId, el);
+      ready(el);
+    };
+
     if (type.startsWith('audio/')) {
       const audio = attachAudioElement(new Audio());
-      audio.addEventListener('loadedmetadata', () => {
-        addLayer(makeAudioLayer(audio, mediaId, { name, start: +player.t.toFixed(2) }));
-      }, { once: true });
-      audio.addEventListener('error', () => flash('Não consegui abrir esse áudio'), { once: true });
+      audio.addEventListener('loadedmetadata', () => remember(audio), { once: true });
+      audio.addEventListener('error', () => flash(`Não consegui abrir "${name}"`), { once: true });
       audio.src = url;
-      return;
-    }
-
-    if (type.startsWith('video/')) {
+    } else if (type.startsWith('video/')) {
       const video = attachVideoElement(document.createElement('video'));
-      video.addEventListener('loadedmetadata', () => {
-        addLayer(makeVideoLayer(video, mediaId, { name, start: +player.t.toFixed(2) }));
-        player.invalidate();
-      }, { once: true });
-      video.addEventListener('error', () => flash('Não consegui abrir esse vídeo'), { once: true });
+      video.addEventListener('loadedmetadata', () => remember(video), { once: true });
+      video.addEventListener('error', () => flash(`Não consegui abrir "${name}"`), { once: true });
       video.src = url;
     } else {
       const img = new Image();
-      img.onload = () => addLayer(makeImageLayer(img, mediaId, { name, start: +player.t.toFixed(2) }));
-      img.onerror = () => flash('Não consegui abrir essa imagem');
+      img.onload = () => remember(img);
+      img.onerror = () => flash(`Não consegui abrir "${name}"`);
       img.src = url;
     }
   };
@@ -399,24 +475,9 @@ export default function App() {
     setSelectedId(right.id);
   }, [commit]);
 
-  // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
-  // é o que você espera, e o "b" é só a letra b.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (!(e.ctrlKey || e.metaKey)) return;
 
-      const key = e.key.toLowerCase();
-      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
-      else if (key === 'b') { e.preventDefault(); splitSelected(); }
-    };
-    addEventListener('keydown', onKey);
-    return () => removeEventListener('keydown', onKey);
-  }, [undo, redo, splitSelected]);
 
-  const deleteLayer = (id: number) => {
+  const deleteLayer = useCallback((id: number) => {
     commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
       if (layers.length === p.layers.length) return p;
@@ -426,7 +487,57 @@ export default function App() {
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
     // elemento com o src revogado voltaria preto e sem áudio. O decoder é
     // solto quando o projeto inteiro é trocado, não a cada exclusão.
-  };
+  }, [commit]);
+
+  /**
+   * Duplica o clipe selecionado, logo DEPOIS dele na mesma faixa.
+   *
+   * Depois e não em cima: a faixa não aceita sobreposição, então colar no
+   * mesmo lugar seria recusado — e "duplicar não fez nada" é pior que
+   * duplicar num lugar que você move em seguida.
+   */
+  const duplicateSelected = useCallback(() => {
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    if (!layer) return flash('Selecione um clipe pra duplicar');
+
+    const copy: Layer = {
+      ...layer,
+      id: nextId(),
+      start: +(layer.start + layer.duration).toFixed(3),
+      effects: clone(layer.effects),
+    };
+
+    commit(p => ({ ...p, layers: [...p.layers, copy] }));
+    setSelectedId(copy.id);
+  }, [commit]);
+
+  // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
+  // é o que você espera, e o "b" é só a letra b.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      // Delete não usa modificador — é a tecla que todo editor usa pra apagar.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const id = selectedIdRef.current;
+        if (id === null) return;
+        e.preventDefault();
+        deleteLayer(id);
+        return;
+      }
+
+      if (!(e.ctrlKey || e.metaKey)) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
+      else if (key === 'b') { e.preventDefault(); splitSelected(); }
+      else if (key === 'd') { e.preventDefault(); duplicateSelected(); }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [undo, redo, splitSelected, duplicateSelected, deleteLayer]);
 
   /** Recomeça do zero — e só aqui a mídia órfã é de fato apagada. */
   const newProject = async () => {
@@ -534,13 +645,8 @@ export default function App() {
             }
             className="sidebar-win"
           >
-            {tab === 'layers' && (
-              <LayersPanel
-                project={project}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onDelete={deleteLayer}
-              />
+            {tab === 'media' && (
+              <MediaPanel project={project} onUse={useAsset} onRemove={removeAsset} />
             )}
             {tab === 'props' && <PropsPanel layer={selected} onChange={updateLayer} />}
             {tab === 'fx' && <EffectsPanel layer={selected} onChange={updateLayer} />}

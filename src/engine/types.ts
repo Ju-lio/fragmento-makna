@@ -143,6 +143,25 @@ export type LayerPatch = Partial<Omit<TextLayer, 'id' | 'type'>>
   & Partial<Omit<VideoLayer, 'id' | 'type'>>
   & Partial<Omit<AudioLayer, 'id' | 'type'>>;
 
+/**
+ * Um arquivo importado no projeto.
+ *
+ * Existe SEPARADO das layers de propósito. Antes, mídia só existia enquanto
+ * alguma layer a usasse: apagar o clipe apagava o arquivo, e reimportar o
+ * mesmo vídeo guardava uma segunda cópia dos mesmos bytes. Com o acervo, o
+ * arquivo pertence ao projeto e as layers apenas o referenciam — que é o que
+ * permite usar o mesmo material em vários pontos da linha do tempo.
+ */
+export interface MediaAsset {
+  /** O mesmo `mediaId` que as layers referenciam. */
+  id: string;
+  name: string;
+  /** MIME do arquivo: decide se vira imagem, vídeo ou som. */
+  type: string;
+  /** Segundos. Zero para imagem. */
+  duration: number;
+}
+
 export interface Project {
   width: number;
   height: number;
@@ -150,6 +169,8 @@ export interface Project {
   fps: number;
   background: string;
   layers: Layer[];
+  /** Os arquivos importados neste projeto, usados ou não. */
+  media: MediaAsset[];
 }
 
 // --- recortes estruturais -----------------------------------------------

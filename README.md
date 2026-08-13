@@ -238,6 +238,26 @@ ninguém precisar lembrar de ir lá mexer.
 
 **Sem áudio ainda**, e é a maior lacuna do arquivo exportado hoje.
 
+## Acervo de mídia
+
+A aba lateral listava as layers — as mesmas da timeline, na mesma ordem, com
+menos informação do que o desenho dos clipes já dá. Virou o **acervo**: os
+arquivos importados no projeto, usados ou não.
+
+A diferença não é de tela, é de modelo. Antes a mídia existia só enquanto
+alguma layer a referenciasse: apagar o clipe apagava o arquivo, e reimportar o
+mesmo vídeo guardava uma segunda cópia dos mesmos bytes. Agora o arquivo
+pertence ao projeto (`project.media`) e as layers apenas o referenciam — que é o
+que permite usar o mesmo material em vários pontos da linha do tempo de graça.
+
+Consequência direta: `mediaIdsOf` passou a olhar o acervo, não as layers. Um
+arquivo importado e ainda não usado continua sendo do projeto, e varrer só as
+layers o apagaria na próxima abertura.
+
+Arquivos entram arrastando pra qualquer lugar do editor. O `preventDefault` no
+`dragover` não é detalhe: sem ele o navegador **abre** o arquivo, troca o editor
+pelo vídeo, e leva junto o que ainda não tinha sido salvo.
+
 ## Áudio
 
 Antes disso o editor descartava som em silêncio: `attachVideoElement` forçava
@@ -262,6 +282,13 @@ semitom de desafinação é muito mais audível do que um quadro repetido é vis
 
 Então som corrige por seek, com tolerância folgada (150ms contra 80ms do vídeo).
 Cada correção é um clique curto; corrigir demais é pior que derivar um pouco.
+
+Uma armadilha que só apareceu testando: tocando **do cache**, `handlePlay`
+pausava os `<video>` — eles não pintavam nada, então deixá-los rodando só
+gastaria decoder. Isso valia enquanto o editor não tinha som. Depois, era o que
+fazia o pré-render reproduzir mudo: o elemento deixa de ser fonte da imagem e
+continua sendo fonte do **som**, e nesse estado ninguém cuidava dele. Hoje o
+`syncSoundLayers` o conduz, e pausa sozinho o que estiver em silêncio.
 
 Duas outras diferenças que caem da mesma lógica:
 
@@ -354,6 +381,16 @@ escrito direto no DOM e a faixa de destino acende — o gesto inteiro custa zero
 re-render, e a lista é reordenada uma vez só, ao soltar. Reordenar a cada
 `pointermove` faria as faixas saltarem debaixo do cursor, que é exatamente o que
 torna esse tipo de arrasto impossível de mirar.
+
+### Inserir uma faixa, não só trocar de faixa
+
+Cada linha tem **três zonas**: o miolo pousa o clipe naquela faixa, e as bordas
+abrem uma faixa nova ali, empurrando as de cima. Sem isso a faixa 0 era o piso —
+não existia gesto que mandasse um clipe pra baixo de outro, nem que abrisse
+espaço no meio da pilha.
+
+O indicador mostra a diferença: barra fina sólida na fronteira para inserir,
+caixa tracejada para pousar. São ações diferentes e precisam parecer diferentes.
 
 Dois detalhes que não são preciosismo:
 
@@ -662,8 +699,9 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export) e
-**export de vídeo MP4** via WebCodecs. Base inteira em TypeScript `strict`, com
-250 testes.
+**export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
+arrastando, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
+com 260 testes.
 
 ### O caminho até "usável"
 
@@ -679,9 +717,9 @@ exportar, sem bater numa parede.**
   Ninguém posiciona um título digitando coordenada.
 - **Legibilidade de texto** — contorno e sombra. Texto claro sobre imagem clara
   simplesmente some.
-- **Atalhos de edição** — Delete, Ctrl+D, Ctrl+C/V.
 - **Duração do projeto derivada do conteúdo.** Hoje é um campo que você digita, e
   clipes podem ficar pra fora dele.
+- **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,
 snap magnético, presets de texto, pool de mídia, presets de export.

@@ -107,6 +107,7 @@ export function imageLayer(over: Partial<ImageLayer> = {}): ImageLayer {
 export function project(layers: Layer[], over: Partial<Project> = {}): Project {
   return {
     width: 1920, height: 1080, fps: 30, background: '#000',
+    media: [],
     layers,
     ...over,
   };

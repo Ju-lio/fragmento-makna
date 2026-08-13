@@ -5,6 +5,8 @@ import type {
   TimeSpan, VideoLayer, VisualLayer,
 } from './types.ts';
 
+export type { MediaAsset } from './types.ts';
+
 export type {
   Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer, VideoLayer,
 } from './types.ts';
@@ -324,6 +326,7 @@ export function defaultProject(): Project {
      *  e (futuramente) o export — assim um frame é sempre o mesmo frame. */
     fps: 30,
     background: '#151021',
+    media: [],
     layers: [
       makeTextLayer({
         name: 'Título', track: 2, start: 0.2, duration: 4.5,

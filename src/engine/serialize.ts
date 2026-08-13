@@ -19,7 +19,8 @@
 
 import { BASE_STATE } from './effects.ts';
 import type {
-  AnimProp, AudioLayer, Effect, ImageLayer, Layer, Project, TextLayer, Track, VideoLayer,
+  AnimProp, AudioLayer, Effect, ImageLayer, Layer, MediaAsset, Project,
+  TextLayer, Track, VideoLayer,
 } from './types.ts';
 
 /**
@@ -32,7 +33,12 @@ import type {
  * projeto do formato 2 não tinha som nenhum, então a migração é só o padrão
  * (volume cheio, sem mudo) — não há informação a recuperar.
  */
-export const PROJECT_FORMAT = 3;
+/**
+ * 3 → 4: o projeto passou a guardar o acervo de mídia (`media`), em vez de ele
+ * existir só implicitamente nas layers. A migração deriva o acervo das layers
+ * que já existem — o que preserva exatamente o material que o projeto tinha.
+ */
+export const PROJECT_FORMAT = 4;
 
 export interface SerializedProject {
   format: number;
@@ -40,6 +46,7 @@ export interface SerializedProject {
   height: number;
   fps: number;
   background: string;
+  media: MediaAsset[];
   layers: SerializedLayer[];
 }
 
@@ -69,7 +76,8 @@ export type SerializedLayer =
   | (SerializedBase & SerializedSound & { type: 'audio' });
 
 /** Um elemento pronto pra uma layer de mídia, resolvido a partir do id. */
-export type MediaResolver = (mediaId: string) => HTMLImageElement | HTMLVideoElement | null;
+export type MediaElement = HTMLImageElement | HTMLVideoElement | HTMLAudioElement;
+export type MediaResolver = (mediaId: string) => MediaElement | null;
 
 export interface LoadResult {
   project: Project;
@@ -91,6 +99,7 @@ export function serializeProject(project: Project): SerializedProject {
     height: project.height,
     fps: project.fps,
     background: project.background,
+    media: project.media,
     layers: project.layers.map(serializeLayer),
   };
 }
@@ -133,11 +142,19 @@ function serializeLayer(l: Layer): SerializedLayer {
 export function mediaIdsOf(raw: unknown): Set<string> {
   const ids = new Set<string>();
   if (typeof raw !== 'object' || raw === null) return ids;
+  const data = raw as Record<string, unknown>;
 
-  // Tratado como JSON cru, não como `SerializedProject`: a entrada vem do
-  // disco e pode não ter a forma que o tipo promete.
-  const layers = (raw as Record<string, unknown>).layers;
-  for (const l of Array.isArray(layers) ? (layers as unknown[]) : []) {
+  // O ACERVO é a verdade sobre o que guardar. Um arquivo importado e ainda não
+  // usado em layer nenhuma continua sendo do projeto — varrer só as layers o
+  // apagaria no próximo carregamento.
+  for (const m of Array.isArray(data.media) ? (data.media as unknown[]) : []) {
+    if (typeof m !== 'object' || m === null) continue;
+    const id = (m as Record<string, unknown>).id;
+    if (typeof id === 'string' && id) ids.add(id);
+  }
+
+  // Formato antigo, sem acervo: as layers são a única fonte.
+  for (const l of Array.isArray(data.layers) ? (data.layers as unknown[]) : []) {
     if (typeof l !== 'object' || l === null) continue;
     const id = (l as Record<string, unknown>).mediaId;
     if (typeof id === 'string' && id) ids.add(id);
@@ -186,10 +203,48 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
       height: num(data.height, 1080),
       fps: num(data.fps, 30),
       background: str(data.background, '#151021'),
+      media: readMedia(data.media, layers),
       layers,
     },
     missingMedia,
   };
+}
+
+/**
+ * O acervo do arquivo, ou — pra projetos do formato 3 e anteriores — derivado
+ * das layers.
+ *
+ * A derivação é a migração: antes o material existia só enquanto uma layer o
+ * usasse, então as layers SÃO o acervo daquele projeto.
+ */
+function readMedia(raw: unknown, layers: readonly Layer[]): MediaAsset[] {
+  if (Array.isArray(raw)) {
+    return raw.flatMap((item): MediaAsset[] => {
+      if (typeof item !== 'object' || item === null) return [];
+      const m = item as Record<string, unknown>;
+      const id = str(m.id, '');
+      if (!id) return [];
+      return [{
+        id,
+        name: str(m.name, 'mídia'),
+        type: str(m.type, ''),
+        duration: num(m.duration, 0),
+      }];
+    });
+  }
+
+  const seen = new Map<string, MediaAsset>();
+  for (const l of layers) {
+    if (l.type === 'text') continue;
+    if (seen.has(l.mediaId)) continue;
+    seen.set(l.mediaId, {
+      id: l.mediaId,
+      name: l.name,
+      type: l.type === 'image' ? 'image/*' : l.type === 'video' ? 'video/*' : 'audio/*',
+      duration: l.type === 'image' ? 0 : l.sourceDuration,
+    });
+  }
+  return [...seen.values()];
 }
 
 function readLayer(
