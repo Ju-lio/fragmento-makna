@@ -74,7 +74,7 @@ export function videoLayer(over: Partial<VideoLayer> = {}): VideoLayer {
     id: 2, type: 'video', name: 'Vídeo',
     start: 0, duration: 4, x: 0, y: 0, effects: [], fit: 1,
     trimStart: 0, sourceDuration: 10,
-    video: fakeVideo(),
+    video: fakeVideo(), mediaId: 'media-video',
     ...over,
   };
 }
@@ -83,7 +83,7 @@ export function imageLayer(over: Partial<ImageLayer> = {}): ImageLayer {
   return {
     id: 3, type: 'image', name: 'Imagem',
     start: 0, duration: 4, x: 0, y: 0, effects: [], fit: 0.8,
-    img: fakeImage(),
+    img: fakeImage(), mediaId: 'media-img',
     ...over,
   };
 }

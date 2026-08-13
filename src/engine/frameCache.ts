@@ -94,8 +94,11 @@ export function renderSignature(project: Project): string {
     // algumas layers, e um campo novo no modelo não entra aqui por acidente.
     const common = [l.type, l.start, l.duration, l.x, l.y, l.effects];
     if (l.type === 'text') return [...common, l.text, l.size, l.color, l.font];
-    if (l.type === 'image') return [...common, l.fit, l.img.src];
-    return [...common, l.fit, l.trimStart, l.video.src];
+    // `mediaId` e não `src`: o `blob:` é sorteado a cada sessão, então usá-lo
+    // faria um projeto reaberto nunca reaproveitar nada — e dois clipes do
+    // mesmo arquivo pareceriam mídias diferentes.
+    if (l.type === 'image') return [...common, l.fit, l.mediaId];
+    return [...common, l.fit, l.trimStart, l.mediaId];
   });
 
   return JSON.stringify([project.width, project.height, project.background, layers]);

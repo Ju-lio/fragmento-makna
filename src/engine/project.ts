@@ -109,7 +109,11 @@ export interface TrimTarget {
   sourceDuration?: number;
 }
 
-export function makeVideoLayer(video: HTMLVideoElement, overrides: Partial<VideoLayer> = {}): VideoLayer {
+export function makeVideoLayer(
+  video: HTMLVideoElement,
+  mediaId: string,
+  overrides: Partial<VideoLayer> = {},
+): VideoLayer {
   const sourceDuration = video.duration;
   return {
     id: nextId(),
@@ -120,6 +124,7 @@ export function makeVideoLayer(video: HTMLVideoElement, overrides: Partial<Video
     trimStart: 0,
     sourceDuration,
     video,
+    mediaId,
     x: 0,
     y: 0,
     fit: 1,
@@ -128,7 +133,11 @@ export function makeVideoLayer(video: HTMLVideoElement, overrides: Partial<Video
   };
 }
 
-export function makeImageLayer(img: HTMLImageElement, overrides: Partial<ImageLayer> = {}): ImageLayer {
+export function makeImageLayer(
+  img: HTMLImageElement,
+  mediaId: string,
+  overrides: Partial<ImageLayer> = {},
+): ImageLayer {
   return {
     id: nextId(),
     type: 'image',
@@ -139,6 +148,7 @@ export function makeImageLayer(img: HTMLImageElement, overrides: Partial<ImageLa
     y: 0,
     fit: 0.8,
     img,
+    mediaId,
     effects: [preset('blur-in')],
     ...overrides,
   };

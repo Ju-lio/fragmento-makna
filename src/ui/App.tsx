@@ -3,6 +3,13 @@ import { player } from '../engine/player.ts';
 import { defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer } from '../engine/project.ts';
 import { moveItem } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
+import {
+  serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError,
+} from '../engine/serialize.ts';
+import {
+  newMediaId, putMedia, allMedia, urlFor, releaseAll, pruneMedia,
+  saveProject, loadProject, clearProject,
+} from '../engine/mediaStore.ts';
 import type { Layer, LayerPatch, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
@@ -89,6 +96,90 @@ export default function App() {
     return () => removeEventListener('keydown', onKey);
   }, [undo, redo]);
 
+  /**
+   * Restaura o projeto guardado, ou fica no de exemplo.
+   *
+   * `restoring` segura o autosave: sem isso o efeito de gravação dispara no
+   * primeiro render e sobrescreve o que está no disco com o projeto de
+   * exemplo — você abriria o editor e teria perdido tudo.
+   */
+  const [restoring, setRestoring] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const saved = await loadProject();
+        if (!saved || cancelled) return;
+
+        // Descarta a mídia órfã ANTES de carregar. Excluir layer não apaga o
+        // arquivo (o undo pode trazê-la de volta), mas ao reabrir não existe
+        // mais histórico que a alcance — e sem isso o editor decodificaria
+        // vídeos que ninguém usa a cada abertura.
+        const used = mediaIdsOf(saved);
+        await pruneMedia(used);
+        if (cancelled) return;
+
+        // Cada mídia guardada vira um elemento antes de montar as layers: a
+        // desserialização é síncrona e precisa dos elementos já resolvidos.
+        const media = await allMedia();
+        const elements = new Map<string, HTMLImageElement | HTMLVideoElement>();
+
+        await Promise.all(media.map(m => new Promise<void>(done => {
+          const url = urlFor(m.id, m.blob);
+          if (m.type.startsWith('video/')) {
+            const v = attachVideoElement(document.createElement('video'));
+            v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
+            v.addEventListener('error', () => done(), { once: true });
+            v.src = url;
+          } else {
+            const img = new Image();
+            img.onload = () => { elements.set(m.id, img); done(); };
+            img.onerror = () => done();
+            img.src = url;
+          }
+        })));
+        if (cancelled) return;
+
+        const { project: loaded, missingMedia } = deserializeProject(saved, id => elements.get(id) ?? null);
+
+        projectRef.current = loaded;
+        setProject(loaded);
+        history.reset(loaded);
+        setSelectedId(loaded.layers[loaded.layers.length - 1]?.id ?? null);
+        player.invalidate();
+
+        if (missingMedia.length) {
+          flash(`${missingMedia.length} layer(s) sem mídia: ${missingMedia.join(', ')}`);
+        }
+      } catch (err) {
+        // Projeto ilegível não pode impedir o editor de abrir. Fica no de
+        // exemplo e avisa, em vez de mostrar tela branca.
+        flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir o projeto salvo');
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [history]);
+
+  /**
+   * Autosave: grava o projeto pouco depois de você parar de mexer.
+   *
+   * O atraso não é economia de disco, é correção — arrastar um clipe produz
+   * uma edição por quadro, e gravar em cada uma enfileiraria centenas de
+   * transações que terminam fora de ordem.
+   */
+  useEffect(() => {
+    if (restoring) return;
+    const timer = setTimeout(() => {
+      saveProject(serializeProject(project)).catch(() => { /* cota cheia ou modo privado */ });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [project, restoring]);
+
   useEffect(() => {
     player.start();
     setSelectedId(p => p ?? project.layers[0]?.id ?? null);
@@ -151,23 +242,34 @@ export default function App() {
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = URL.createObjectURL(file);
+    e.target.value = '';
 
-    if (file.type.startsWith('video/')) {
+    // O arquivo vai pro armazenamento ANTES de virar layer: é isso que faz o
+    // projeto reabrir sozinho depois. Se a gravação falhar, a layer ainda
+    // entra — perder a mídia ao recarregar é ruim, não poder editar agora é pior.
+    const mediaId = newMediaId();
+    putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
+
+    const url = urlFor(mediaId, file);
+    attachMedia(file.type, url, mediaId, file.name);
+  };
+
+  /** Monta o elemento certo pro tipo do arquivo e devolve uma layer pronta. */
+  const attachMedia = (type: string, url: string, mediaId: string, name: string) => {
+    if (type.startsWith('video/')) {
       const video = attachVideoElement(document.createElement('video'));
       video.addEventListener('loadedmetadata', () => {
-        addLayer(makeVideoLayer(video, { name: file.name, start: +player.t.toFixed(2) }));
+        addLayer(makeVideoLayer(video, mediaId, { name, start: +player.t.toFixed(2) }));
         player.invalidate();
       }, { once: true });
       video.addEventListener('error', () => flash('Não consegui abrir esse vídeo'), { once: true });
       video.src = url;
     } else {
       const img = new Image();
-      img.onload = () => addLayer(makeImageLayer(img, { name: file.name, start: +player.t.toFixed(2) }));
+      img.onload = () => addLayer(makeImageLayer(img, mediaId, { name, start: +player.t.toFixed(2) }));
       img.onerror = () => flash('Não consegui abrir essa imagem');
       img.src = url;
     }
-    e.target.value = '';
   };
 
   /**
@@ -195,6 +297,24 @@ export default function App() {
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
     // elemento com o src revogado voltaria preto e sem áudio. O decoder é
     // solto quando o projeto inteiro é trocado, não a cada exclusão.
+  };
+
+  /** Recomeça do zero — e só aqui a mídia órfã é de fato apagada. */
+  const newProject = async () => {
+    if (!confirm('Descartar o projeto atual e começar um novo?')) return;
+
+    player.pause();
+    const fresh = defaultProject();
+    projectRef.current = fresh;
+    setProject(fresh);
+    history.reset(fresh);
+    setSelectedId(fresh.layers[0]?.id ?? null);
+
+    // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
+    // que possa trazer as layers de volta.
+    releaseAll();
+    await Promise.all([clearProject(), pruneMedia(new Set())]);
+    flash('Projeto novo');
   };
 
   const copySchema = async () => {
@@ -252,6 +372,7 @@ export default function App() {
         <div className="topbar-spacer" />
 
         {toast && <span className="toast">{toast}</span>}
+        <button className="btn" onClick={newProject} title="Descartar tudo e começar um projeto novo">✧ NOVO</button>
         <button className="btn btn-gold" onClick={copySchema}>▣ SCHEMA</button>
         <button className="btn" onClick={savePng}>▼ PNG</button>
       </header>

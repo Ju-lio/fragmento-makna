@@ -41,6 +41,9 @@ src/
     frameSource.ts     de onde tirar cada quadro (cache ou ao vivo)
     prerender.ts       preenche um trecho quadro a quadro
     trackDrag.ts       para onde vai um clipe arrastado na timeline
+    history.ts         pilha de undo/redo, genérica
+    serialize.ts       projeto ↔ JSON (puro, sem DOM)
+    mediaStore.ts      blobs e projeto em IndexedDB
     previewMode.ts     o interruptor ⚡ FAST
     previewStatus.ts   sinal da barra de atividade
   ui/                <- React: só o chrome da interface
@@ -189,6 +192,68 @@ Dois detalhes que não são preciosismo:
 
 A matemática toda vive em `engine/trackDrag.ts`, fora do componente e sem DOM,
 porque errar ali reordena o projeto errado sem que nada acuse.
+
+## Undo/redo: o problema é a granularidade
+
+A pilha guarda **snapshots inteiros** do projeto, não diffs. Parece caro e não
+é: as edições já eram imutáveis (`{ ...p, layers: ... }`), então uma layer que
+não mudou continua sendo o *mesmo objeto* em todos os snapshots. O
+compartilhamento estrutural vem de graça do jeito que o estado já era escrito, e
+cada entrada custa um punhado de ponteiros. Diffs custariam a complexidade de
+aplicar e desaplicar patch, que é onde esse tipo de código quebra.
+
+A parte difícil não é a pilha, é **quanto vale um Ctrl+Z**. Arrastar uma alça de
+trim dispara uma edição por `pointermove`; sem tratamento, desfazer o gesto
+exigiria duzentos Ctrl+Z — o que na prática é o mesmo que não ter undo.
+
+A regra: edições seguidas com a mesma chave (layer + campos tocados), dentro de
+500ms, ocupam uma entrada só. A janela conta do **último** toque, pra que um
+arrasto longo continue sendo um gesto. Ações discretas — adicionar layer,
+excluir, reordenar — passam chave nula e valem por si; o painel de efeitos
+desliga a fusão explicitamente, senão clicar em dois presets rápido viraria um
+passo só.
+
+Dois casos que a fusão nunca pode engolir, e que os testes fixam: o estado
+inicial (deixaria a primeira edição impossível de desfazer) e uma entrada com
+redo pendente (depois de desfazer, toda edição é ramo novo e descarta o futuro).
+
+No `App`, toda edição passa por um funil único. O registro no histórico acontece
+**fora** do updater do `setState`: o StrictMode chama o updater duas vezes pra
+flagrar efeito colateral, e a pilha entraria duplicada.
+
+## Persistência: o projeto tem que estar lá quando você voltar
+
+O nó: uma layer de mídia carrega um `HTMLVideoElement` vivo, e elemento de DOM
+não vira JSON. Pior, o `src` dele é um `blob:` — válido só enquanto a aba está
+aberta. Salvar isso produziria um arquivo que *parece* certo e abre quebrado
+amanhã, que é o pior resultado possível.
+
+Então o projeto salvo guarda um `mediaId` por layer, e os bytes vão pro
+IndexedDB. As alternativas eram piores: base64 no JSON incha 33% e trava a aba
+ao serializar um vídeo grande; guardar o caminho do arquivo não existe no
+browser, e reabrir exigiria você reapontar cada mídia toda vez.
+
+Com os blobs no IndexedDB, recarregar a página devolve o projeto inteiro
+funcionando, offline, sem pedir nada. O autosave espera 600ms depois que você
+para de mexer — o atraso não é economia de disco, é correção: arrastar um clipe
+produz uma edição por quadro, e gravar em cada uma enfileiraria centenas de
+transações que terminam fora de ordem.
+
+Três decisões que evitam corromper projeto:
+
+- **Ler é defensivo.** A entrada pode ter sido editada à mão, truncada ou vir de
+  outra versão. Cada campo tem padrão, `prop` de efeito desconhecida é
+  descartada, e um `width: "muito"` não vira `NaN` circulando pela engine.
+- **Formato do futuro é recusado com explicação**, em vez de abrir e perder
+  metade das layers em silêncio.
+- **Layer sem mídia é reportada**, nunca sumida calada — some uma layer sem
+  aviso e a pessoa acha que o editor corrompeu o projeto.
+
+A vida da mídia é o detalhe que amarra as duas features. Excluir uma layer
+**não** apaga o arquivo, porque o undo pode trazê-la de volta; um elemento com
+o `src` revogado voltaria preto. O que sobra é descartado ao **reabrir** (aí não
+existe mais histórico que alcance a layer) e em ✧ NOVO. Sem essa limpeza, o
+editor decodificaria vídeos que ninguém usa a cada abertura.
 
 ## Performance do preview
 
@@ -420,11 +485,13 @@ descartado pra dar lugar ao fim.
 reordenação de layers, runtime de efeitos, 9 presets, viewport com zoom/fit/pan
 e resolução de render adaptativa, resolução de projeto, marcação de trecho
 (in/out), pré-render com cache de frames, export de frame PNG, **arrastar
-layers nas faixas da timeline** (mover no tempo e reordenar num gesto só). Base
-inteira em TypeScript `strict`, com 132 testes.
+layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
+**undo/redo** e **autosave** (o projeto reabre sozinho, com a mídia). Base
+inteira em TypeScript `strict`, com 166 testes.
 
-**Próximo:** chroma key (shader WebGL) → gizmo de transform e crop → export de
-vídeo via WebCodecs → áudio (uma trilha na v1).
+**Próximo:** export de vídeo via WebCodecs → efeitos CSS personalizáveis
+(abrir o vocabulário de filtros) → gizmo de transform e crop → múltiplos
+clipes por faixa → chroma key (shader WebGL) → áudio (uma trilha na v1).
 
 **No radar, ainda sem data:** atalhos de edição estilo CapCut (cortar no
 playhead, deletar, duplicar), responsividade mobile/touch — esse último é o

@@ -71,12 +71,19 @@ export interface ImageLayer extends LayerBase {
   /** Fração da composição que a mídia ocupa antes dos efeitos. */
   fit: number;
   img: HTMLImageElement;
+  /**
+   * Chave do arquivo no `mediaStore`. É o que sobrevive a um recarregamento:
+   * o elemento e o `blob:` do `src` morrem junto com a aba, o id não.
+   */
+  mediaId: string;
 }
 
 export interface VideoLayer extends LayerBase {
   type: 'video';
   fit: number;
   video: HTMLVideoElement;
+  /** Ver `mediaId` em ImageLayer. */
+  mediaId: string;
   /** Ponto do arquivo em que o clipe começa a ler. */
   trimStart: number;
   sourceDuration: number;
