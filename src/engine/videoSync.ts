@@ -94,7 +94,18 @@ export function isLayerActive(layer: { start: number; duration: number }, t: num
 
 /** Wires an element up so async seeks repaint the preview when parked. */
 export function attachVideoElement(video: HTMLVideoElement): HTMLVideoElement {
-  video.muted = true;          // audio arrives in its own phase; also dodges autoplay blocking
+  /**
+   * NÃO entra mudo.
+   *
+   * Era `muted = true` enquanto o editor não sabia lidar com som — o que
+   * significava que o áudio do próprio clipe era descartado em silêncio, e o
+   * arquivo exportado saía sem a fala que estava no vídeo. Quem cala agora é o
+   * volume da layer, que você controla.
+   *
+   * O preço: o navegador pode recusar o primeiro `play()` sem gesto do
+   * usuário. Aceitável, porque tocar sempre parte de um clique ou da barra de
+   * espaço — e o `catch` no `play()` já cobre o caso.
+   */
   video.playsInline = true;
   video.preload = 'auto';
   video.addEventListener('seeked', () => {

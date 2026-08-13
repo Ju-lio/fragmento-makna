@@ -69,6 +69,12 @@ export async function putMedia(id: string, file: File): Promise<void> {
     s.put({ id, name: file.name, type: file.type, blob: file } satisfies StoredMedia));
 }
 
+/** Os bytes de uma mídia. `null` quando ela não está mais guardada. */
+export async function mediaBlob(id: string): Promise<Blob | null> {
+  const found = await tx<StoredMedia | undefined>(MEDIA_STORE, 'readonly', s => s.get(id));
+  return found?.blob ?? null;
+}
+
 export async function allMedia(): Promise<StoredMedia[]> {
   return await tx<StoredMedia[]>(MEDIA_STORE, 'readonly', s => s.getAll());
 }

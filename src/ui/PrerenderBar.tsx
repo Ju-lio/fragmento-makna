@@ -3,6 +3,7 @@ import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
 import { frameCache, signatureOf, estimateRange, formatBytes } from '../engine/frameCache.ts';
+import { mediaBlob } from '../engine/mediaStore.ts';
 import {
   exportVideo, cancelExport, exportStatus, exportSupport, downloadBlob,
 } from '../engine/videoExport.ts';
@@ -99,11 +100,13 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
     player.pause();
 
     try {
-      const result = await exportVideo(project, { from, to, scale: 1 });
+      const result = await exportVideo(project, { from, to, scale: 1, getBlob: mediaBlob });
       if (!result) return onMessage('Export cancelado');
 
       downloadBlob(result.blob, result.fileName);
-      onMessage(`${result.frames} quadros em ${result.codec}`);
+      onMessage(
+        `${result.frames} quadros em ${result.codec}${result.hasAudio ? ' com áudio' : ' (sem áudio)'}`,
+      );
     } catch (err) {
       onMessage(err instanceof Error ? err.message : 'Falhou ao exportar');
     } finally {

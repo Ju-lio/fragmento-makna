@@ -42,7 +42,20 @@ export interface Effect {
 
 // --- layers -------------------------------------------------------------
 
-export type LayerType = 'text' | 'image' | 'video';
+export type LayerType = 'text' | 'image' | 'video' | 'audio';
+
+/**
+ * O que uma layer com som carrega.
+ *
+ * Vale pra vídeo e pra áudio: um clipe de vídeo tem trilha própria, e tratá-la
+ * como "áudio de segunda classe" obrigaria a duplicar volume, mudo e mixagem
+ * em dois caminhos diferentes.
+ */
+export interface Audible {
+  /** Ganho, 0..1. */
+  volume: number;
+  mute: boolean;
+}
 
 /** O mínimo pra situar algo na linha do tempo — o que a maioria da engine lê. */
 export interface TimeSpan {
@@ -86,7 +99,7 @@ export interface ImageLayer extends LayerBase {
   mediaId: string;
 }
 
-export interface VideoLayer extends LayerBase {
+export interface VideoLayer extends LayerBase, Audible {
   type: 'video';
   fit: number;
   video: HTMLVideoElement;
@@ -97,15 +110,38 @@ export interface VideoLayer extends LayerBase {
   sourceDuration: number;
 }
 
-export type Layer = TextLayer | ImageLayer | VideoLayer;
+/**
+ * Uma trilha de áudio. Ocupa faixa e tempo como qualquer outra layer, mas não
+ * desenha nada — e é isso que a torna interessante pro cache: mexer no volume
+ * não muda um pixel, então o trecho pré-renderizado continua valendo. Ver
+ * `renderSignature`.
+ */
+export interface AudioLayer extends LayerBase, Audible {
+  type: 'audio';
+  audio: HTMLAudioElement;
+  /** Ver `mediaId` em ImageLayer. */
+  mediaId: string;
+  /** Ponto do arquivo em que o clipe começa a tocar. */
+  trimStart: number;
+  sourceDuration: number;
+}
+
+export type Layer = TextLayer | ImageLayer | VideoLayer | AudioLayer;
+
+/** Layers que desenham pixels. O que sobra é áudio. */
+export type VisualLayer = TextLayer | ImageLayer | VideoLayer;
+
+/** Layers que produzem som. */
+export type SoundLayer = VideoLayer | AudioLayer;
 
 /** Layers com material de origem — as que têm trim e duração limitada. */
-export type MediaLayer = ImageLayer | VideoLayer;
+export type MediaLayer = ImageLayer | VideoLayer | AudioLayer;
 
 /** Patch parcial aplicado por `updateLayer`. O `id` nunca muda. */
 export type LayerPatch = Partial<Omit<TextLayer, 'id' | 'type'>>
   & Partial<Omit<ImageLayer, 'id' | 'type'>>
-  & Partial<Omit<VideoLayer, 'id' | 'type'>>;
+  & Partial<Omit<VideoLayer, 'id' | 'type'>>
+  & Partial<Omit<AudioLayer, 'id' | 'type'>>;
 
 export interface Project {
   width: number;

@@ -379,6 +379,7 @@ export function Timeline({
                     'clip' +
                     (layer.type === 'image' ? ' clip-img' : '') +
                     (layer.type === 'video' ? ' clip-video' : '') +
+                    (layer.type === 'audio' ? ' clip-audio' : '') +
                     (layer.id === selectedId ? ' clip-sel' : '')
                   }
                   style={{

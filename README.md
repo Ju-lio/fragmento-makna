@@ -43,6 +43,9 @@ src/
     videoExport.ts     compõe o trecho e codifica (WebCodecs)
     exportPlan.ts      as decisões do export que não dependem do browser
     progress.ts        observável de progresso (pré-render, export)
+    audioMix.ts        o que toca, quando, e de onde do arquivo
+    audioSync.ts       trilhas alinhadas ao relógio do player
+    audioRender.ts     mixagem offline pro export
     trackDrag.ts       para onde vai um clipe arrastado na timeline
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
@@ -234,6 +237,61 @@ e um trabalho novo que reivindique os elementos passa a ser respeitado sem
 ninguém precisar lembrar de ir lá mexer.
 
 **Sem áudio ainda**, e é a maior lacuna do arquivo exportado hoje.
+
+## Áudio
+
+Antes disso o editor descartava som em silêncio: `attachVideoElement` forçava
+`muted = true`, então **nem a trilha do próprio vídeo existia** — você importava
+uma entrevista e exportava um arquivo mudo sem nada avisar.
+
+Vídeo e áudio compartilham a interface `Audible` (volume, mudo). Tratar a
+trilha de um clipe de vídeo como "áudio de segunda classe" duplicaria volume,
+mudo e mixagem em dois caminhos que divergiriam.
+
+**Som não entra na assinatura do cache.** `renderSignature` percorre a ordem de
+desenho, que já exclui layers de áudio — então ajustar o volume da música, ou
+adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
+de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
+o que aconteceria se a assinatura varresse `project.layers` cru.
+
+### A correção de deriva é o oposto da do vídeo
+
+O vídeo corrige por `playbackRate` porque um seek fazia a imagem voltar um
+quadro. Em áudio isso seria pior: mudar a velocidade muda o **tom**, e meio
+semitom de desafinação é muito mais audível do que um quadro repetido é visível.
+
+Então som corrige por seek, com tolerância folgada (150ms contra 80ms do vídeo).
+Cada correção é um clique curto; corrigir demais é pior que derivar um pouco.
+
+Duas outras diferenças que caem da mesma lógica:
+
+- **Não existe scrub sonoro.** Arrastar o cursor tocando pedacinhos de áudio é
+  ruído, não informação. Som só existe durante a reprodução.
+- **A ponta final do clipe é exclusiva.** O quadro final de um clipe visual
+  ainda aparece; som tocando um instante além do fim se ouve como estalo.
+
+O som anda no `onTick`, não no `onFrame`. `onFrame` é pulado quando nada mudou
+na tela — que é exatamente o momento em que a música precisa continuar tocando.
+
+### No export
+
+`OfflineAudioContext` mixa tudo antes do primeiro quadro de vídeo. É a
+ferramenta certa: renderiza mais rápido que tempo real e resolve sozinho a soma
+das fontes, o ganho e o alinhamento. Somar `Float32Array` na mão daria o mesmo
+com muito mais chance de errar um sample.
+
+Antes do vídeo, não em paralelo: a mixagem decodifica os arquivos inteiros, e
+fazer isso enquanto o `<video>` está sendo levado quadro a quadro põe os dois
+disputando o mesmo decoder — que é a situação em que os seeks começam a falhar
+por timeout.
+
+O recorte é onde se erra: uma música que começa antes do trecho exportado entra
+**pelo meio**. Sem isso, exportar de 10s a 20s reiniciaria a música em 10s e o
+arquivo soaria diferente do preview.
+
+O PCM sai em `f32-planar` (canais em sequência, não intercalados). Trocar os
+dois formatos produz um arquivo que toca, com os canais embaralhados — o tipo de
+erro que só se percebe ouvindo.
 
 ## Navegar quadro a quadro
 
@@ -603,12 +661,35 @@ e resolução de render adaptativa, resolução de projeto, marcação de trecho
 layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
-quadro** (setas) e **export de vídeo MP4** via WebCodecs. Base inteira em
-TypeScript `strict`, com 218 testes.
+quadro** (setas), **áudio** (importar, volume, mudo, mixado no export) e
+**export de vídeo MP4** via WebCodecs. Base inteira em TypeScript `strict`, com
+250 testes.
 
-**Próximo:** áudio (uma trilha na v1 — é o que falta pro arquivo exportado
-ficar completo) → efeitos CSS personalizáveis (abrir o vocabulário de filtros) →
-gizmo de transform e crop → chroma key (shader WebGL).
+### O caminho até "usável"
+
+O critério: **montar um vídeo de 60s pra Reels — cortes, música, títulos — e
+exportar, sem bater numa parede.**
+
+**Falta pra chegar lá:**
+
+- **Zoom e scroll na timeline.** Hoje a régua espreme o projeto inteiro na
+  largura; num projeto de 60s um clipe de 2s vira 3% da tela. É a parede mais
+  próxima.
+- **Gizmo no canvas** — arrastar pra posicionar, alças pra escalar e girar.
+  Ninguém posiciona um título digitando coordenada.
+- **Legibilidade de texto** — contorno e sombra. Texto claro sobre imagem clara
+  simplesmente some.
+- **Atalhos de edição** — Delete, Ctrl+D, Ctrl+C/V.
+- **Duração do projeto derivada do conteúdo.** Hoje é um campo que você digita, e
+  clipes podem ficar pra fora dele.
+
+**Depois disso, o que separa de um clone:** transições, velocidade do clipe,
+snap magnético, presets de texto, pool de mídia, presets de export.
+
+**O diferencial:** abrir o vocabulário de efeitos CSS — `contrast`, `saturate`,
+`hue-rotate`, `drop-shadow`, `sepia`, `invert`. O `ctx.filter` já aceita a
+sintaxe de CSS filter e o renderer já a usa, então é o item mais barato da lista
+e o único que ninguém mais tem.
 
 **No radar:** snap magnético entre clipes ao arrastar, e o arrasto empurrar o
 vizinho em vez de recusar — os dois deixam o gesto mais parecido com o CapCut,

@@ -42,9 +42,34 @@ export function PropsPanel({ layer, onChange }: PropsPanelProps) {
         </>
       ) : (
         <>
-          <NumField label="Escala base" value={layer.fit ?? 0.8} step={0.05} onChange={v => set({ fit: v })} />
+          {layer.type !== 'audio' && (
+            <NumField label="Escala base" value={layer.fit} step={0.05} onChange={v => set({ fit: v })} />
+          )}
 
-          {layer.type === 'video' && (
+          {(layer.type === 'video' || layer.type === 'audio') && (
+            <Field label={`Volume — ${Math.round(layer.volume * 100)}%`}>
+              <div className="row">
+                <input
+                  className="slider"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={layer.volume}
+                  onChange={e => set({ volume: parseFloat(e.target.value) })}
+                />
+                <button
+                  className={`btn btn-sm${layer.mute ? ' on' : ''}`}
+                  onClick={() => set({ mute: !layer.mute })}
+                  title={layer.mute ? 'Reativar som' : 'Silenciar'}
+                >
+                  {layer.mute ? '🔇' : '🔊'}
+                </button>
+              </div>
+            </Field>
+          )}
+
+          {(layer.type === 'video' || layer.type === 'audio') && (
             <Field label={`Trim — fonte tem ${layer.sourceDuration.toFixed(2)}s`}>
               <div className="row">
                 <input

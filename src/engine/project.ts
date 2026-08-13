@@ -1,7 +1,8 @@
 import { PRESETS } from './presets.ts';
 import { DISPLAY_FONT } from './renderer.ts';
 import type {
-  Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer, TimeSpan, VideoLayer,
+  AudioLayer, Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer,
+  TimeSpan, VideoLayer, VisualLayer,
 } from './types.ts';
 
 export type {
@@ -154,12 +155,14 @@ const round = (n: number) => Math.round(n * 1000) / 1000;
  * A ordenação é estável, então clipes na mesma faixa mantêm a ordem do array.
  * Não importa qual: eles não se sobrepõem, logo nunca há dois no mesmo quadro.
  */
-const drawOrders = new WeakMap<Project, Layer[]>();
+const drawOrders = new WeakMap<Project, VisualLayer[]>();
 
-export function drawOrder(project: Project): Layer[] {
+export function drawOrder(project: Project): VisualLayer[] {
   let order = drawOrders.get(project);
   if (!order) {
-    order = [...project.layers].sort((a, b) => a.track - b.track);
+    order = project.layers
+      .filter((l): l is VisualLayer => l.type !== 'audio')
+      .sort((a, b) => a.track - b.track);
     drawOrders.set(project, order);
   }
   return order;
@@ -252,10 +255,40 @@ export function makeVideoLayer(
     sourceDuration,
     video,
     mediaId,
+    volume: 1,
+    mute: false,
     x: 0,
     y: 0,
     track: 0,
     fit: 1,
+    effects: [],
+    ...overrides,
+  };
+}
+
+export function makeAudioLayer(
+  audio: HTMLAudioElement,
+  mediaId: string,
+  overrides: Partial<AudioLayer> = {},
+): AudioLayer {
+  const sourceDuration = audio.duration;
+  return {
+    id: nextId(),
+    type: 'audio',
+    name: 'Áudio',
+    start: 0,
+    // Áudio costuma ser música de fundo: entra inteiro, ao contrário do vídeo
+    // (que é limitado a 5s pra você não cobrir a composição sem querer).
+    duration: sourceDuration,
+    trimStart: 0,
+    sourceDuration,
+    audio,
+    mediaId,
+    x: 0,
+    y: 0,
+    track: 0,
+    volume: 1,
+    mute: false,
     effects: [],
     ...overrides,
   };

@@ -12,7 +12,7 @@
  */
 
 import type {
-  Effect, ImageLayer, Layer, Project, TextLayer, VideoLayer,
+  AudioLayer, Effect, ImageLayer, Layer, Project, TextLayer, VideoLayer,
 } from '../src/engine/types.ts';
 
 /** ImageBitmap falso: os testes só precisam saber se foi liberado. */
@@ -75,6 +75,22 @@ export function videoLayer(over: Partial<VideoLayer> = {}): VideoLayer {
     start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [], fit: 1,
     trimStart: 0, sourceDuration: 10,
     video: fakeVideo(), mediaId: 'media-video',
+    volume: 1, mute: false,
+    ...over,
+  };
+}
+
+export function fakeAudio(init: FakeVideoInit = {}): HTMLAudioElement {
+  return fakeVideo(init) as unknown as HTMLAudioElement;
+}
+
+export function audioLayer(over: Partial<AudioLayer> = {}): AudioLayer {
+  return {
+    id: 4, type: 'audio', name: 'Áudio',
+    start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [],
+    trimStart: 0, sourceDuration: 30,
+    audio: fakeAudio(), mediaId: 'media-audio',
+    volume: 1, mute: false,
     ...over,
   };
 }

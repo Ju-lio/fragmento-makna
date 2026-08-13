@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
-import { defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer } from '../engine/project.ts';
+import {
+  defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
+} from '../engine/project.ts';
 import { compactTracks, splitLayer, topTrack } from '../engine/project.ts';
 import { History } from '../engine/history.ts';
 import {
@@ -15,6 +17,7 @@ import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
+import { attachAudioElement, syncSoundLayers, stopAllSound } from '../engine/audioSync.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
@@ -177,16 +180,30 @@ export default function App() {
     // The canvas font must be fetched explicitly; repaint once it lands.
     ensureDisplayFont().then(() => player.invalidate());
 
-    // Video elements must not keep rolling once the transport stops.
+    // Nem vídeo nem som podem continuar rolando depois que o transporte para.
     const unsubState = player.onState(p => {
-      if (!p.playing) pauseAllVideo(projectRef.current);
+      if (!p.playing) {
+        pauseAllVideo(projectRef.current);
+        stopAllSound(projectRef.current.layers);
+      }
+    });
+
+    /**
+     * O som anda no tick, não no quadro desenhado.
+     *
+     * `onFrame` é pulado quando nada mudou na tela — que é exatamente o
+     * momento em que a música tem que continuar tocando. Amarrar som a
+     * repintura faria a trilha travar num trecho parado.
+     */
+    const unsubTick = player.onTick(t => {
+      syncSoundLayers(projectRef.current.layers, t, player.playing);
     });
 
     // ?t=1.6 opens the editor parked at that timestamp.
     const t = parseFloat(new URLSearchParams(location.search).get('t') ?? '');
     if (Number.isFinite(t)) player.seek(t);
 
-    return () => { unsubState(); player.stop(); };
+    return () => { unsubState(); unsubTick(); player.stop(); };
   }, []);
 
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 1600); };
@@ -253,6 +270,16 @@ export default function App() {
 
   /** Monta o elemento certo pro tipo do arquivo e devolve uma layer pronta. */
   const attachMedia = (type: string, url: string, mediaId: string, name: string) => {
+    if (type.startsWith('audio/')) {
+      const audio = attachAudioElement(new Audio());
+      audio.addEventListener('loadedmetadata', () => {
+        addLayer(makeAudioLayer(audio, mediaId, { name, start: +player.t.toFixed(2) }));
+      }, { once: true });
+      audio.addEventListener('error', () => flash('Não consegui abrir esse áudio'), { once: true });
+      audio.src = url;
+      return;
+    }
+
     if (type.startsWith('video/')) {
       const video = attachVideoElement(document.createElement('video'));
       video.addEventListener('loadedmetadata', () => {
@@ -409,7 +436,7 @@ export default function App() {
 
         <button className="btn" onClick={addText}>+ TEXTO</button>
         <button className="btn" onClick={() => fileRef.current?.click()}>+ MÍDIA</button>
-        <input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={onFile} />
+        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={onFile} />
 
         <span className="topbar-sep" />
         <button className="btn" onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)">↶</button>

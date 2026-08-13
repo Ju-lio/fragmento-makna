@@ -598,3 +598,32 @@
 @media (max-width: 900px) {
   .sidebar { flex-basis: 240px; }
 }
+
+/* --- controle deslizante (volume) --- */
+.slider {
+  flex: 1;
+  height: 16px;
+  appearance: none;
+  background: var(--void);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.5);
+}
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 12px;
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  cursor: ew-resize;
+}
+.slider::-moz-range-thumb {
+  width: 10px;
+  height: 12px;
+  border-radius: 0;
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  cursor: ew-resize;
+}
+
+/* Clipe de som: cor própria, porque o que ele faz na composição é outra coisa. */
+.clip-audio { background: #7fb8d4; }

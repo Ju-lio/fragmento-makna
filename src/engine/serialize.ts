@@ -19,7 +19,7 @@
 
 import { BASE_STATE } from './effects.ts';
 import type {
-  AnimProp, Effect, ImageLayer, Layer, Project, TextLayer, Track, VideoLayer,
+  AnimProp, AudioLayer, Effect, ImageLayer, Layer, Project, TextLayer, Track, VideoLayer,
 } from './types.ts';
 
 /**
@@ -27,7 +27,12 @@ import type {
  * ordem do array era a ordem de desenho — então a migração é `track = índice`,
  * o que preserva exatamente o que o projeto mostrava.
  */
-export const PROJECT_FORMAT = 2;
+/**
+ * 2 → 3: layers de som ganharam `volume`/`mute`, e existe o tipo `audio`. Um
+ * projeto do formato 2 não tinha som nenhum, então a migração é só o padrão
+ * (volume cheio, sem mudo) — não há informação a recuperar.
+ */
+export const PROJECT_FORMAT = 3;
 
 export interface SerializedProject {
   format: number;
@@ -49,13 +54,19 @@ interface SerializedBase {
   effects: Effect[];
 }
 
+interface SerializedSound {
+  volume: number;
+  mute: boolean;
+  mediaId: string;
+  trimStart: number;
+  sourceDuration: number;
+}
+
 export type SerializedLayer =
   | (SerializedBase & { type: 'text'; text: string; size: number; color: string; font: string })
   | (SerializedBase & { type: 'image'; fit: number; mediaId: string })
-  | (SerializedBase & {
-      type: 'video'; fit: number; mediaId: string;
-      trimStart: number; sourceDuration: number;
-    });
+  | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
+  | (SerializedBase & SerializedSound & { type: 'audio' });
 
 /** Um elemento pronto pra uma layer de mídia, resolvido a partir do id. */
 export type MediaResolver = (mediaId: string) => HTMLImageElement | HTMLVideoElement | null;
@@ -99,10 +110,14 @@ function serializeLayer(l: Layer): SerializedLayer {
   if (l.type === 'image') {
     return { ...base, type: 'image', fit: l.fit, mediaId: l.mediaId };
   }
-  return {
-    ...base, type: 'video', fit: l.fit, mediaId: l.mediaId,
+
+  const sound: SerializedSound = {
+    volume: l.volume, mute: l.mute, mediaId: l.mediaId,
     trimStart: l.trimStart, sourceDuration: l.sourceDuration,
   };
+
+  if (l.type === 'audio') return { ...base, ...sound, type: 'audio' };
+  return { ...base, ...sound, type: 'video', fit: l.fit };
 }
 
 /**
@@ -207,7 +222,7 @@ function readLayer(
     } satisfies TextLayer;
   }
 
-  if (l.type !== 'image' && l.type !== 'video') return null;
+  if (l.type !== 'image' && l.type !== 'video' && l.type !== 'audio') return null;
 
   const mediaId = str(l.mediaId, '');
   const element = mediaId ? resolve(mediaId) : null;
@@ -227,15 +242,27 @@ function readLayer(
     } satisfies ImageLayer;
   }
 
-  return {
-    ...base, type: 'video',
-    fit: num(l.fit, 1),
+  const media = element as HTMLMediaElement;
+  const sound = {
     mediaId,
-    video: element as HTMLVideoElement,
     trimStart: num(l.trimStart, 0),
     // Sem a duração da fonte o trim perde o limite e a layer pode ser
     // esticada além do arquivo; o próprio elemento sabe responder isso.
-    sourceDuration: num(l.sourceDuration, (element as HTMLVideoElement).duration || 0),
+    sourceDuration: num(l.sourceDuration, media.duration || 0),
+    // Preso em 0..1: um volume fora da faixa é recusado pelo elemento com uma
+    // exceção, que derrubaria a abertura do projeto inteiro.
+    volume: Math.max(0, Math.min(1, num(l.volume, 1))),
+    mute: l.mute === true,
+  };
+
+  if (l.type === 'audio') {
+    return { ...base, ...sound, type: 'audio', audio: element as HTMLAudioElement } satisfies AudioLayer;
+  }
+
+  return {
+    ...base, ...sound, type: 'video',
+    fit: num(l.fit, 1),
+    video: element as HTMLVideoElement,
   } satisfies VideoLayer;
 }
 

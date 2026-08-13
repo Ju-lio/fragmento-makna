@@ -105,8 +105,16 @@ export const formatBytes = (b: number): string =>
  * lembrar de incluir aqui todo campo novo que afete a imagem.
  */
 export function renderSignature(project: Project): string {
-  // Percorre na ordem de DESENHO: reordenar o array sem mudar as faixas não
-  // muda um pixel, então não pode jogar o trecho pré-renderizado fora.
+  /**
+   * Percorre na ordem de DESENHO, que já exclui as layers de áudio.
+   *
+   * Duas consequências de graça, as duas desejáveis: reordenar o array sem
+   * mudar as faixas não muda um pixel e não joga o pré-render fora; e mexer no
+   * volume — ou adicionar uma trilha inteira — também não, porque som não
+   * desenha. Um cache de quadros que se invalida ao você ajustar o volume da
+   * música seria absurdo, e é exatamente o que aconteceria se a assinatura
+   * varresse `project.layers` cru.
+   */
   const layers = drawOrder(project).map(l => {
     // Campo a campo e por tipo: assim o compilador cobra o que só existe em
     // algumas layers, e um campo novo no modelo não entra aqui por acidente.

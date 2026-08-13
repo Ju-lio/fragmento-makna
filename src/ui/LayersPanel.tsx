@@ -1,6 +1,8 @@
 import type { Layer, LayerType, Project } from '../engine/types.ts';
 
-const TAGS: Record<LayerType, string> = { video: 'VID', image: 'IMG', text: 'TXT' };
+const TAGS: Record<LayerType, string> = {
+  video: 'VID', image: 'IMG', text: 'TXT', audio: 'SOM',
+};
 
 interface LayersPanelProps {
   project: Project;
