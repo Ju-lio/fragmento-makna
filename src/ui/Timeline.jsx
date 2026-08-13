@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.js';
+import { trimLeft, trimRight } from '../engine/project.js';
 
 /**
  * Timeline + transport.
@@ -48,6 +49,29 @@ export function Timeline({ project, selectedId, onSelect, onChange }) {
   const startScrub = e => {
     scrub(e);
     const move = ev => scrub(ev);
+    const up = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  };
+
+  /** Drag an edge to trim. The maths lives in project.js so it can be tested. */
+  const startTrim = (e, layer, edge) => {
+    e.preventDefault();
+    e.stopPropagation();          // don't also start a move drag
+    onSelect(layer.id);
+
+    const rect = rulerRef.current.getBoundingClientRect();
+    const startX = e.clientX;
+    const orig = { ...layer };
+
+    const move = ev => {
+      const delta = ((ev.clientX - startX) / rect.width) * player.duration;
+      const patch = edge === 'left' ? trimLeft(orig, delta) : trimRight(orig, delta);
+      if (patch) onChange(layer.id, patch);
+    };
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
@@ -123,6 +147,7 @@ export function Timeline({ project, selectedId, onSelect, onChange }) {
                 className={
                   'clip' +
                   (layer.type === 'image' ? ' clip-img' : '') +
+                  (layer.type === 'video' ? ' clip-video' : '') +
                   (layer.id === selectedId ? ' clip-sel' : '')
                 }
                 style={{
@@ -132,7 +157,15 @@ export function Timeline({ project, selectedId, onSelect, onChange }) {
                 onPointerDown={e => startClipDrag(e, layer)}
                 title={layer.name}
               >
+                <span
+                  className="clip-handle clip-handle-l"
+                  onPointerDown={e => startTrim(e, layer, 'left')}
+                />
                 <span className="clip-name">{layer.name}</span>
+                <span
+                  className="clip-handle clip-handle-r"
+                  onPointerDown={e => startTrim(e, layer, 'right')}
+                />
               </div>
             </div>
           ))}

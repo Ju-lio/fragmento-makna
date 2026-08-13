@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { player } from '../engine/player.js';
 import { viewport } from '../engine/viewport.js';
 import { drawFrame } from '../engine/renderer.js';
+import { syncVideoLayers } from '../engine/videoSync.js';
 import { StageBar } from './StageBar.jsx';
 
 /**
@@ -23,7 +24,12 @@ export function Stage({ project, onResize }) {
   // --- paint loop -------------------------------------------------------
   useEffect(() => {
     const ctx = canvasRef.current.getContext('2d');
-    const unsub = player.onFrame(t => drawFrame(ctx, projectRef.current, t));
+    const unsub = player.onFrame(t => {
+      // Nudge the <video> elements onto the clock, then paint whatever
+      // frame they are currently holding.
+      syncVideoLayers(projectRef.current, t);
+      drawFrame(ctx, projectRef.current, t);
+    });
     player.invalidate();
     return unsub;
   }, []);

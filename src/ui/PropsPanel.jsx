@@ -1,4 +1,5 @@
 import { NumField, TextField, Field } from './Win.jsx';
+import { maxDuration } from '../engine/project.js';
 
 const SWATCHES = ['#f7efdc', '#f0c04a', '#e2615c', '#64c48a', '#6ba9d6', '#c9a6e8', '#241a33'];
 
@@ -34,7 +35,43 @@ export function PropsPanel({ layer, onChange }) {
           </Field>
         </>
       ) : (
-        <NumField label="Escala base" value={layer.fit ?? 0.8} step={0.05} onChange={v => set({ fit: v })} />
+        <>
+          <NumField label="Escala base" value={layer.fit ?? 0.8} step={0.05} onChange={v => set({ fit: v })} />
+
+          {layer.type === 'video' && (
+            <Field label={`Trim — fonte tem ${layer.sourceDuration.toFixed(2)}s`}>
+              <div className="row">
+                <input
+                  className="inp"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max={Math.max(0, layer.sourceDuration - 0.1)}
+                  value={layer.trimStart ?? 0}
+                  onChange={e => {
+                    const trimStart = clamp(parseFloat(e.target.value) || 0, 0, layer.sourceDuration - 0.1);
+                    // Shortening the tail must not leave the clip reading past the file's end.
+                    const room = layer.sourceDuration - trimStart;
+                    set({ trimStart, duration: Math.min(layer.duration, room) });
+                  }}
+                />
+                <input
+                  className="inp"
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  max={maxDuration(layer)}
+                  value={layer.duration}
+                  onChange={e => {
+                    const d = clamp(parseFloat(e.target.value) || 0.1, 0.1, maxDuration(layer));
+                    set({ duration: d });
+                  }}
+                />
+              </div>
+              <div className="hint">início na fonte / duração</div>
+            </Field>
+          )}
+        </>
       )}
 
       <div className="row">
@@ -44,8 +81,16 @@ export function PropsPanel({ layer, onChange }) {
 
       <div className="row">
         <NumField label="Início (s)" value={layer.start} step={0.1} min={0} onChange={v => set({ start: v })} />
-        <NumField label="Duração (s)" value={layer.duration} step={0.1} min={0.1} onChange={v => set({ duration: v })} />
+        <NumField
+          label="Duração (s)"
+          value={layer.duration}
+          step={0.1}
+          min={0.1}
+          onChange={v => set({ duration: clamp(v, 0.1, maxDuration(layer)) })}
+        />
       </div>
     </div>
   );
 }
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));

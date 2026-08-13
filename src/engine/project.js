@@ -33,6 +33,70 @@ export function makeTextLayer(overrides = {}) {
   };
 }
 
+/** Longest a layer can run given how much source material is left after the trim. */
+export function maxDuration(layer) {
+  if (!Number.isFinite(layer.sourceDuration)) return Infinity;
+  return Math.max(MIN_CLIP, layer.sourceDuration - (layer.trimStart || 0));
+}
+
+export const MIN_CLIP = 0.1;
+
+/**
+ * Dragging a clip's right edge just changes how long it plays.
+ * Returns a patch, or null when the drag is a no-op.
+ */
+export function trimRight(layer, deltaSec) {
+  const wanted = layer.duration + deltaSec;
+  const duration = Math.max(MIN_CLIP, Math.min(wanted, maxDuration(layer)));
+  return duration === layer.duration ? null : { duration: round(duration) };
+}
+
+/**
+ * Dragging the left edge moves the clip AND the point it starts reading from,
+ * so the footage under the cursor stays put instead of sliding.
+ */
+export function trimLeft(layer, deltaSec) {
+  const trimStart = layer.trimStart || 0;
+  let d = deltaSec;
+
+  // Can't read before the start of the source...
+  if (Number.isFinite(layer.sourceDuration)) d = Math.max(d, -trimStart);
+  // ...can't push the clip off the front of the timeline...
+  d = Math.max(d, -layer.start);
+  // ...and can't shrink past the minimum length.
+  d = Math.min(d, layer.duration - MIN_CLIP);
+
+  if (Math.abs(d) < 1e-4) return null;
+
+  const patch = {
+    start: round(layer.start + d),
+    duration: round(layer.duration - d),
+  };
+  if (Number.isFinite(layer.sourceDuration)) patch.trimStart = round(trimStart + d);
+  return patch;
+}
+
+const round = n => Math.round(n * 1000) / 1000;
+
+export function makeVideoLayer(video, overrides = {}) {
+  const sourceDuration = video.duration;
+  return {
+    id: nextId(),
+    type: 'video',
+    name: 'Vídeo',
+    start: 0,
+    duration: Math.min(sourceDuration, 5),
+    trimStart: 0,
+    sourceDuration,
+    video,
+    x: 0,
+    y: 0,
+    fit: 1,
+    effects: [],
+    ...overrides,
+  };
+}
+
 export function makeImageLayer(img, overrides = {}) {
   return {
     id: nextId(),

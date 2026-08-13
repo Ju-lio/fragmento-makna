@@ -1,6 +1,7 @@
 import interBlackUrl from '../fonts/InterBlack.ttf';
+import { DISPLAY_FAMILY } from './renderer.js';
 
-export const DISPLAY_FAMILY = 'InterBlack';
+export { DISPLAY_FAMILY };
 
 /**
  * Canvas text does NOT trigger CSS font loading — the browser only fetches an

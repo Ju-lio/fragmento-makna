@@ -1,6 +1,8 @@
 import { resolveState } from './effects.js';
-import { DISPLAY_FAMILY } from './fonts.js';
 
+/** Kept here, not in fonts.js, so this module stays free of browser-only asset
+ *  imports and the data model above it can be tested in plain node. */
+export const DISPLAY_FAMILY = 'InterBlack';
 export const DISPLAY_FONT = `${DISPLAY_FAMILY}, "Arial Black", Impact, system-ui, sans-serif`;
 
 /**
@@ -33,7 +35,8 @@ export function drawFrame(ctx, project, t) {
     ctx.filter = filters.length ? filters.join(' ') : 'none';
 
     if (layer.type === 'text') drawText(ctx, layer, st);
-    else if (layer.type === 'image' && layer.img) drawImage(ctx, layer);
+    else if (layer.type === 'image' && layer.img) drawSource(ctx, layer, layer.img);
+    else if (layer.type === 'video' && layer.video) drawVideo(ctx, layer);
 
     ctx.restore();
   }
@@ -59,11 +62,19 @@ function drawText(ctx, layer, st) {
   if (canSpace) ctx.letterSpacing = '0px';
 }
 
-function drawImage(ctx, layer) {
+function drawVideo(ctx, layer) {
+  const v = layer.video;
+  // HAVE_CURRENT_DATA: before this, drawImage would throw or paint nothing.
+  if (v.readyState < 2) return;
+  drawSource(ctx, layer, v, v.videoWidth, v.videoHeight);
+}
+
+/** Draws an image/video centred on the origin, scaled to fit the composition. */
+function drawSource(ctx, layer, source, srcW = source.width, srcH = source.height) {
+  if (!srcW || !srcH) return;
   const { width: W, height: H } = ctx.canvas;
-  const img = layer.img;
-  const s = Math.min(W / img.width, H / img.height) * (layer.fit ?? 0.8);
-  const w = img.width * s;
-  const h = img.height * s;
-  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  const s = Math.min(W / srcW, H / srcH) * (layer.fit ?? 0.8);
+  const w = srcW * s;
+  const h = srcH * s;
+  ctx.drawImage(source, -w / 2, -h / 2, w, h);
 }

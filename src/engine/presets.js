@@ -70,7 +70,7 @@ export const PRESETS = {
   },
 };
 
-export const SCHEMA_DOC = `# Schema de efeitos — MotionEditor
+export const SCHEMA_DOC = `# Schema de efeitos — Fragmento
 
 Um efeito e' JSON puro (sem codigo). Formato:
 

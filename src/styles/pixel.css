@@ -287,4 +287,6 @@ textarea.inp {
   letter-spacing: 0.06em;
   flex: 0 0 auto;
 }
-.tag-img { background: var(--mint); color: var(--ink); }
+.tag-image { background: var(--mint); color: var(--ink); }
+.tag-video { background: #b98ad6; color: var(--ink); }
+.tag-text  { background: var(--plum); color: var(--paper); }
