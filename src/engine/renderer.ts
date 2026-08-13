@@ -1,4 +1,5 @@
 import { resolveState } from './effects.ts';
+import { drawOrder } from './project.ts';
 import type { ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
 
 export interface DrawOptions {
@@ -57,7 +58,9 @@ export function drawFrame(
   ctx.fillStyle = project.background || '#0b0c10';
   ctx.fillRect(0, 0, W, H);
 
-  for (const layer of project.layers) {
+  // Ordem de desenho por faixa, não a ordem do array: várias layers dividem
+  // uma faixa agora, e é a faixa que decide quem fica por cima.
+  for (const layer of drawOrder(project)) {
     if (t < layer.start || t > layer.start + layer.duration) continue;
 
     const st = resolveState(layer, t);

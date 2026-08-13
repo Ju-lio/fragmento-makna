@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clipDragPlan, flipOrder, moveItem } from '../src/engine/trackDrag.ts';
+import { clipDragPlan, flipOrder } from '../src/engine/trackDrag.ts';
+import type { Occupant } from '../src/engine/trackDrag.ts';
 
 /** Um gesto parado: 100px por segundo, faixas de 28px, clipe de 2s em t=1. */
 const base = {
@@ -8,10 +9,11 @@ const base = {
   pxPerSecond: 100,
   trackPitch: 28,
   start: 1,
-  row: 1,
+  track: 2,
   span: 2,
   duration: 10,
-  lastRow: 3,
+  maxTrack: 3,
+  others: [] as Occupant[],
 };
 
 const drag = (over: Partial<typeof base> = {}) => clipDragPlan({ ...base, ...over });
@@ -19,7 +21,7 @@ const drag = (over: Partial<typeof base> = {}) => clipDragPlan({ ...base, ...ove
 // --- movimento no tempo -------------------------------------------------
 
 test('parado, o plano é exatamente onde o clipe já está', () => {
-  assert.deepEqual(drag(), { start: 1, row: 1 });
+  assert.deepEqual(drag(), { start: 1, track: 2, valid: true });
 });
 
 test('arrastar na horizontal converte pixel em segundo', () => {
@@ -48,35 +50,66 @@ test('sem escala, o clipe fica onde está em vez de saltar pra zero', () => {
 // --- troca de faixa -----------------------------------------------------
 
 test('a faixa é discreta: encaixa na mais próxima, nunca no meio', () => {
-  assert.equal(drag({ dy: 10 }).row, 1, 'menos de meia faixa não conta');
-  assert.equal(drag({ dy: 15 }).row, 2, 'passou da metade, cai na de baixo');
-  assert.equal(drag({ dy: 28 }).row, 2, 'uma faixa exata');
-  assert.equal(drag({ dy: 56 }).row, 3, 'duas faixas');
+  assert.equal(drag({ dy: 10 }).track, 2, 'menos de meia faixa não conta');
+  assert.equal(drag({ dy: 15 }).track, 3, 'passou da metade, muda');
+  assert.equal(drag({ dy: 28 }).track, 3, 'uma faixa exata');
+  assert.equal(drag({ dy: -28 }).track, 1);
 });
 
-test('arrastar pra cima sobe de faixa', () => {
-  assert.equal(drag({ dy: -28 }).row, 0);
-});
-
-test('a faixa é limitada às que existem', () => {
-  assert.equal(drag({ dy: -9999 }).row, 0, 'não sobe além da primeira');
-  assert.equal(drag({ dy: 9999 }).row, 3, 'nem desce além da última');
+test('a faixa é limitada às que aceitam o clipe', () => {
+  assert.equal(drag({ dy: -9999 }).track, 0, 'não desce da faixa 0');
+  assert.equal(drag({ dy: 9999 }).track, 3, 'nem passa da mais alta permitida');
 });
 
 test('as duas direções valem no mesmo gesto', () => {
-  // É o ponto da feature: reposicionar no tempo e reordenar de uma vez só.
-  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, row: 2 });
+  // É o ponto da feature: reposicionar no tempo e trocar de faixa de uma vez.
+  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 3, valid: true });
 });
 
-test('com uma layer só não há pra onde trocar de faixa', () => {
-  assert.equal(drag({ row: 0, lastRow: 0, dy: 999 }).row, 0);
+// --- colisão ------------------------------------------------------------
+
+const ocupante = (over: Partial<Occupant> = {}): Occupant =>
+  ({ track: 2, start: 5, duration: 2, ...over });
+
+test('cair em cima de outro clipe da mesma faixa é inválido', () => {
+  // Sem isso, dois clipes ocupariam o mesmo instante e a faixa deixaria de
+  // ter um dono por quadro — que é a invariante que sustenta a ordem de desenho.
+  const plan = drag({ dx: 450, others: [ocupante()] });   // clipe vai pra 5.5..7.5
+  assert.equal(plan.valid, false);
+});
+
+test('o mesmo lugar em outra faixa é livre', () => {
+  const plan = drag({ dx: 450, dy: -28, others: [ocupante({ track: 2 })] });
+  assert.equal(plan.track, 1);
+  assert.equal(plan.valid, true, 'a colisão é por faixa, não por instante');
+});
+
+test('encostar exatamente na ponta do vizinho é válido', () => {
+  // É o caso NORMAL: é o que um corte produz, e o que empilhar clipes exige.
+  const vizinho = ocupante({ start: 3, duration: 2 });   // ocupa 3..5
+  assert.equal(drag({ dx: 400, others: [vizinho] }).valid, true, 'clipe começa em 5');
+
+  const antes = ocupante({ start: 3, duration: 2 });
+  assert.equal(drag({ dx: 0, others: [antes] }).valid, true, 'clipe 1..3 encosta em 3');
+});
+
+test('sobreposição de um instante só já invalida', () => {
+  const vizinho = ocupante({ start: 2.9, duration: 2 });
+  assert.equal(drag({ dx: 0, others: [vizinho] }).valid, false, 'clipe 1..3 invade 2.9');
+});
+
+test('o plano de posição é calculado mesmo quando inválido', () => {
+  // A interface precisa mostrar ONDE cairia pra explicar por que não pode.
+  const plan = drag({ dx: 450, others: [ocupante()] });
+  assert.equal(plan.start, 5.5);
+  assert.equal(plan.track, 2);
+  assert.equal(plan.valid, false);
 });
 
 // --- ordem de desenho vs. ordem visual ----------------------------------
 
-test('flipOrder espelha a lista: o último a desenhar é a faixa de cima', () => {
-  // 4 layers: layers[3] desenha por último (fica na frente) e por isso aparece
-  // na faixa 0, a de cima.
+test('flipOrder espelha: a faixa mais alta é a linha de cima', () => {
+  // 4 linhas na tela (faixas 0..3): a faixa 3 desenha na frente e aparece em cima.
   assert.equal(flipOrder(3, 4), 0);
   assert.equal(flipOrder(0, 4), 3);
 });
@@ -84,47 +117,4 @@ test('flipOrder espelha a lista: o último a desenhar é a faixa de cima', () =>
 test('flipOrder é a própria inversa', () => {
   // É o que permite uma função só pros dois sentidos, sem risco de trocá-las.
   for (const i of [0, 1, 2, 3]) assert.equal(flipOrder(flipOrder(i, 4), 4), i);
-});
-
-// --- reordenação --------------------------------------------------------
-
-test('moveItem empurra o miolo em vez de trocar as pontas', () => {
-  // Um swap devolveria [D,B,C,A] e embaralharia o que não foi arrastado.
-  assert.deepEqual(moveItem(['A', 'B', 'C', 'D'], 0, 3), ['B', 'C', 'D', 'A']);
-  assert.deepEqual(moveItem(['A', 'B', 'C', 'D'], 3, 0), ['D', 'A', 'B', 'C']);
-});
-
-test('moveItem para o vizinho troca só os dois', () => {
-  assert.deepEqual(moveItem(['A', 'B', 'C'], 1, 2), ['A', 'C', 'B']);
-});
-
-test('moveItem no mesmo lugar não altera nada', () => {
-  assert.deepEqual(moveItem(['A', 'B', 'C'], 1, 1), ['A', 'B', 'C']);
-});
-
-test('moveItem não muta a lista original', () => {
-  const orig = ['A', 'B', 'C'];
-  moveItem(orig, 0, 2);
-  assert.deepEqual(orig, ['A', 'B', 'C'], 'o estado do React não pode ser mutado no lugar');
-});
-
-test('moveItem ignora índice de origem inexistente', () => {
-  assert.deepEqual(moveItem(['A', 'B'], 5, 0), ['A', 'B']);
-});
-
-test('moveItem prende o destino dentro da lista', () => {
-  assert.deepEqual(moveItem(['A', 'B', 'C'], 0, 99), ['B', 'C', 'A']);
-});
-
-// --- as duas peças juntas -----------------------------------------------
-
-test('soltar na faixa de cima leva a layer pra frente de todas', () => {
-  // O caminho completo: a faixa visual vira índice de desenho, e o índice de
-  // desenho vira a nova ordem do projeto.
-  const layers = ['fundo', 'meio', 'topo'];   // ordem de desenho
-  const arrastada = 'fundo';
-
-  const from = layers.indexOf(arrastada);              // 0
-  const to = flipOrder(0, layers.length);              // faixa 0 -> índice 2
-  assert.deepEqual(moveItem(layers, from, to), ['meio', 'topo', 'fundo']);
 });

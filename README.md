@@ -149,7 +149,56 @@ layers existentes, pra nunca tampar um título sem querer. Novidades:
 - Ao excluir uma layer de vídeo, o `<video>` é pausado e solto
   (`URL.revokeObjectURL` + `load()`), pra não vazar decoder
 
-## Arrastar layers entre faixas
+## Faixas com vários clipes
+
+O modelo era uma layer por faixa. Virou o do CapCut: **uma faixa carrega vários
+clipes**, desde que não se sobreponham no tempo.
+
+A mudança cabe num campo. Cada layer ganhou `track: number` — número maior
+desenha por cima — e essa invariante de não-sobreposição é o que faz a coisa
+toda ficar simples: como nunca há dois clipes ativos no mesmo instante da mesma
+faixa, a ordem *dentro* de uma faixa não importa pro desenho. A alternativa
+(aninhar `tracks: { clips: [] }[]`) teria mexido em serialização, assinatura de
+cache, trim, arrasto e todos os painéis, pra chegar no mesmo resultado.
+
+A ordem de desenho passou a ser calculada, não a ordem do array — e memorizada
+por referência do projeto, como `signatureOf`. Ordenar dentro do `drawFrame`
+seria correto e alocaria um array por quadro, 60 vezes por segundo, no caminho
+quente que o resto do editor faz questão de manter limpo.
+
+Três coisas que a mudança obrigou a arrumar:
+
+- **O arrasto ganhou colisão.** Cair em cima de outro clipe é recusado, e o
+  indicador fica vermelho *durante* o gesto — descobrir que não valeu só depois
+  de soltar é o que faz um arrasto parecer quebrado.
+- **O trim ganhou vizinhos.** Esticar a alça direita comeria o clipe seguinte;
+  agora `freeWindow` acha o espaço livre na faixa e as alças param nele.
+- **As faixas se compactam.** Tirar o único clipe de uma faixa deixaria uma
+  linha fantasma, e o editor acumularia faixas vazias a cada gesto.
+
+Existe sempre uma faixa vazia no topo. Não é enfeite: sem ela não haveria pra
+onde arrastar um clipe que está numa faixa cheia, e faixas novas seriam
+impossíveis de criar depois que tudo se juntasse. Ela tem a mesma altura das
+outras de propósito — o cálculo do arrasto mede o espaçamento entre as duas
+primeiras linhas e assume que vale pra todas.
+
+## Cortar no cursor (Ctrl+B)
+
+`splitLayer` divide um clipe em dois que se encostam exatamente: o primeiro
+termina onde o segundo começa. Em vídeo, a segunda metade **avança o
+`trimStart`** pelo tanto que a primeira mostrou — sem isso o corte repetiria o
+trecho que acabou de passar, que é o erro clássico dessa operação.
+
+Os efeitos são copiados, não compartilhados: as metades viram clipes
+independentes, e editar os efeitos de uma não pode mexer na outra.
+
+O corte é recusado quando alguma metade nasceria menor que `MIN_CLIP`. Um clipe
+de três milissegundos você não consegue nem pegar pra apagar, então é melhor não
+criá-lo. E age só no clipe **selecionado**, não em tudo sob o cursor: cortar
+cinco faixas de uma vez porque você errou o alvo é bem pior de desfazer do que
+cortar de novo.
+
+## Arrastar clipes na timeline
 
 Reordenar layers era feito por duas setas ▲▼ no painel lateral: um alvo pequeno,
 num painel diferente do que mostra o resultado, uma posição por clique. Agora se
@@ -186,9 +235,9 @@ Dois detalhes que não são preciosismo:
 
 - A altura da faixa é **medida do layout já aplicado**, não uma constante
   copiada do CSS. Mexer no CSS não desalinha o cálculo em silêncio.
-- A reordenação é `moveItem` (tira e enfia, empurrando o miolo), não um swap.
-  Arrastar da faixa 4 pra 0 tem que deslizar as três do meio pra baixo; um swap
-  trocaria as pontas e bagunçaria o que você nem tocou.
+- Posição e faixa são aplicadas numa edição só. Separar em duas colocaria dois
+  passos no histórico pro mesmo gesto, e um estado intermediário impossível (o
+  clipe na faixa nova, no instante velho) chegaria a existir.
 
 A matemática toda vive em `engine/trackDrag.ts`, fora do componente e sem DOM,
 porque errar ali reordena o projeto errado sem que nada acuse.
@@ -486,12 +535,17 @@ reordenação de layers, runtime de efeitos, 9 presets, viewport com zoom/fit/pa
 e resolução de render adaptativa, resolução de projeto, marcação de trecho
 (in/out), pré-render com cache de frames, export de frame PNG, **arrastar
 layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
-**undo/redo** e **autosave** (o projeto reabre sozinho, com a mídia). Base
-inteira em TypeScript `strict`, com 166 testes.
+**undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
+**faixas com vários clipes** e **corte no cursor** (Ctrl+B). Base inteira em
+TypeScript `strict`, com 189 testes.
 
 **Próximo:** export de vídeo via WebCodecs → efeitos CSS personalizáveis
-(abrir o vocabulário de filtros) → gizmo de transform e crop → múltiplos
-clipes por faixa → chroma key (shader WebGL) → áudio (uma trilha na v1).
+(abrir o vocabulário de filtros) → gizmo de transform e crop → chroma key
+(shader WebGL) → áudio (uma trilha na v1).
+
+**No radar:** snap magnético entre clipes ao arrastar, e o arrasto empurrar o
+vizinho em vez de recusar — os dois deixam o gesto mais parecido com o CapCut,
+mas nenhum é pré-requisito de nada.
 
 **No radar, ainda sem data:** atalhos de edição estilo CapCut (cortar no
 playhead, deletar, duplicar), responsividade mobile/touch — esse último é o

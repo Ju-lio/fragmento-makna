@@ -22,7 +22,12 @@ import type {
   AnimProp, Effect, ImageLayer, Layer, Project, TextLayer, Track, VideoLayer,
 } from './types.ts';
 
-export const PROJECT_FORMAT = 1;
+/**
+ * 1 → 2: cada layer ganhou `track`. No formato 1 uma layer era uma faixa, e a
+ * ordem do array era a ordem de desenho — então a migração é `track = índice`,
+ * o que preserva exatamente o que o projeto mostrava.
+ */
+export const PROJECT_FORMAT = 2;
 
 export interface SerializedProject {
   format: number;
@@ -40,6 +45,7 @@ interface SerializedBase {
   duration: number;
   x: number;
   y: number;
+  track: number;
   effects: Effect[];
 }
 
@@ -83,6 +89,7 @@ function serializeLayer(l: Layer): SerializedLayer {
     id: l.id, name: l.name,
     start: l.start, duration: l.duration,
     x: l.x, y: l.y,
+    track: l.track,
     effects: l.effects,
   };
 
@@ -150,10 +157,13 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
   const missingMedia: string[] = [];
   const layers: Layer[] = [];
 
-  for (const raw of Array.isArray(data.layers) ? data.layers : []) {
-    const layer = readLayer(raw, resolve, missingMedia);
+  const incoming = Array.isArray(data.layers) ? data.layers : [];
+  incoming.forEach((raw, index) => {
+    // O índice é a faixa padrão: é exatamente o que o formato 1 significava,
+    // quando uma layer era uma faixa e a ordem do array era a de desenho.
+    const layer = readLayer(raw, index, resolve, missingMedia);
     if (layer) layers.push(layer);
-  }
+  });
 
   return {
     project: {
@@ -167,7 +177,12 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
   };
 }
 
-function readLayer(raw: unknown, resolve: MediaResolver, missing: string[]): Layer | null {
+function readLayer(
+  raw: unknown,
+  defaultTrack: number,
+  resolve: MediaResolver,
+  missing: string[],
+): Layer | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const l = raw as Record<string, unknown>;
 
@@ -178,6 +193,7 @@ function readLayer(raw: unknown, resolve: MediaResolver, missing: string[]): Lay
     duration: num(l.duration, 1),
     x: num(l.x, 0),
     y: num(l.y, 0),
+    track: Math.max(0, Math.round(num(l.track, defaultTrack))),
     effects: readEffects(l.effects),
   };
 

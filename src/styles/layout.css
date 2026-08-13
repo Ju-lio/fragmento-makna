@@ -239,6 +239,11 @@
   background: var(--gold);
   box-shadow: inset 2px 2px 0 #ffe08a, inset -2px -2px 0 var(--gold-d);
 }
+.layer-track {
+  flex: 0 0 auto;
+  font-size: 8px;
+  color: var(--ink-mute);
+}
 .layer-name {
   flex: 1;
   min-width: 0;
@@ -380,6 +385,18 @@
   box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.5);
 }
 
+/*
+  A faixa vazia do topo, onde se solta um clipe pra abrir uma faixa nova.
+  MESMA altura das outras: o cálculo do arrasto mede o espaçamento entre as
+  duas primeiras linhas e assume que vale pra todas.
+*/
+.track-empty {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--plum-hi);
+  box-shadow: none;
+}
+
 .clip {
   position: absolute;
   top: 0;
@@ -415,6 +432,13 @@
     0 4px 0 rgba(0, 0, 0, 0.55);
 }
 
+/* Destino ocupado. Avisa DURANTE o gesto: descobrir que não valeu só depois
+   de soltar é o que faz um arrasto parecer quebrado. */
+.clip-blocked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /*
   Onde o clipe vai cair. Fica atrás dos clipes e não recebe ponteiro — durante
   um arrasto, um alvo que captura eventos rouba o `pointermove` e o gesto morre
@@ -432,6 +456,10 @@
   background: rgba(240, 192, 74, 0.12);
 }
 .track-drop.on { display: block; }
+.track-drop.blocked {
+  border-color: var(--coral);
+  background: rgba(226, 97, 92, 0.16);
+}
 .clip-img { background: var(--mint); }
 .clip-video { background: #b98ad6; }
 

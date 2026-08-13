@@ -189,3 +189,48 @@ test('mediaIdsOf não engasga com lixo', () => {
   assert.equal(mediaIdsOf({ layers: 'nada disso' }).size, 0);
   assert.equal(mediaIdsOf({ layers: [null, {}, { mediaId: 42 }, { mediaId: '' }] }).size, 0);
 });
+
+// --- migração de formato ------------------------------------------------
+
+test('projeto do formato 1 ganha faixas pelo índice do array', () => {
+  // No formato 1 uma layer era uma faixa e a ordem do array era a de desenho,
+  // então essa é a migração que preserva exatamente o que se via na tela.
+  const antigo = {
+    format: 1,
+    width: 1920, height: 1080, fps: 30, background: '#000',
+    layers: [
+      { type: 'text', name: 'fundo', text: 'A' },
+      { type: 'text', name: 'meio', text: 'B' },
+      { type: 'text', name: 'frente', text: 'C' },
+    ],
+  };
+
+  const { project: p } = deserializeProject(antigo, anyMedia);
+  assert.deepEqual(p.layers.map(l => l.track), [0, 1, 2]);
+  assert.equal(p.layers[2]?.name, 'frente', 'a última do array continua no topo');
+});
+
+test('a faixa salva vence o índice quando existe', () => {
+  const { project: p } = deserializeProject({
+    format: PROJECT_FORMAT,
+    layers: [{ type: 'text', name: 'A', track: 4 }, { type: 'text', name: 'B', track: 4 }],
+  }, anyMedia);
+
+  assert.deepEqual(p.layers.map(l => l.track), [4, 4], 'duas layers dividem a faixa');
+});
+
+test('faixa inválida no arquivo não vira NaN circulando pela engine', () => {
+  const { project: p } = deserializeProject({
+    format: PROJECT_FORMAT,
+    layers: [{ type: 'text', name: 'A', track: 'muito' }, { type: 'text', name: 'B', track: -3 }],
+  }, anyMedia);
+
+  assert.equal(p.layers[0]?.track, 0, 'cai no índice do array');
+  assert.equal(p.layers[1]?.track, 0, 'negativa é presa em zero');
+});
+
+test('a faixa sobrevive à ida e volta', () => {
+  const original = project([textLayer({ track: 3 }), textLayer({ id: 9, track: 3, start: 6 })]);
+  const { project: back } = deserializeProject(serializeProject(original), anyMedia);
+  assert.deepEqual(back.layers.map(l => l.track), [3, 3]);
+});

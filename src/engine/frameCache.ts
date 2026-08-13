@@ -1,3 +1,4 @@
+import { drawOrder } from './project.ts';
 import type { Project } from './types.ts';
 
 /**
@@ -89,10 +90,12 @@ export const formatBytes = (b: number): string =>
  * lembrar de incluir aqui todo campo novo que afete a imagem.
  */
 export function renderSignature(project: Project): string {
-  const layers = project.layers.map(l => {
+  // Percorre na ordem de DESENHO: reordenar o array sem mudar as faixas não
+  // muda um pixel, então não pode jogar o trecho pré-renderizado fora.
+  const layers = drawOrder(project).map(l => {
     // Campo a campo e por tipo: assim o compilador cobra o que só existe em
     // algumas layers, e um campo novo no modelo não entra aqui por acidente.
-    const common = [l.type, l.start, l.duration, l.x, l.y, l.effects];
+    const common = [l.type, l.track, l.start, l.duration, l.x, l.y, l.effects];
     if (l.type === 'text') return [...common, l.text, l.size, l.color, l.font];
     // `mediaId` e não `src`: o `blob:` é sorteado a cada sessão, então usá-lo
     // faria um projeto reaberto nunca reaproveitar nada — e dois clipes do

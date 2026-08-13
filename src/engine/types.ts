@@ -56,6 +56,14 @@ interface LayerBase extends TimeSpan {
   x: number;
   y: number;
   effects: Effect[];
+  /**
+   * Faixa da timeline. Número maior desenha por cima.
+   *
+   * Vários clipes dividem a mesma faixa desde que **não se sobreponham no
+   * tempo** — é essa invariante que faz a ordem de desenho dentro de uma faixa
+   * não importar, porque nunca há dois ativos no mesmo instante.
+   */
+  track: number;
 }
 
 export interface TextLayer extends LayerBase {

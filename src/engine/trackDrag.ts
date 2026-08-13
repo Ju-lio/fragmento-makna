@@ -10,9 +10,23 @@
  *    meio. Por isso o vertical é arredondado antes de qualquer outra conta —
  *    é o que faz o clipe encaixar sozinho em vez de flutuar.
  *
+ * Desde que uma faixa carrega vários clipes, o destino também pode ser
+ * **inválido**: o lugar já estar ocupado. O plano reporta isso em vez de
+ * decidir sozinho, pra que a interface possa avisar antes de você soltar —
+ * descobrir que o gesto não valeu só depois de largar é o que faz esse tipo
+ * de arrasto parecer quebrado.
+ *
  * Vive fora do componente porque é a regra que decide onde a layer termina, e
- * errar aqui reordena o projeto do jeito errado sem que nada acuse.
+ * errar aqui reorganiza o projeto sem que nada acuse.
  */
+
+import { overlaps } from './project.ts';
+import type { TimeSpan } from './types.ts';
+
+/** Um clipe que já ocupa espaço — o suficiente pra detectar colisão. */
+export interface Occupant extends TimeSpan {
+  track: number;
+}
 
 export interface ClipDragInput {
   /** Deslocamento do ponteiro desde o início do arrasto, em pixels. */
@@ -24,23 +38,30 @@ export interface ClipDragInput {
   trackPitch: number;
   /** Onde o clipe estava quando o gesto começou. */
   start: number;
-  row: number;
+  track: number;
   /** Duração do clipe e do projeto — o clipe não pode sair da linha. */
   span: number;
   duration: number;
-  /** Índice da última faixa. 0 é a de cima. */
-  lastRow: number;
+  /**
+   * Faixa mais alta que aceita o clipe. Costuma ser `topTrack + 1`: a faixa
+   * vazia do topo é o que permite tirar um clipe de uma faixa cheia.
+   */
+  maxTrack: number;
+  /** Os outros clipes do projeto. O arrastado NÃO entra — colidiria consigo. */
+  others: readonly Occupant[];
 }
 
 export interface ClipDragPlan {
   start: number;
-  row: number;
+  track: number;
+  /** Falso quando o destino colide com outro clipe da mesma faixa. */
+  valid: boolean;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function clipDragPlan({
-  dx, dy, pxPerSecond, trackPitch, start, row, span, duration, lastRow,
+  dx, dy, pxPerSecond, trackPitch, start, track, span, duration, maxTrack, others,
 }: ClipDragInput): ClipDragPlan {
   // Sem escala não há como converter pixel em segundo; segurar o clipe onde
   // está é melhor que jogá-lo pra 0 por uma divisão por zero.
@@ -50,42 +71,28 @@ export function clipDragPlan({
   // dele, senão a cauda sairia da linha.
   const nextStart = clamp(start + seconds, 0, Math.max(0, duration - span));
 
-  const rowsMoved = trackPitch > 0 ? Math.round(dy / trackPitch) : 0;
+  const tracksMoved = trackPitch > 0 ? Math.round(dy / trackPitch) : 0;
+  const nextTrack = clamp(track + tracksMoved, 0, Math.max(0, maxTrack));
+
+  // 3 casas: a timeline trabalha em milissegundos, e sem isso o `start`
+  // acumula lixo de ponto flutuante que polui a assinatura do cache.
+  const landing = { start: +nextStart.toFixed(3), duration: span };
 
   return {
-    // 3 casas: a timeline trabalha em milissegundos, e sem isso o `start`
-    // acumula lixo de ponto flutuante que polui a assinatura do cache.
-    start: +nextStart.toFixed(3),
-    row: clamp(row + rowsMoved, 0, Math.max(0, lastRow)),
+    start: landing.start,
+    track: nextTrack,
+    valid: !others.some(o => o.track === nextTrack && overlaps(o, landing)),
   };
 }
 
 /**
  * Ordem de desenho ↔ ordem visual.
  *
- * `project.layers` está em ordem de desenho: o primeiro vai pro fundo, o
- * último por cima. Na tela isso aparece de cabeça pra baixo — a faixa de cima
- * é a que você vê na frente —, então as duas listas são espelhadas.
+ * As faixas desenham de baixo pra cima (a 0 no fundo), e na tela aparecem ao
+ * contrário — a de cima é a que você vê na frente. As duas listas são
+ * espelhadas.
  *
  * A conversão é a própria inversa (aplicar duas vezes volta ao começo), então
  * uma função só serve pros dois sentidos e não há como trocá-las por engano.
  */
 export const flipOrder = (index: number, count: number): number => count - 1 - index;
-
-/**
- * Tira o item de `from` e o enfia em `to`, empurrando o resto.
- *
- * Não é troca (swap): arrastar da faixa 4 pra 0 tem que deslizar as três do
- * meio pra baixo, e não trocar as duas pontas de lugar deixando o miolo
- * bagunçado.
- */
-export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
-  const out = [...list];
-  if (from === to) return out;
-  if (from < 0 || from >= out.length) return out;
-
-  const [item] = out.splice(from, 1);
-  if (item === undefined) return out;
-  out.splice(clamp(to, 0, out.length), 0, item);
-  return out;
-}

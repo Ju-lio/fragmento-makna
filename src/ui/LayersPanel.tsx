@@ -18,8 +18,12 @@ interface LayersPanelProps {
  * o resultado, uma posição por clique.
  */
 export function LayersPanel({ project, selectedId, onSelect, onDelete }: LayersPanelProps) {
-  // Later layers draw on top, so show the list front-to-back like every editor.
-  const ordered = [...project.layers].reverse();
+  // Frente-a-fundo, como todo editor: a faixa mais alta desenha por cima, e
+  // dentro de uma faixa vale a ordem do tempo — é como os clipes aparecem
+  // enfileirados na timeline.
+  const ordered = [...project.layers].sort(
+    (a, b) => b.track - a.track || a.start - b.start,
+  );
 
   return (
     <div className="layer-list">
@@ -35,6 +39,7 @@ export function LayersPanel({ project, selectedId, onSelect, onDelete }: LayersP
             <span className={`tag tag-${layer.type}`}>{TAGS[layer.type] ?? '???'}</span>
             <span className="layer-name">{layer.name}</span>
             <span className="layer-fx">{(layer.effects || []).length}fx</span>
+            <span className="layer-track" title="Faixa">F{layer.track}</span>
 
             <button
               className="btn btn-sm btn-coral"

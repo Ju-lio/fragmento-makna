@@ -1,7 +1,7 @@
 import { PRESETS } from './presets.ts';
 import { DISPLAY_FONT } from './renderer.ts';
 import type {
-  Effect, ImageLayer, LayerPatch, Project, TextLayer, VideoLayer,
+  Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer, TimeSpan, VideoLayer,
 } from './types.ts';
 
 export type {
@@ -46,6 +46,7 @@ export function makeTextLayer(overrides: Partial<TextLayer> = {}): TextLayer {
     font: DISPLAY_FONT,
     x: 0,
     y: 0,
+    track: 0,
     effects: [preset('fade-up')],
     ...overrides,
   };
@@ -65,12 +66,46 @@ export function maxDuration(layer: TrimTarget): number {
 export const MIN_CLIP = 0.1;
 
 /**
+ * Até onde um clipe pode se esticar sem invadir os vizinhos da mesma faixa.
+ *
+ * Passou a fazer falta quando uma faixa deixou de ter um clipe só: sem isso,
+ * arrastar a alça direita comeria o clipe seguinte, e a faixa perderia a
+ * invariante de nunca ter dois clipes no mesmo instante.
+ */
+export interface TrimBounds {
+  /** O clipe não pode começar antes disso — o fim do vizinho anterior. */
+  minStart?: number;
+  /** Nem terminar depois disso — o começo do próximo. */
+  maxEnd?: number;
+}
+
+/** A janela livre em volta de um clipe, dentro da faixa dele. */
+export function freeWindow(layers: readonly Layer[], target: Layer): Required<TrimBounds> {
+  let minStart = 0;
+  let maxEnd = Infinity;
+
+  for (const l of layers) {
+    if (l.id === target.id || l.track !== target.track) continue;
+    const end = l.start + l.duration;
+    if (end <= target.start) minStart = Math.max(minStart, end);
+    else if (l.start >= target.start + target.duration) maxEnd = Math.min(maxEnd, l.start);
+  }
+
+  return { minStart, maxEnd };
+}
+
+/**
  * Dragging a clip's right edge just changes how long it plays.
  * Returns a patch, or null when the drag is a no-op.
  */
-export function trimRight(layer: TrimTarget, deltaSec: number): LayerPatch | null {
+export function trimRight(
+  layer: TrimTarget,
+  deltaSec: number,
+  { maxEnd = Infinity }: TrimBounds = {},
+): LayerPatch | null {
   const wanted = layer.duration + deltaSec;
-  const duration = Math.max(MIN_CLIP, Math.min(wanted, maxDuration(layer)));
+  const ceiling = Math.min(maxDuration(layer), maxEnd - layer.start);
+  const duration = Math.max(MIN_CLIP, Math.min(wanted, ceiling));
   return duration === layer.duration ? null : { duration: round(duration) };
 }
 
@@ -78,14 +113,19 @@ export function trimRight(layer: TrimTarget, deltaSec: number): LayerPatch | nul
  * Dragging the left edge moves the clip AND the point it starts reading from,
  * so the footage under the cursor stays put instead of sliding.
  */
-export function trimLeft(layer: TrimTarget, deltaSec: number): LayerPatch | null {
+export function trimLeft(
+  layer: TrimTarget,
+  deltaSec: number,
+  { minStart = 0 }: TrimBounds = {},
+): LayerPatch | null {
   const trimStart = layer.trimStart || 0;
   let d = deltaSec;
 
   // Can't read before the start of the source...
   if (Number.isFinite(layer.sourceDuration)) d = Math.max(d, -trimStart);
-  // ...can't push the clip off the front of the timeline...
-  d = Math.max(d, -layer.start);
+  // ...can't push the clip off the front of the timeline, nem por cima do
+  // vizinho anterior da mesma faixa...
+  d = Math.max(d, minStart - layer.start);
   // ...and can't shrink past the minimum length.
   d = Math.min(d, layer.duration - MIN_CLIP);
 
@@ -100,6 +140,93 @@ export function trimLeft(layer: TrimTarget, deltaSec: number): LayerPatch | null
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+// --- faixas -------------------------------------------------------------
+
+/**
+ * Ordem de desenho: faixa menor no fundo, maior por cima.
+ *
+ * Memoriza por referência do projeto, como `signatureOf`. Ordenar dentro do
+ * `drawFrame` seria correto e alocaria um array por quadro — 60 vezes por
+ * segundo, no caminho quente que o resto do editor faz questão de manter
+ * limpo. Como o projeto é imutável, uma ordenação por edição basta.
+ *
+ * A ordenação é estável, então clipes na mesma faixa mantêm a ordem do array.
+ * Não importa qual: eles não se sobrepõem, logo nunca há dois no mesmo quadro.
+ */
+const drawOrders = new WeakMap<Project, Layer[]>();
+
+export function drawOrder(project: Project): Layer[] {
+  let order = drawOrders.get(project);
+  if (!order) {
+    order = [...project.layers].sort((a, b) => a.track - b.track);
+    drawOrders.set(project, order);
+  }
+  return order;
+}
+
+/** A faixa mais alta em uso. -1 quando não há layer nenhuma. */
+export function topTrack(layers: readonly Layer[]): number {
+  return layers.reduce((max, l) => Math.max(max, l.track), -1);
+}
+
+/**
+ * Renumera as faixas pra 0..n-1, eliminando as que ficaram vazias.
+ *
+ * Sem isso, arrastar o único clipe de uma faixa pra outra deixaria uma faixa
+ * fantasma pra trás, e o editor iria acumulando linhas vazias a cada gesto.
+ * A ordem relativa entre faixas é preservada — compactar não pode reordenar
+ * o que está na tela.
+ */
+export function compactTracks(layers: readonly Layer[]): Layer[] {
+  const used = [...new Set(layers.map(l => l.track))].sort((a, b) => a - b);
+  const renumber = new Map(used.map((track, i) => [track, i]));
+  return layers.map(l => {
+    const track = renumber.get(l.track) ?? l.track;
+    return track === l.track ? l : { ...l, track };
+  });
+}
+
+/** Dois clipes ocupam o mesmo pedaço da mesma faixa? */
+export function overlaps(a: TimeSpan, b: TimeSpan): boolean {
+  // Estrito nas duas pontas: um clipe terminando exatamente onde o outro
+  // começa é o caso NORMAL (é o que um corte produz), não uma colisão.
+  return a.start < b.start + b.duration && b.start < a.start + a.duration;
+}
+
+// --- corte --------------------------------------------------------------
+
+/**
+ * Divide um clipe no instante `t`, como o Ctrl+B do CapCut.
+ *
+ * Devolve `null` quando o corte não faz sentido — fora do clipe, ou tão perto
+ * da ponta que uma das metades nasceria menor que `MIN_CLIP`. Recusar é melhor
+ * que produzir um clipe de 3ms que você não consegue nem pegar pra apagar.
+ */
+export function splitLayer(layer: Layer, t: number): [Layer, Layer] | null {
+  const head = t - layer.start;
+  const tail = layer.start + layer.duration - t;
+  if (head < MIN_CLIP || tail < MIN_CLIP) return null;
+
+  const left: Layer = { ...layer, duration: round(head) };
+
+  const right: Layer = {
+    ...layer,
+    id: nextId(),
+    start: round(t),
+    duration: round(tail),
+    // Os efeitos são copiados, não compartilhados: as metades viram clipes
+    // independentes, e editar os efeitos de uma não pode mexer na outra.
+    effects: clone(layer.effects),
+  };
+
+  // Só vídeo tem material de origem pra avançar. A segunda metade precisa
+  // começar a ler o arquivo onde a primeira parou, senão ela repetiria o
+  // trecho que acabou de passar.
+  if (right.type === 'video') right.trimStart = round(right.trimStart + head);
+
+  return [left, right];
+}
 
 /** O recorte de uma layer que o corte de bordas realmente lê. */
 export interface TrimTarget {
@@ -127,6 +254,7 @@ export function makeVideoLayer(
     mediaId,
     x: 0,
     y: 0,
+    track: 0,
     fit: 1,
     effects: [],
     ...overrides,
@@ -146,6 +274,7 @@ export function makeImageLayer(
     duration: 3,
     x: 0,
     y: 0,
+    track: 0,
     fit: 0.8,
     img,
     mediaId,
@@ -164,13 +293,13 @@ export function defaultProject(): Project {
     background: '#151021',
     layers: [
       makeTextLayer({
-        name: 'Título', start: 0.2, duration: 4.5,
+        name: 'Título', track: 2, start: 0.2, duration: 4.5,
         text: 'POWERED BY THE SUN', size: 150, y: -90,
         color: '#f7efdc',
         effects: [preset('zoom-punch'), preset('fade-out-down')],
       }),
       makeTextLayer({
-        name: 'Subtítulo', start: 0.75, duration: 4.2,
+        name: 'Subtítulo', track: 1, start: 0.75, duration: 4.2,
         text: '559.872 km rodados', size: 64, y: 70,
         color: '#f0c04a',
         effects: [
@@ -179,7 +308,7 @@ export function defaultProject(): Project {
         ],
       }),
       makeTextLayer({
-        name: 'Selo', start: 5.0, duration: 3.0,
+        name: 'Selo', track: 0, start: 5.0, duration: 3.0,
         text: '100% PIXEL PERFECT', size: 96, y: 0,
         color: '#64c48a',
         effects: [preset('spring-pop'), preset('float-loop')],

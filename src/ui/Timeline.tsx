@@ -7,6 +7,7 @@ import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } fr
 import { pauseAllVideo } from '../engine/videoSync.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
+import { topTrack, freeWindow } from '../engine/project.ts';
 import type { Layer, LayerPatch, Project } from '../engine/types.ts';
 
 interface TimelineProps {
@@ -14,8 +15,10 @@ interface TimelineProps {
   selectedId: number | null;
   onSelect: (id: number) => void;
   onChange: (id: number, patch: LayerPatch) => void;
-  /** Move a layer para uma posição na ORDEM DE DESENHO (0 = fundo). */
-  onReorder: (id: number, drawIndex: number) => void;
+  /** Aplica o resultado de um arrasto: posição no tempo e faixa, de uma vez. */
+  onMoveClip: (id: number, to: { start: number; track: number }) => void;
+  /** Corta o clipe selecionado no cursor (Ctrl+B). */
+  onSplit: () => void;
 }
 
 /**
@@ -25,7 +28,9 @@ interface TimelineProps {
  * player's frame callback — never through setState — so dragging the playhead
  * across a 60s project costs zero React renders.
  */
-export function Timeline({ project, selectedId, onSelect, onChange, onReorder }: TimelineProps) {
+export function Timeline({
+  project, selectedId, onSelect, onChange, onMoveClip, onSplit,
+}: TimelineProps) {
   const headRef = useRef<HTMLDivElement>(null);
   const tcRef = useRef<HTMLSpanElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
@@ -135,10 +140,15 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
     const rect = ruler.getBoundingClientRect();
     const startX = e.clientX;
     const orig = { ...layer };
+    // Os limites saem dos vizinhos da mesma faixa: esticar por cima do clipe
+    // seguinte quebraria a invariante que sustenta a ordem de desenho.
+    const bounds = freeWindow(project.layers, layer);
 
     const move = (ev: PointerEvent) => {
       const delta = ((ev.clientX - startX) / rect.width) * player.duration;
-      const patch = edge === 'left' ? trimLeft(orig, delta) : trimRight(orig, delta);
+      const patch = edge === 'left'
+        ? trimLeft(orig, delta, bounds)
+        : trimRight(orig, delta, bounds);
       if (patch) onChange(layer.id, patch);
     };
     const up = () => {
@@ -160,7 +170,7 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
    * saltarem debaixo do cursor, que é justamente o que torna esse tipo de
    * arrasto impossível de mirar.
    */
-  const startClipDrag = (e: React.PointerEvent, layer: Layer, row: number) => {
+  const startClipDrag = (e: React.PointerEvent, layer: Layer) => {
     e.preventDefault();
     onSelect(layer.id);
 
@@ -170,7 +180,6 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
     if (!ruler || !tracks) return;
 
     const pxPerSecond = ruler.getBoundingClientRect().width / player.duration;
-    const lastRow = project.layers.length - 1;
 
     // A altura da faixa sai do layout já aplicado, não de uma constante: assim
     // mexer no CSS não desalinha silenciosamente o cálculo do arrasto.
@@ -182,9 +191,15 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
       ? second.offsetTop - first.offsetTop
       : (first?.offsetHeight ?? 0);
 
+    // Todo mundo menos o próprio arrastado — senão ele colidiria consigo mesmo.
+    const others = project.layers
+      .filter(l => l.id !== layer.id)
+      .map(l => ({ track: l.track, start: l.start, duration: l.duration }));
+
     const startX = e.clientX;
     const startY = e.clientY;
-    let plan = { start: layer.start, row };
+    const rowOf = (track: number) => flipOrder(track, rows.length);
+    let plan = { start: layer.start, track: layer.track, valid: true };
 
     clip.classList.add('clip-dragging');
     clip.setPointerCapture(e.pointerId);
@@ -192,7 +207,7 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
     const drop = dropRef.current;
     if (drop && pitch > 0) {
       drop.style.height = `${first?.offsetHeight ?? 0}px`;
-      drop.style.top = `${row * pitch}px`;
+      drop.style.top = `${rowOf(layer.track) * pitch}px`;
       drop.classList.add('on');
     }
 
@@ -203,38 +218,62 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
         pxPerSecond,
         trackPitch: pitch,
         start: layer.start,
-        row,
+        track: layer.track,
         span: layer.duration,
         duration: player.duration,
-        lastRow,
+        // A faixa vazia do topo entra na conta: é ela que permite tirar um
+        // clipe de uma faixa cheia e abrir uma nova.
+        maxTrack: topTrack(project.layers) + 1,
+        others,
       });
 
       // O clipe acompanha o plano JÁ arredondado na vertical, então ele encaixa
       // visivelmente na faixa em vez de flutuar entre duas.
       const dx = (plan.start - layer.start) * pxPerSecond;
-      const dy = (plan.row - row) * pitch;
+      const dy = (rowOf(plan.track) - rowOf(layer.track)) * pitch;
       clip.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
-      if (drop) drop.style.top = `${plan.row * pitch}px`;
+      clip.classList.toggle('clip-blocked', !plan.valid);
+
+      if (drop) {
+        drop.style.top = `${rowOf(plan.track) * pitch}px`;
+        // Avisar ANTES de soltar. Descobrir que o gesto não valeu só depois de
+        // largar é o que faz esse tipo de arrasto parecer quebrado.
+        drop.classList.toggle('blocked', !plan.valid);
+      }
     };
 
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
 
-      clip.classList.remove('clip-dragging');
+      clip.classList.remove('clip-dragging', 'clip-blocked');
       clip.style.transform = '';
-      drop?.classList.remove('on');
+      drop?.classList.remove('on', 'blocked');
 
-      if (plan.start !== layer.start) onChange(layer.id, { start: plan.start });
-      if (plan.row !== row) onReorder(layer.id, flipOrder(plan.row, project.layers.length));
+      // Destino ocupado: o clipe volta pro lugar em vez de empurrar ninguém.
+      if (!plan.valid) return;
+      if (plan.start !== layer.start || plan.track !== layer.track) {
+        onMoveClip(layer.id, { start: plan.start, track: plan.track });
+      }
     };
 
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   };
 
-  // Ordem visual: o último a desenhar (o que fica na frente) vem na faixa de cima.
-  const rows = [...project.layers].reverse();
+  /**
+   * Uma linha por faixa, de cima pra baixo, mais uma vazia no topo.
+   *
+   * A linha extra não é enfeite: sem ela não existe pra onde arrastar um clipe
+   * que está numa faixa cheia, e faixas novas seriam impossíveis de criar
+   * depois que tudo se juntasse. Ela tem a mesma altura das outras de
+   * propósito — o cálculo do arrasto mede o espaçamento entre as duas
+   * primeiras linhas e assume que ele vale pra todas.
+   */
+  const rows: Array<{ track: number; clips: Layer[] }> = [];
+  for (let track = topTrack(project.layers) + 1; track >= 0; track--) {
+    rows.push({ track, clips: project.layers.filter(l => l.track === track) });
+  }
 
   const step = duration > 20 ? 5 : duration > 10 ? 2 : 1;
   const ticks: number[] = [];
@@ -247,6 +286,7 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
           {preparing ? '✕ CANCELAR' : playing ? '❚❚ PAUSE' : '▶ PLAY'}
         </button>
         <button className="btn" onClick={() => player.seek(0)}>|◀ INÍCIO</button>
+        <button className="btn" onClick={onSplit} title="Cortar no cursor (Ctrl+B)">✂ CORTAR</button>
 
         <div className="tc">
           <span ref={tcRef}>{fmt(player.t)}</span>
@@ -295,38 +335,41 @@ export function Timeline({ project, selectedId, onSelect, onChange, onReorder }:
         </div>
 
         {/*
-          As faixas saem na ordem VISUAL, que é o espelho da ordem de desenho:
-          `project.layers` desenha do fundo pro topo, e aqui o topo aparece em
-          cima — a mesma convenção do painel de layers e do CapCut. Sem essa
-          inversão, arrastar pra cima mandaria a layer pra trás.
+          As faixas saem na ordem VISUAL, espelho da ordem de desenho: a faixa
+          0 desenha no fundo e aparece embaixo — a mesma convenção do painel de
+          layers e do CapCut. Sem essa inversão, arrastar pra cima mandaria a
+          layer pra trás.
         */}
         <div className="tracks" ref={tracksRef}>
-          {rows.map((layer, row) => (
-            <div className="track" key={layer.id}>
-              <div
-                className={
-                  'clip' +
-                  (layer.type === 'image' ? ' clip-img' : '') +
-                  (layer.type === 'video' ? ' clip-video' : '') +
-                  (layer.id === selectedId ? ' clip-sel' : '')
-                }
-                style={{
-                  left: `${(layer.start / duration) * 100}%`,
-                  width: `${(layer.duration / duration) * 100}%`,
-                }}
-                onPointerDown={e => startClipDrag(e, layer, row)}
-                title={`${layer.name} — arraste pra mover no tempo ou trocar de faixa`}
-              >
-                <span
-                  className="clip-handle clip-handle-l"
-                  onPointerDown={e => startTrim(e, layer, 'left')}
-                />
-                <span className="clip-name">{layer.name}</span>
-                <span
-                  className="clip-handle clip-handle-r"
-                  onPointerDown={e => startTrim(e, layer, 'right')}
-                />
-              </div>
+          {rows.map(({ track, clips }) => (
+            <div className={`track${clips.length ? '' : ' track-empty'}`} key={track}>
+              {clips.map(layer => (
+                <div
+                  key={layer.id}
+                  className={
+                    'clip' +
+                    (layer.type === 'image' ? ' clip-img' : '') +
+                    (layer.type === 'video' ? ' clip-video' : '') +
+                    (layer.id === selectedId ? ' clip-sel' : '')
+                  }
+                  style={{
+                    left: `${(layer.start / duration) * 100}%`,
+                    width: `${(layer.duration / duration) * 100}%`,
+                  }}
+                  onPointerDown={e => startClipDrag(e, layer)}
+                  title={`${layer.name} — arraste pra mover no tempo ou trocar de faixa`}
+                >
+                  <span
+                    className="clip-handle clip-handle-l"
+                    onPointerDown={e => startTrim(e, layer, 'left')}
+                  />
+                  <span className="clip-name">{layer.name}</span>
+                  <span
+                    className="clip-handle clip-handle-r"
+                    onPointerDown={e => startTrim(e, layer, 'right')}
+                  />
+                </div>
+              ))}
             </div>
           ))}
           <div className="track-drop" ref={dropRef} />

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer } from '../engine/project.ts';
-import { moveItem } from '../engine/trackDrag.ts';
+import { compactTracks, splitLayer, topTrack } from '../engine/project.ts';
 import { History } from '../engine/history.ts';
 import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError,
@@ -43,6 +43,11 @@ export default function App() {
   historyRef.current ??= new History(project);
   const history = historyRef.current;
 
+  // O atalho de corte precisa enxergar a seleção atual sem religar o listener
+  // de teclado a cada troca de layer.
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   useEffect(() => history.subscribe(() => {
@@ -80,21 +85,6 @@ export default function App() {
   const undo = useCallback(() => restore(history.undo()), [history, restore]);
   const redo = useCallback(() => restore(history.redo()), [history, restore]);
 
-  // Ctrl+Z / Ctrl+Shift+Z (e Ctrl+Y, pra quem vem do Windows). Fora de campos
-  // de texto, onde o undo nativo do navegador é o que você espera.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (!(e.ctrlKey || e.metaKey)) return;
-
-      const key = e.key.toLowerCase();
-      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
-    };
-    addEventListener('keydown', onKey);
-    return () => removeEventListener('keydown', onKey);
-  }, [undo, redo]);
 
   /**
    * Restaura o projeto guardado, ou fica no de exemplo.
@@ -227,14 +217,21 @@ export default function App() {
       name: `Texto ${project.layers.length + 1}`,
       start: +player.t.toFixed(2),
     });
-    commit(p => ({ ...p, layers: [...p.layers, layer] }));
+    commit(p => ({
+      ...p,
+      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+    }));
     setSelectedId(layer.id);
     setTab('props');
   };
 
   const addLayer = (layer: Layer) => {
-    // New media goes underneath existing layers so it never buries your titles.
-    commit(p => ({ ...p, layers: [layer, ...p.layers] }));
+    // Mídia nova entra numa faixa própria, no topo: empilhar em cima de um
+    // clipe existente esconderia o que já estava lá sem aviso.
+    commit(p => ({
+      ...p,
+      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+    }));
     setSelectedId(layer.id);
     setTab('props');
   };
@@ -279,20 +276,69 @@ export default function App() {
    * timeline, que já sabe em qual faixa o clipe foi solto. Um `dir` de ±1
    * obrigaria a traduzir um salto de três faixas em três chamadas.
    */
-  const reorderLayer = useCallback((id: number, drawIndex: number) => {
+  /**
+   * Resultado de um arrasto: posição no tempo e faixa, aplicadas juntas.
+   *
+   * Uma coisa só porque é um gesto só — separar em duas edições colocaria dois
+   * passos no histórico pro mesmo movimento, e um estado intermediário
+   * impossível (o clipe na faixa nova, no instante velho) chegaria a existir.
+   */
+  const moveClip = useCallback((id: number, to: { start: number; track: number }) => {
     commit(p => {
-      const from = p.layers.findIndex(l => l.id === id);
-      if (from < 0) return p;
-      return { ...p, layers: moveItem(p.layers, from, drawIndex) };
+      const layers = p.layers.map(l => (l.id === id ? { ...l, ...to } : l));
+      // Compacta depois de mover: tirar o único clipe de uma faixa deixaria
+      // uma linha fantasma pra trás.
+      return { ...p, layers: compactTracks(layers) };
     });
   }, [commit]);
+
+  /**
+   * Corta o clipe selecionado no cursor — o Ctrl+B do CapCut.
+   *
+   * Age só no selecionado, e não em tudo que estiver sob o cursor: cortar
+   * cinco faixas de uma vez porque você errou o alvo é bem pior de desfazer
+   * do que cortar de novo.
+   */
+  const splitSelected = useCallback(() => {
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    if (!layer) return flash('Selecione um clipe pra cortar');
+
+    const halves = splitLayer(layer, player.t);
+    if (!halves) return flash('O cursor precisa estar dentro do clipe, longe das pontas');
+
+    const [left, right] = halves;
+    commit(p => ({
+      ...p,
+      layers: p.layers.flatMap(l => (l.id === layer.id ? [left, right] : [l])),
+    }));
+    // Seleciona a metade nova: depois de cortar, o passo seguinte quase sempre
+    // é mexer no que ficou pra frente.
+    setSelectedId(right.id);
+  }, [commit]);
+
+  // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
+  // é o que você espera, e o "b" é só a letra b.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
+      else if (key === 'b') { e.preventDefault(); splitSelected(); }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [undo, redo, splitSelected]);
 
   const deleteLayer = (id: number) => {
     commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
       if (layers.length === p.layers.length) return p;
       setSelectedId(cur => (cur === id ? layers[layers.length - 1]?.id ?? null : cur));
-      return { ...p, layers };
+      return { ...p, layers: compactTracks(layers) };
     });
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
     // elemento com o src revogado voltaria preto e sem áudio. O decoder é
@@ -418,7 +464,8 @@ export default function App() {
         selectedId={selectedId}
         onSelect={setSelectedId}
         onChange={updateLayer}
-        onReorder={reorderLayer}
+        onMoveClip={moveClip}
+        onSplit={splitSelected}
       />
     </div>
   );
