@@ -349,7 +349,23 @@
 }
 .tc-sep { color: var(--ink-mute); }
 
-.tl-wrap { position: relative; }
+/*
+  `touch-action: none` é o que impede o navegador de tratar um arrasto aqui
+  como rolagem/pan da PÁGINA. Sem isso, arrastar um clipe num trackpad ou tela
+  de toque levava o documento inteiro junto — os handlers de ponteiro recebiam
+  os eventos e o navegador ainda rolava por baixo.
+
+  `user-select: none` cobre o outro lado do mesmo gesto: sem ele o arrasto
+  seleciona os rótulos da régua e o cursor vira barra de texto no meio do
+  movimento.
+*/
+.tl-wrap {
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tl-wrap * { touch-action: none; }
 
 .ruler {
   position: relative;
@@ -459,6 +475,17 @@
 .track-drop.blocked {
   border-color: var(--coral);
   background: rgba(226, 97, 92, 0.16);
+}
+
+/*
+  Inserção é uma AÇÃO DIFERENTE de pousar numa faixa: abre uma linha nova
+  empurrando as de cima. Uma barra fina sólida na fronteira diz isso; a caixa
+  tracejada de "pousa aqui" diria a coisa errada.
+*/
+.track-drop.inserting {
+  border: none;
+  background: var(--gold);
+  box-shadow: 0 0 0 1px var(--ink);
 }
 .clip-img { background: var(--mint); }
 .clip-video { background: #b98ad6; }
@@ -627,3 +654,45 @@
 
 /* Clipe de som: cor própria, porque o que ele faz na composição é outra coisa. */
 .clip-audio { background: #7fb8d4; }
+
+/*
+  A faixinha de som, colada na base do clipe.
+  Não é uma layer separada: a trilha de um vídeo anda junto com a imagem, e uma
+  faixa própria abriria a porta pra dessincronizar as duas sem querer.
+*/
+.clip-sound {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--ink) 0 2px,
+    transparent 2px 4px
+  );
+  opacity: 0.55;
+}
+
+/* --- soltar arquivos --- */
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  /* Sem ponteiro: o overlay não pode roubar o `drop` do container que o criou. */
+  pointer-events: none;
+  background: rgba(21, 16, 33, 0.72);
+  border: 4px dashed var(--gold);
+}
+.dropzone span {
+  padding: 10px 16px;
+  background: var(--gold);
+  color: var(--ink);
+  border: 3px solid var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 4px 4px 0 var(--shadow);
+}

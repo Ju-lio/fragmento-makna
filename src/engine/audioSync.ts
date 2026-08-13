@@ -88,8 +88,29 @@ export function attachAudioElement(audio: HTMLAudioElement): HTMLAudioElement {
   return audio;
 }
 
+export interface SyncSoundOptions {
+  /**
+   * Também conduzir os elementos de VÍDEO (tocar, pausar, posicionar).
+   *
+   * Ligado quando a imagem sai do cache de quadros. Nessa situação o `<video>`
+   * deixa de ser a fonte da imagem mas continua sendo a fonte do **som**, e
+   * ninguém mais está cuidando dele — o loop de desenho nem chega a chamar o
+   * `videoSync`. Foi exatamente esse buraco que fazia o pré-render reproduzir
+   * mudo.
+   *
+   * Desligado na reprodução ao vivo, onde o `videoSync` já conduz o elemento
+   * com regra mais exigente (a imagem denuncia desvio que o ouvido não pega).
+   */
+  driveVideo?: boolean;
+}
+
 /** Aplica o plano a todas as trilhas do projeto. */
-export function syncSoundLayers(layers: readonly Layer[], t: number, playing: boolean): void {
+export function syncSoundLayers(
+  layers: readonly Layer[],
+  t: number,
+  playing: boolean,
+  { driveVideo = false }: SyncSoundOptions = {},
+): void {
   for (const layer of layers) {
     if (layer.type !== 'audio' && layer.type !== 'video') continue;
 
@@ -103,13 +124,15 @@ export function syncSoundLayers(layers: readonly Layer[], t: number, playing: bo
       seeking: el.seeking,
     });
 
-    // Vídeo é posicionado pelo `videoSync`, que tem regra própria (e mais
-    // exigente, porque a imagem denuncia). Aqui só o som dele é tocado.
-    if (layer.type === 'audio') {
-      if (plan.seekTo !== null) el.currentTime = plan.seekTo;
-      if (plan.play && el.paused) {
+    if (layer.type === 'audio' || driveVideo) {
+      // Trilha em silêncio não precisa rolar: com a imagem vindo do cache, um
+      // <video> mudo tocando só gasta decoder pra ninguém.
+      const wanted = plan.play && plan.volume > 0;
+
+      if (wanted && plan.seekTo !== null) el.currentTime = plan.seekTo;
+      if (wanted && el.paused) {
         el.play().catch(() => { /* autoplay barrado: volta no próximo gesto */ });
-      } else if (!plan.play && !el.paused) {
+      } else if (!wanted && !el.paused) {
         el.pause();
       }
     }

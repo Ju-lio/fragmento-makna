@@ -4,6 +4,7 @@ import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
 import { compactTracks, splitLayer, topTrack } from '../engine/project.ts';
+import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError,
@@ -196,7 +197,11 @@ export default function App() {
      * repintura faria a trilha travar num trecho parado.
      */
     const unsubTick = player.onTick(t => {
-      syncSoundLayers(projectRef.current.layers, t, player.playing);
+      syncSoundLayers(projectRef.current.layers, t, player.playing, {
+        // Com a imagem saindo do cache, ninguém mais conduz os <video> — e é
+        // deles que sai o som do clipe.
+        driveVideo: player.fromCache,
+      });
     });
 
     // ?t=1.6 opens the editor parked at that timestamp.
@@ -255,8 +260,14 @@ export default function App() {
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
     e.target.value = '';
+    if (file) importFile(file);
+  };
+
+  const importFile = (file: File) => {
+    if (!/^(image|video|audio)\//.test(file.type)) {
+      return flash(`"${file.name}" não é imagem, vídeo nem áudio`);
+    }
 
     // O arquivo vai pro armazenamento ANTES de virar layer: é isso que faz o
     // projeto reabrir sozinho depois. Se a gravação falhar, a layer ainda
@@ -266,6 +277,44 @@ export default function App() {
 
     const url = urlFor(mediaId, file);
     attachMedia(file.type, url, mediaId, file.name);
+  };
+
+  /**
+   * Soltar arquivos em qualquer lugar do editor importa.
+   *
+   * O contador de `dragenter`/`dragleave` existe porque o navegador dispara
+   * `dragleave` toda vez que o ponteiro cruza a borda de um filho — sem contar
+   * as entradas, o destaque pisca sem parar enquanto você atravessa a
+   * interface com o arquivo na mão.
+   */
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    dragDepth.current++;
+    setDropping(true);
+  };
+
+  const onDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropping(false);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    // Sem isto o navegador ABRE o arquivo, trocando o editor pelo vídeo — e
+    // você perde o projeto que não tinha sido salvo ainda.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDropping(false);
+    for (const file of e.dataTransfer.files) importFile(file);
   };
 
   /** Monta o elemento certo pro tipo do arquivo e devolve uma layer pronta. */
@@ -310,14 +359,21 @@ export default function App() {
    * passos no histórico pro mesmo movimento, e um estado intermediário
    * impossível (o clipe na faixa nova, no instante velho) chegaria a existir.
    */
-  const moveClip = useCallback((id: number, to: { start: number; track: number }) => {
-    commit(p => {
-      const layers = p.layers.map(l => (l.id === id ? { ...l, ...to } : l));
-      // Compacta depois de mover: tirar o único clipe de uma faixa deixaria
-      // uma linha fantasma pra trás.
-      return { ...p, layers: compactTracks(layers) };
-    });
-  }, [commit]);
+  const moveClip = useCallback(
+    (id: number, to: { start: number; track: number; insert: boolean }) => {
+      commit(p => {
+        // Inserção abre espaço ANTES de posicionar: as faixas dali pra cima
+        // sobem uma, e só então o clipe ocupa o número que vagou. Na ordem
+        // inversa ele subiria junto e cairia na faixa errada.
+        const base = to.insert ? openTrackAt(p.layers, to.track) : p.layers;
+        const layers = base.map(
+          l => (l.id === id ? { ...l, start: to.start, track: to.track } : l),
+        );
+        // Compacta depois: tirar o único clipe de uma faixa deixaria uma linha
+        // fantasma, e uma inserção pode ter aberto um buraco na origem.
+        return { ...p, layers: compactTracks(layers) };
+      });
+    }, [commit]);
 
   /**
    * Corta o clipe selecionado no cursor — o Ctrl+B do CapCut.
@@ -427,7 +483,13 @@ export default function App() {
   const selected = project.layers.find(l => l.id === selectedId) || null;
 
   return (
-    <div className="app">
+    <div
+      className={`app${dropping ? ' dropping' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <header className="topbar">
         <div className="logo">
           <span className="logo-marks">▚▚▚</span>
@@ -485,6 +547,12 @@ export default function App() {
           </Win>
         </aside>
       </main>
+
+      {dropping && (
+        <div className="dropzone" role="status">
+          <span>Solte pra importar</span>
+        </div>
+      )}
 
       <Timeline
         project={project}

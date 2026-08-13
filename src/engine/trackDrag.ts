@@ -53,10 +53,26 @@ export interface ClipDragInput {
 
 export interface ClipDragPlan {
   start: number;
+  /**
+   * Faixa de destino. Em `insert`, é a posição da faixa NOVA — as faixas
+   * daquele número pra cima sobem uma.
+   */
   track: number;
+  /** Criar uma faixa nova aqui, em vez de pousar numa existente. */
+  insert: boolean;
   /** Falso quando o destino colide com outro clipe da mesma faixa. */
   valid: boolean;
 }
+
+/**
+ * Quão perto de uma linha o ponteiro precisa estar pra pousar NELA.
+ *
+ * Fora dessa margem, o gesto vira "inserir entre as duas" — é o que permite
+ * mandar um clipe pra baixo de outro, e criar faixa no meio da pilha. Um terço
+ * dá uma zona de inserção estreita o bastante pra não atrapalhar quem só quer
+ * trocar de faixa, e larga o bastante pra ser mirável.
+ */
+const SNAP_MARGIN = 1 / 3;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -78,18 +94,54 @@ export function clipDragPlan({
    *
    * Sem essa inversão, arrastar pra baixo mandava o clipe pra cima.
    */
-  const tracksMoved = trackPitch > 0 ? -Math.round(dy / trackPitch) : 0;
-  const nextTrack = clamp(track + tracksMoved, 0, Math.max(0, maxTrack));
+  const moved = trackPitch > 0 ? -(dy / trackPitch) : 0;
+  const raw = track + moved;
+
+  // Perto de uma linha, pousa nela. No meio do caminho entre duas, o gesto
+  // quer dizer outra coisa: abrir uma faixa ali.
+  const nearest = Math.round(raw);
+  const insert = Math.abs(raw - nearest) > SNAP_MARGIN;
 
   // 3 casas: a timeline trabalha em milissegundos, e sem isso o `start`
   // acumula lixo de ponto flutuante que polui a assinatura do cache.
   const landing = { start: +nextStart.toFixed(3), duration: span };
 
+  if (insert) {
+    /**
+     * Inserir na posição P significa "as faixas P pra cima sobem uma, e o
+     * clipe fica em P". `ceil` porque a fronteira entre as faixas 1 e 2 abre a
+     * faixa 2 — acima da 1, abaixo da antiga 2.
+     *
+     * Vai de 0 (embaixo de tudo, que é o que faltava) até `maxTrack`.
+     */
+    return {
+      start: landing.start,
+      track: clamp(Math.ceil(raw), 0, Math.max(0, maxTrack)),
+      insert: true,
+      // Faixa nova nasce vazia: não há com o que colidir.
+      valid: true,
+    };
+  }
+
+  const nextTrack = clamp(nearest, 0, Math.max(0, maxTrack));
+
   return {
     start: landing.start,
     track: nextTrack,
+    insert: false,
     valid: !others.some(o => o.track === nextTrack && overlaps(o, landing)),
   };
+}
+
+/**
+ * Abre uma faixa em `at`, empurrando pra cima o que estava dali em diante.
+ *
+ * Pura e à parte do plano porque é a única operação que mexe em layers que o
+ * usuário nem tocou — e é justamente aí que um off-by-one reorganiza o projeto
+ * inteiro sem ninguém notar na hora.
+ */
+export function openTrackAt<T extends { track: number }>(layers: readonly T[], at: number): T[] {
+  return layers.map(l => (l.track >= at ? { ...l, track: l.track + 1 } : l));
 }
 
 /**

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clipDragPlan, flipOrder } from '../src/engine/trackDrag.ts';
+import { clipDragPlan, flipOrder, openTrackAt } from '../src/engine/trackDrag.ts';
 import type { Occupant } from '../src/engine/trackDrag.ts';
 
 /** Um gesto parado: 100px por segundo, faixas de 28px, clipe de 2s em t=1. */
@@ -21,7 +21,7 @@ const drag = (over: Partial<typeof base> = {}) => clipDragPlan({ ...base, ...ove
 // --- movimento no tempo -------------------------------------------------
 
 test('parado, o plano é exatamente onde o clipe já está', () => {
-  assert.deepEqual(drag(), { start: 1, track: 2, valid: true });
+  assert.deepEqual(drag(), { start: 1, track: 2, insert: false, valid: true });
 });
 
 test('arrastar na horizontal converte pixel em segundo', () => {
@@ -69,9 +69,13 @@ test('arrastar pra CIMA sobe de faixa', () => {
   assert.equal(drag({ dy: -28 }).track, 3);
 });
 
-test('a faixa é discreta: encaixa na mais próxima, nunca no meio', () => {
-  assert.equal(drag({ dy: 10 }).track, 2, 'menos de meia linha não conta');
-  assert.equal(drag({ dy: 15 }).track, 1, 'passou da metade, desce');
+test('perto de uma linha, encaixa NELA', () => {
+  // Três zonas por linha: o miolo pousa, e as bordas viram inserção (testadas
+  // mais abaixo). Antes eram duas, e por isso não havia como descer do fundo.
+  assert.equal(drag({ dy: 4 }).track, 2, 'quase parado, fica onde está');
+  assert.equal(drag({ dy: 4 }).insert, false);
+  assert.equal(drag({ dy: 24 }).track, 1, 'quase uma linha inteira, pousa na de baixo');
+  assert.equal(drag({ dy: 24 }).insert, false);
 });
 
 test('a faixa é limitada às que aceitam o clipe', () => {
@@ -81,7 +85,7 @@ test('a faixa é limitada às que aceitam o clipe', () => {
 
 test('as duas direções valem no mesmo gesto', () => {
   // É o ponto da feature: reposicionar no tempo e trocar de faixa de uma vez.
-  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 1, valid: true });
+  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 1, insert: false, valid: true });
 });
 
 // --- colisão ------------------------------------------------------------
@@ -135,4 +139,70 @@ test('flipOrder espelha: a faixa mais alta é a linha de cima', () => {
 test('flipOrder é a própria inversa', () => {
   // É o que permite uma função só pros dois sentidos, sem risco de trocá-las.
   for (const i of [0, 1, 2, 3]) assert.equal(flipOrder(flipOrder(i, 4), 4), i);
+});
+
+// --- inserir entre faixas -----------------------------------------------
+// Faltava poder mandar um clipe pra BAIXO de outro: a faixa 0 era o piso, e
+// não havia gesto que abrisse espaço embaixo dela nem no meio da pilha.
+
+test('soltar no meio do caminho entre duas linhas abre uma faixa ali', () => {
+  // Meia linha pra baixo: nem na faixa 2, nem na 1 — entre elas.
+  const plan = drag({ dy: 14 });
+  assert.equal(plan.insert, true);
+  assert.equal(plan.track, 2, 'a faixa nova nasce em 2; a antiga 2 sobe pra 3');
+});
+
+test('perto de uma linha ainda pousa NELA, não insere', () => {
+  // A zona de inserção não pode atrapalhar quem só quer trocar de faixa.
+  assert.equal(drag({ dy: 5 }).insert, false, 'quase parado');
+  assert.equal(drag({ dy: 26 }).insert, false, 'quase uma linha exata');
+});
+
+test('arrastar pra baixo do fundo abre uma faixa embaixo de tudo', () => {
+  // Era o que não tinha jeito de fazer: a faixa 0 era o piso.
+  const plan = drag({ track: 0, dy: 14 });
+  assert.equal(plan.insert, true);
+  assert.equal(plan.track, 0, 'tudo sobe uma, e o clipe fica no fundo');
+});
+
+test('faixa nova nasce vazia, então a inserção nunca colide', () => {
+  const plan = drag({ dy: 14, others: [ocupante({ track: 2, start: 0, duration: 30 })] });
+  assert.equal(plan.insert, true);
+  assert.equal(plan.valid, true, 'o ocupante vai subir junto com a faixa dele');
+});
+
+test('a posição no tempo vale igual numa inserção', () => {
+  assert.equal(drag({ dx: 250, dy: 14 }).start, 3.5);
+});
+
+test('a inserção respeita o teto de faixas', () => {
+  assert.equal(drag({ dy: -9999 }).track, 3);
+});
+
+// --- abrir a faixa ------------------------------------------------------
+
+test('openTrackAt empurra pra cima só o que está dali em diante', () => {
+  const layers = [{ id: 1, track: 0 }, { id: 2, track: 1 }, { id: 3, track: 2 }];
+  const out = openTrackAt(layers, 1);
+
+  assert.equal(out[0]?.track, 0, 'abaixo do ponto, intocado');
+  assert.equal(out[1]?.track, 2, 'daqui pra cima, sobe uma');
+  assert.equal(out[2]?.track, 3);
+});
+
+test('openTrackAt em zero sobe todo mundo', () => {
+  const out = openTrackAt([{ track: 0 }, { track: 1 }], 0);
+  assert.deepEqual(out.map(l => l.track), [1, 2]);
+});
+
+test('openTrackAt acima de tudo não mexe em ninguém', () => {
+  const layers = [{ track: 0 }, { track: 1 }];
+  assert.deepEqual(openTrackAt(layers, 9).map(l => l.track), [0, 1]);
+});
+
+test('openTrackAt não recria quem não mudou', () => {
+  // Mesma razão do compactTracks: o histórico compartilha estrutura.
+  const baixo = { track: 0 };
+  const out = openTrackAt([baixo, { track: 5 }], 3);
+  assert.equal(out[0], baixo);
 });

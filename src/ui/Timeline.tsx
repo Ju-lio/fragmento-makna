@@ -4,11 +4,15 @@ import { trimLeft, trimRight } from '../engine/project.ts';
 import { previewMode } from '../engine/previewMode.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
-import { pauseAllVideo } from '../engine/videoSync.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
 import { topTrack, freeWindow } from '../engine/project.ts';
 import { stepFrame } from '../engine/frameCache.ts';
+import { effectiveGain } from '../engine/audioMix.ts';
+
+/** O clipe emite som audível agora? Só isso decide se a faixinha aparece. */
+const hasSound = (layer: Layer): boolean =>
+  (layer.type === 'video' || layer.type === 'audio') && effectiveGain(layer) > 0;
 import type { Layer, LayerPatch, Project } from '../engine/types.ts';
 
 interface TimelineProps {
@@ -17,7 +21,7 @@ interface TimelineProps {
   onSelect: (id: number) => void;
   onChange: (id: number, patch: LayerPatch) => void;
   /** Aplica o resultado de um arrasto: posição no tempo e faixa, de uma vez. */
-  onMoveClip: (id: number, to: { start: number; track: number }) => void;
+  onMoveClip: (id: number, to: { start: number; track: number; insert: boolean }) => void;
   /** Corta o clipe selecionado no cursor (Ctrl+B). */
   onSplit: () => void;
   /** Mostra um aviso passageiro na barra de cima. */
@@ -95,9 +99,16 @@ export function Timeline({
     // Misturar as duas origens quadro a quadro é o que faz o vídeo tremer.
     player.fromCache = isRangeCached(project, { from, to });
 
-    // Tocando do cache o `<video>` não pinta nada — deixá-lo rodando só
-    // gastaria decoder e o faria derivar do relógio à toa.
-    if (player.fromCache) pauseAllVideo(project);
+    /**
+     * Tocando do cache o `<video>` não pinta nada, mas continua sendo a fonte
+     * do SOM — por isso ele não é mais pausado aqui.
+     *
+     * Era: `if (player.fromCache) pauseAllVideo(project)`. Fazia sentido
+     * enquanto o editor não tinha áudio; depois disso, era o que fazia o
+     * pré-render reproduzir mudo. Quem conduz o elemento nessa situação é o
+     * `syncSoundLayers` com `driveVideo`, e ele pausa sozinho o que estiver
+     * em silêncio.
+     */
 
     if (player.t < from || player.t >= to) player.seek(from);
     player.play();
@@ -148,6 +159,10 @@ export function Timeline({
   };
 
   const startScrub = (e: React.PointerEvent) => {
+    // Sem isto o navegador ainda inicia a seleção de texto por baixo do
+    // arrasto, e num trackpad chega a rolar a página junto.
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     scrub(e);
     const move = (ev: PointerEvent) => scrub(ev);
     const up = () => {
@@ -169,6 +184,7 @@ export function Timeline({
     const rect = ruler.getBoundingClientRect();
     const startX = e.clientX;
     const orig = { ...layer };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     // Os limites saem dos vizinhos da mesma faixa: esticar por cima do clipe
     // seguinte quebraria a invariante que sustenta a ordem de desenho.
     const bounds = freeWindow(project.layers, layer);
@@ -228,7 +244,7 @@ export function Timeline({
     const startX = e.clientX;
     const startY = e.clientY;
     const rowOf = (track: number) => flipOrder(track, rows.length);
-    let plan = { start: layer.start, track: layer.track, valid: true };
+    let plan = { start: layer.start, track: layer.track, insert: false, valid: true };
 
     clip.classList.add('clip-dragging');
     clip.setPointerCapture(e.pointerId);
@@ -259,12 +275,20 @@ export function Timeline({
       // O clipe acompanha o plano JÁ arredondado na vertical, então ele encaixa
       // visivelmente na faixa em vez de flutuar entre duas.
       const dx = (plan.start - layer.start) * pxPerSecond;
-      const dy = (rowOf(plan.track) - rowOf(layer.track)) * pitch;
+      // Numa inserção o clipe fica NA FRONTEIRA entre as duas linhas, meia
+      // altura acima da faixa que vai nascer — é o que faz o gesto parecer
+      // "encaixando entre" em vez de pousando.
+      const targetRow = rowOf(plan.track) + (plan.insert ? 0.5 : 0);
+      const dy = (targetRow - rowOf(layer.track)) * pitch;
       clip.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
       clip.classList.toggle('clip-blocked', !plan.valid);
 
       if (drop) {
-        drop.style.top = `${rowOf(plan.track) * pitch}px`;
+        drop.style.top = `${targetRow * pitch}px`;
+        drop.style.height = plan.insert ? '4px' : `${first?.offsetHeight ?? 0}px`;
+        // Linha fina entre as faixas = "abre uma nova aqui"; caixa cheia =
+        // "pousa nesta". São ações diferentes e precisam parecer diferentes.
+        drop.classList.toggle('inserting', plan.insert);
         // Avisar ANTES de soltar. Descobrir que o gesto não valeu só depois de
         // largar é o que faz esse tipo de arrasto parecer quebrado.
         drop.classList.toggle('blocked', !plan.valid);
@@ -277,13 +301,14 @@ export function Timeline({
 
       clip.classList.remove('clip-dragging', 'clip-blocked');
       clip.style.transform = '';
-      drop?.classList.remove('on', 'blocked');
+      drop?.classList.remove('on', 'blocked', 'inserting');
 
       // Destino ocupado: o clipe volta pro lugar em vez de empurrar ninguém.
       if (!plan.valid) return;
-      if (plan.start !== layer.start || plan.track !== layer.track) {
-        onMoveClip(layer.id, { start: plan.start, track: plan.track });
-      }
+      const parado = plan.start === layer.start && plan.track === layer.track && !plan.insert;
+      if (parado) return;
+
+      onMoveClip(layer.id, { start: plan.start, track: plan.track, insert: plan.insert });
     };
 
     addEventListener('pointermove', move);
@@ -394,6 +419,13 @@ export function Timeline({
                     onPointerDown={e => startTrim(e, layer, 'left')}
                   />
                   <span className="clip-name">{layer.name}</span>
+                  {/*
+                    O som do clipe, visível e grudado nele. Não é uma layer
+                    separada de propósito: a trilha de um vídeo anda junto com
+                    a imagem, e uma faixa própria abriria a porta pra você
+                    dessincronizar as duas sem querer.
+                  */}
+                  {hasSound(layer) && <span className="clip-sound" aria-hidden="true" />}
                   <span
                     className="clip-handle clip-handle-r"
                     onPointerDown={e => startTrim(e, layer, 'right')}
