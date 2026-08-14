@@ -706,7 +706,55 @@
 }
 
 /* Clipe de som: cor própria, porque o que ele faz na composição é outra coisa. */
-.clip-audio { background: #7fb8d4; }
+/*
+  --- clipe de áudio: um "visor", não um bloco ---
+
+  Tratamento próprio, não só matiz diferente. O clipe visual é um bloco
+  chanfrado, com relevo pra fora; o de áudio é o oposto — fundo escuro afundado,
+  como um mostrador, com a onda desenhada dentro. Dá pra reconhecer o tipo pela
+  silhueta, de canto de olho, sem ler o nome nem comparar cor com o vizinho.
+
+  E é o que deixa a onda legível: desenhar um traço claro sobre o azul sólido de
+  antes daria um contraste medíocre em qualquer cor que se escolhesse.
+*/
+.clip-audio {
+  /* Mais escuro que a faixa (que é `--void`), com moldura clara: é o contraste
+     que faz o visor ler como recuado, e o que revela onde o clipe começa e
+     termina. Igualado ao fundo, a borda sumia e o clipe não tinha limite. */
+  background: #0d0918;
+  border-color: var(--plum-hi);
+  box-shadow:
+    inset 2px 2px 0 rgba(0, 0, 0, 0.6),
+    inset -1px -1px 0 var(--plum);
+  /* A onda herda esta cor pelo `currentColor` do canvas. */
+  color: #7fb8d4;
+}
+.clip-audio.clip-sel { border-color: var(--gold); }
+.clip-audio.clip-sel { color: var(--mint); }
+
+/* A onda ocupa o corpo inteiro e fica ATRÁS do nome. */
+.clip-wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/*
+  O nome, sobre a onda, precisa de fundo próprio: texto claro sobre uma onda
+  clara some exatamente como um título sobre footage — o mesmo problema, e a
+  mesma resposta.
+*/
+.clip-audio .clip-name {
+  position: relative;
+  z-index: 1;
+  padding: 0 3px;
+  background: #0d0918;
+  box-shadow: 0 0 0 2px #0d0918;
+  color: var(--cream);
+}
 
 /*
   A faixinha de som, colada na base do clipe.

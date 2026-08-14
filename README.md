@@ -49,6 +49,8 @@ src/
     audioMix.ts        o que toca, quando, e de onde do arquivo
     audioSync.ts       trilhas alinhadas ao relógio do player
     audioRender.ts     mixagem offline pro export
+    waveform.ts        envelope de picos e recorte pra desenho (puro)
+    waveformStore.ts   decodifica uma vez por arquivo e guarda o envelope
     trackDrag.ts       para onde vai um clipe arrastado na timeline
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
@@ -276,6 +278,49 @@ desenho, que já exclui layers de áudio — então ajustar o volume da música,
 adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
 de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
 o que aconteceria se a assinatura varresse `project.layers` cru.
+
+### A onda, e por que o clipe de áudio não é só outra cor
+
+Cortar no ritmo é impossível olhando um retângulo colorido: o que se procura é a
+batida, o silêncio entre as frases, o ponto onde a voz entra. Isso está no
+envelope do sinal.
+
+O clipe de áudio ganhou tratamento próprio, não outro matiz. O clipe visual é um
+bloco chanfrado com relevo pra fora; o de áudio é o oposto — um **visor
+afundado**, fundo mais escuro que a faixa, moldura clara, com a onda desenhada
+dentro. Dá pra reconhecer o tipo pela silhueta, de canto de olho, sem ler o nome
+nem comparar cor com o vizinho. (Primeira tentativa igualou o fundo do clipe ao
+da faixa: a borda sumia e o clipe ficava sem limite visível.)
+
+**Duas etapas, porque têm custos opostos.** `computePeaks` varre os samples uma
+vez por arquivo e guarda um envelope de resolução fixa (120 baldes por segundo);
+`barsFor` recorta a janela do clipe e reamostra pro número de barras que cabem
+na largura atual. Guardar o envelope em vez do PCM é o que torna isso viável na
+memória — 400x menor, e a diferença não aparece em 24 pixels de altura.
+
+Vale **e** pico por balde, nunca a média: a média tende a zero em qualquer sinal
+simétrico e desenharia uma linha reta pra música e pra silêncio igualmente. E a
+reamostragem é pelo extremo, não "um balde a cada N" — senão a onda cintilaria a
+cada passo de zoom, porque a barra desenhada passaria a ser um balde diferente e
+arbitrário. Medido: ampliar de 735 para 2994 pixels de largura deixou o perfil
+idêntico.
+
+### A onda é normalizada, e isso foi uma decisão
+
+Desenhar em valor absoluto parece o certo e falha justo onde importa. O primeiro
+teste no navegador saiu com o perfil `[2,1,2,1,2]` — praticamente uma linha
+reta — porque o arquivo tinha pico em -18 dB, que em 16 pixels de altura dá
+menos de um pixel. E -18 dB é o normal de fala e de material não masterizado.
+
+Então a onda é dividida pelo pico **do arquivo**, com piso em -26 dB pra um
+arquivo quase mudo não ser amplificado até virar ruído desenhado como conteúdo.
+Silêncio interno continua silêncio (a divisão é pelo arquivo, não por trecho),
+então o que se ganha é contraste, não uma mentira. O mesmo arquivo passou a
+`[12,1,12,1,12]`.
+
+O envelope não é persistido em IndexedDB de propósito: recalcular na abertura
+custa alguns décimos por arquivo e não bloqueia nada, enquanto um cache em disco
+precisaria de invalidação própria. É otimização, e otimização depois.
 
 ### Separar o áudio do vídeo
 
@@ -1025,8 +1070,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 342 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 359 testes.
 
 ### O caminho até "usável"
 

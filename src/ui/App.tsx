@@ -22,6 +22,7 @@ import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
 import { attachAudioElement, syncSoundLayers, stopAllSound } from '../engine/audioSync.ts';
+import { clearPeaks } from '../engine/waveformStore.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
@@ -686,6 +687,10 @@ export default function App() {
     // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
     // que possa trazer as layers de volta.
     releaseAll();
+    clearPeaks();
+    // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
+    // a próxima faixa destacada nascer lendo uma fonte morta.
+    audioElementsRef.current.clear();
     await Promise.all([clearProject(), pruneMedia(new Set())]);
     flash('Projeto novo');
   };

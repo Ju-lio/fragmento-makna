@@ -5,6 +5,7 @@ import { previewMode } from '../engine/previewMode.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
+import { Waveform } from './Waveform.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
 import { topTrack, freeWindow, rulerDuration } from '../engine/project.ts';
 import { stepFrame } from '../engine/frameCache.ts';
@@ -609,6 +610,13 @@ export function Timeline({
                     className="clip-handle clip-handle-l"
                     onPointerDown={e => startTrim(e, layer, 'left')}
                   />
+                  {/*
+                    A onda entra ATRÁS do nome, ocupando o corpo do clipe. É o
+                    que faz cortar no ritmo virar mira visual em vez de
+                    tentativa e erro — a batida e o silêncio entre as frases
+                    estão no envelope, não no nome do arquivo.
+                  */}
+                  {layer.type === 'audio' && <Waveform layer={layer} />}
                   <span className="clip-name">{layer.name}</span>
                   {/*
                     O som do clipe, visível e grudado nele. Não é uma layer
