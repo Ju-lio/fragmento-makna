@@ -279,6 +279,40 @@ adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
 de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
 o que aconteceria se a assinatura varresse `project.layers` cru.
 
+### Vídeo e áudio têm espaços de faixa separados
+
+Era um espaço só, e o modelo ficava ambíguo: a faixa 2 podia ter um clipe de
+vídeo **e** um de áudio, sem nada os distinguindo. Funcionava porque a ordem de
+desenho já ignora áudio, mas a numeração não queria dizer a mesma coisa nos dois
+casos — no vídeo é profundidade, no áudio não é nada — e a timeline não tinha
+como agrupar o som embaixo.
+
+Com dois espaços, "faixa 0" significa uma coisa só dentro de cada tipo, e as
+duas perguntas que o editor faz o tempo todo (quem colide comigo, qual é a de
+cima) ficam bem definidas. `compactTracks` renumera cada tipo por conta própria,
+`freeWindow` e `pasteSlot` só enxergam o próprio espaço.
+
+**O arrasto não precisou mudar** — e isso é consequência de uma escolha, não
+sorte. Como cada gesto acontece dentro do espaço de faixa do próprio tipo,
+atravessar pro outro grupo simplesmente não é representável: os dois grupos são
+contíguos na tela, então converter faixa em linha virou um deslocamento.
+
+Duas coisas quase passaram batido, as duas encontradas rodando:
+
+- **A direção é oposta nos dois grupos.** No vídeo as linhas são invertidas
+  (faixa 0 desenha no fundo, aparece embaixo), no áudio são naturais. Isso era
+  uma constante dentro do `clipDragPlan` e virou parâmetro. O sintoma era
+  silencioso: arrastar áudio pra baixo pedia a faixa -2, o `clamp` prendia em 0,
+  e o clipe não saía do lugar sem nada indicar por quê.
+- **O traço que separa os grupos não pode ter margem.** O cálculo do arrasto
+  mede o espaçamento entre as duas primeiras linhas e assume que vale pra todas
+  — uma margem só na fronteira tornaria isso mentira. O traço vive dentro do vão
+  de 4px que já existia. (Medido depois: 28px entre todas as linhas.)
+
+A migração de projetos salvos é a própria compactação: no formato 5 uma faixa de
+áudio podia ser a 3 só porque existiam três de vídeo, e renumerar cada tipo
+traduz isso sem mover clipe nenhum no tempo.
+
 ### A onda, e por que o clipe de áudio não é só outra cor
 
 Cortar no ritmo é impossível olhando um retângulo colorido: o que se procura é a
@@ -1070,8 +1104,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 359 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 370 testes.
 
 ### O caminho até "usável"
 

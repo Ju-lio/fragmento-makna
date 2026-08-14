@@ -1,7 +1,7 @@
 import { PRESETS } from './presets.ts';
 import { DISPLAY_FONT } from './renderer.ts';
 import type {
-  AudioLayer, Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer,
+  AudioLayer, Effect, ImageLayer, Layer, LayerPatch, LayerType, Project, TextLayer,
   TimeSpan, VideoLayer, VisualLayer,
 } from './types.ts';
 
@@ -96,7 +96,8 @@ export function freeWindow(layers: readonly Layer[], target: Layer): Required<Tr
   let maxEnd = Infinity;
 
   for (const l of layers) {
-    if (l.id === target.id || l.track !== target.track) continue;
+    // Mesma faixa E mesmo tipo: a faixa 0 do áudio não é a faixa 0 do vídeo.
+    if (l.id === target.id || l.track !== target.track || trackKind(l) !== trackKind(target)) continue;
     const end = l.start + l.duration;
     if (end <= target.start) minStart = Math.max(minStart, end);
     else if (l.start >= target.start + target.duration) maxEnd = Math.min(maxEnd, l.start);
@@ -178,9 +179,37 @@ export function drawOrder(project: Project): VisualLayer[] {
   return order;
 }
 
+/**
+ * Vídeo e áudio têm espaços de faixa SEPARADOS.
+ *
+ * Era um espaço só, e isso deixava o modelo ambíguo: a faixa 2 podia ter um
+ * clipe de vídeo e um de áudio ao mesmo tempo, sem que nada os distinguisse.
+ * Funcionava porque a ordem de desenho já ignora áudio — mas a timeline não
+ * tinha como agrupar o som embaixo, e a numeração não queria dizer a mesma
+ * coisa nos dois casos (no vídeo é profundidade; no áudio, nada).
+ *
+ * Com dois espaços, "faixa 0" passa a significar uma coisa só dentro de cada
+ * tipo, e as duas perguntas que o editor faz o tempo todo — quem colide comigo,
+ * qual é a faixa de cima — ficam bem definidas.
+ */
+export type TrackKind = 'visual' | 'audio';
+
+export const trackKind = (layer: { type: LayerType }): TrackKind =>
+  (layer.type === 'audio' ? 'audio' : 'visual');
+
+/** Só as layers que dividem espaço de faixa com esta. */
+export function layersOfKind(layers: readonly Layer[], kind: TrackKind): Layer[] {
+  return layers.filter(l => trackKind(l) === kind);
+}
+
 /** A faixa mais alta em uso. -1 quando não há layer nenhuma. */
 export function topTrack(layers: readonly Layer[]): number {
   return layers.reduce((max, l) => Math.max(max, l.track), -1);
+}
+
+/** A faixa mais alta em uso DENTRO de um tipo — que é o que quase todo mundo quer. */
+export function topTrackOf(layers: readonly Layer[], kind: TrackKind): number {
+  return topTrack(layersOfKind(layers, kind));
 }
 
 /** Piso da duração. Um projeto vazio ainda precisa de régua pra soltar o primeiro clipe. */
@@ -238,10 +267,17 @@ export function rulerDuration(layers: readonly Layer[]): number {
  * o que está na tela.
  */
 export function compactTracks(layers: readonly Layer[]): Layer[] {
-  const used = [...new Set(layers.map(l => l.track))].sort((a, b) => a - b);
-  const renumber = new Map(used.map((track, i) => [track, i]));
+  // Um mapa POR TIPO: renumerar os dois juntos misturaria os espaços de volta,
+  // e uma faixa de áudio passaria a depender de quantas faixas de vídeo existem.
+  const renumber = new Map<TrackKind, Map<number, number>>();
+
+  for (const kind of ['visual', 'audio'] as const) {
+    const used = [...new Set(layersOfKind(layers, kind).map(l => l.track))].sort((a, b) => a - b);
+    renumber.set(kind, new Map(used.map((track, i) => [track, i])));
+  }
+
   return layers.map(l => {
-    const track = renumber.get(l.track) ?? l.track;
+    const track = renumber.get(trackKind(l))?.get(l.track) ?? l.track;
     return track === l.track ? l : { ...l, track };
   });
 }
@@ -269,10 +305,13 @@ export function pasteSlot(
   layers: readonly Layer[],
   span: TimeSpan,
   preferredTrack: number,
+  kind: TrackKind = 'visual',
 ): { start: number; track: number } {
-  const top = topTrack(layers);
+  // Só o próprio tipo entra na conta: um áudio nunca cai numa faixa de vídeo.
+  const mesmas = layersOfKind(layers, kind);
+  const top = topTrack(mesmas);
   const livre = (track: number) =>
-    !layers.some(l => l.track === track && overlaps(l, span));
+    !mesmas.some(l => l.track === track && overlaps(l, span));
 
   for (let track = Math.max(0, preferredTrack); track <= top; track++) {
     if (livre(track)) return { start: span.start, track };

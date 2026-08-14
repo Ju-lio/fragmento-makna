@@ -43,6 +43,11 @@ export interface ClipDragInput {
   span: number;
   duration: number;
   /**
+   * As linhas na tela vão ao contrário da numeração das faixas? Verdadeiro no
+   * vídeo, falso no áudio — ver o comentário na conta de `moved`.
+   */
+  invertedRows?: boolean;
+  /**
    * Faixa mais alta que aceita o clipe. Costuma ser `topTrack + 1`: a faixa
    * vazia do topo é o que permite tirar um clipe de uma faixa cheia.
    */
@@ -78,6 +83,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 
 export function clipDragPlan({
   dx, dy, pxPerSecond, trackPitch, start, track, span, duration, maxTrack, others,
+  invertedRows = true,
 }: ClipDragInput): ClipDragPlan {
   // Sem escala não há como converter pixel em segundo; segurar o clipe onde
   // está é melhor que jogá-lo pra 0 por uma divisão por zero.
@@ -88,13 +94,20 @@ export function clipDragPlan({
   const nextStart = clamp(start + seconds, 0, Math.max(0, duration - span));
 
   /**
-   * O sinal é invertido, e não é descuido: as faixas numeram ao CONTRÁRIO das
-   * linhas na tela. A faixa 0 desenha no fundo e por isso aparece embaixo,
-   * então descer com o ponteiro (`dy` positivo) **diminui** a faixa.
+   * A direção depende de qual espaço de faixa é este, e passou a ser um
+   * PARÂMETRO quando o áudio ganhou o seu.
    *
-   * Sem essa inversão, arrastar pra baixo mandava o clipe pra cima.
+   * No vídeo as faixas numeram ao contrário das linhas: a faixa 0 desenha no
+   * fundo e por isso aparece embaixo, então descer com o ponteiro **diminui** a
+   * faixa. No áudio o número não é profundidade, é só identidade, e as linhas
+   * saem em ordem natural — descer **aumenta**.
+   *
+   * Era fixo no primeiro caso, e o sintoma foi silencioso: arrastar um clipe de
+   * áudio pra baixo pedia a faixa -2, que o `clamp` prendia em 0 — o clipe
+   * simplesmente não saía do lugar, sem nada indicar por quê.
    */
-  const moved = trackPitch > 0 ? -(dy / trackPitch) : 0;
+  const direction = invertedRows ? -1 : 1;
+  const moved = trackPitch > 0 ? direction * (dy / trackPitch) : 0;
   const raw = track + moved;
 
   // Perto de uma linha, pousa nela. No meio do caminho entre duas, o gesto

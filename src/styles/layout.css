@@ -874,3 +874,27 @@
   cursor: grab;
 }
 .gizmo-rotate:active { cursor: grabbing; }
+
+/*
+  --- o grupo do áudio ---
+  Vídeo em cima, som embaixo, com um traço separando. O agrupamento é o que
+  torna a numeração legível: "faixa 1" quer dizer coisas diferentes nos dois
+  espaços, e vê-las intercaladas era o que deixava isso ambíguo.
+*/
+.track-audio { background: #120d1e; }
+
+/*
+  O traço vive DENTRO do vão de 4px que o `.tracks` já tem entre as linhas, sem
+  margem própria. Não é capricho: o cálculo do arrasto mede o espaçamento entre
+  as duas primeiras linhas e assume que ele vale pra todas — uma margem só aqui
+  tornaria esse espaçamento mentira e desalinharia o arrasto perto da fronteira.
+*/
+.track-audio-first::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 2px;
+  background: var(--plum-lt);
+}

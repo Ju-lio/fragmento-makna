@@ -7,7 +7,10 @@ import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } fr
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { Waveform } from './Waveform.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
-import { topTrack, freeWindow, rulerDuration } from '../engine/project.ts';
+import {
+  topTrackOf, trackKind, layersOfKind, freeWindow, rulerDuration,
+} from '../engine/project.ts';
+import type { TrackKind } from '../engine/project.ts';
 import { stepFrame } from '../engine/frameCache.ts';
 import { effectiveGain } from '../engine/audioMix.ts';
 import {
@@ -377,6 +380,7 @@ export function Timeline({
     if (!ruler || !tracks) return;
 
     const pxPerSecond = ruler.getBoundingClientRect().width / player.duration;
+    const kind = trackKind(layer);
 
     // A altura da faixa sai do layout já aplicado, não de uma constante: assim
     // mexer no CSS não desalinha silenciosamente o cálculo do arrasto.
@@ -388,14 +392,23 @@ export function Timeline({
       ? second.offsetTop - first.offsetTop
       : (first?.offsetHeight ?? 0);
 
-    // Todo mundo menos o próprio arrastado — senão ele colidiria consigo mesmo.
-    const others = project.layers
+    // Só o próprio tipo, e sem ele mesmo: um clipe de áudio não colide com um
+    // de vídeo na "faixa 1", porque são faixas 1 diferentes.
+    const others = layersOfKind(project.layers, kind)
       .filter(l => l.id !== layer.id)
       .map(l => ({ track: l.track, start: l.start, duration: l.duration }));
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const rowOf = (track: number) => flipOrder(track, rows.length);
+    /**
+     * Faixa -> linha na tela. Os dois grupos são contíguos, então isto é só um
+     * deslocamento — e é por isso que `clipDragPlan` não precisou mudar: o
+     * arrasto continua acontecendo dentro do espaço de faixa do PRÓPRIO tipo, e
+     * atravessar pro outro grupo simplesmente não é representável.
+     */
+    const rowOf = (track: number) => (
+      kind === 'visual' ? flipOrder(track, visualRows) : visualRows + track
+    );
     let plan = { start: layer.start, track: layer.track, insert: false, valid: true };
 
     clip.classList.add('clip-dragging');
@@ -418,9 +431,11 @@ export function Timeline({
         track: layer.track,
         span: layer.duration,
         duration: rulerSpan,
-        // A faixa vazia do topo entra na conta: é ela que permite tirar um
-        // clipe de uma faixa cheia e abrir uma nova.
-        maxTrack: topTrack(project.layers) + 1,
+        // A faixa vazia extra entra na conta: é ela que permite tirar um clipe
+        // de uma faixa cheia e abrir uma nova, dentro do próprio tipo.
+        maxTrack: topTrackOf(project.layers, kind) + 1,
+        // Só o vídeo desenha as linhas invertidas — ver `clipDragPlan`.
+        invertedRows: kind === 'visual',
         others,
       });
 
@@ -476,9 +491,25 @@ export function Timeline({
    * propósito — o cálculo do arrasto mede o espaçamento entre as duas
    * primeiras linhas e assume que ele vale pra todas.
    */
-  const rows: Array<{ track: number; clips: Layer[] }> = [];
-  for (let track = topTrack(project.layers) + 1; track >= 0; track--) {
-    rows.push({ track, clips: project.layers.filter(l => l.track === track) });
+  const rows: Array<{ kind: TrackKind; track: number; clips: Layer[] }> = [];
+
+  // Vídeo em cima, INVERTIDO — faixa maior desenha por cima, então aparece por
+  // cima. Áudio embaixo, em ordem natural: ali o número não é profundidade, é
+  // só identidade, e inverter só teria confundido.
+  for (let track = topTrackOf(project.layers, 'visual') + 1; track >= 0; track--) {
+    rows.push({
+      kind: 'visual',
+      track,
+      clips: project.layers.filter(l => trackKind(l) === 'visual' && l.track === track),
+    });
+  }
+  const visualRows = rows.length;
+  for (let track = 0; track <= topTrackOf(project.layers, 'audio') + 1; track++) {
+    rows.push({
+      kind: 'audio',
+      track,
+      clips: project.layers.filter(l => trackKind(l) === 'audio' && l.track === track),
+    });
   }
 
   // O passo das marcas sai do ZOOM, não da duração: é quanto espaço um rótulo
@@ -587,8 +618,17 @@ export function Timeline({
           layer pra trás.
         */}
         <div className="tracks" ref={tracksRef}>
-          {rows.map(({ track, clips }) => (
-            <div className={`track${clips.length ? '' : ' track-empty'}`} key={track}>
+          {rows.map(({ kind, track, clips }) => (
+            <div
+              className={
+                'track'
+                + (clips.length ? '' : ' track-empty')
+                + (kind === 'audio' ? ' track-audio' : '')
+                // A primeira linha de áudio ganha o traço que separa os grupos.
+                + (kind === 'audio' && track === 0 ? ' track-audio-first' : '')
+              }
+              key={`${kind}:${track}`}
+            >
               {clips.map(layer => (
                 <div
                   key={layer.id}

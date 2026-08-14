@@ -18,6 +18,7 @@
  */
 
 import { BASE_STATE } from './effects.ts';
+import { compactTracks } from './project.ts';
 import type {
   AnimProp, AudioLayer, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
   TextLayer, Track, VideoLayer,
@@ -44,7 +45,14 @@ import type {
  * projeto do formato 4 vira o padrão desligado, que é exatamente como ele já
  * era desenhado.
  */
-export const PROJECT_FORMAT = 5;
+/**
+ * 5 → 6: vídeo e áudio passaram a ter espaços de faixa SEPARADOS. Num projeto
+ * do formato 5 a numeração era compartilhada, então uma faixa de áudio podia
+ * ser a 3 só porque existiam três faixas de vídeo. `compactTracks` renumera
+ * cada tipo por conta própria — o que é literalmente a tradução pro modelo
+ * novo, e não move clipe nenhum no tempo.
+ */
+export const PROJECT_FORMAT = 6;
 
 export interface SerializedProject {
   format: number;
@@ -229,14 +237,24 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
     if (layer) layers.push(layer);
   });
 
+  /**
+   * Compacta as faixas na leitura — é a migração 5 → 6 acontecendo.
+   *
+   * Num projeto do formato 5 a numeração era compartilhada entre vídeo e áudio,
+   * então uma faixa de áudio podia ser a 3 só porque existiam três de vídeo. A
+   * compactação por tipo traduz isso pro modelo novo sem mover clipe nenhum no
+   * tempo. É idempotente, então rodar em projeto já novo não custa nada.
+   */
+  const tracked = compactTracks(layers);
+
   return {
     project: {
       width: num(data.width, 1920),
       height: num(data.height, 1080),
       fps: num(data.fps, 30),
       background: str(data.background, '#151021'),
-      media: readMedia(data.media, layers),
-      layers,
+      media: readMedia(data.media, tracked),
+      layers: tracked,
     },
     missingMedia,
   };

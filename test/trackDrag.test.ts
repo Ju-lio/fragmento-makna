@@ -206,3 +206,38 @@ test('openTrackAt não recria quem não mudou', () => {
   const out = openTrackAt([baixo, { track: 5 }], 3);
   assert.equal(out[0], baixo);
 });
+
+// --- direção das linhas -------------------------------------------------
+
+test('no vídeo, descer com o ponteiro DIMINUI a faixa', () => {
+  // A faixa 0 desenha no fundo e por isso aparece embaixo.
+  const plan = clipDragPlan({
+    ...base, dy: 40, trackPitch: 40, track: 2, maxTrack: 4, invertedRows: true,
+  });
+  assert.equal(plan.track, 1);
+});
+
+test('no áudio, descer AUMENTA — o número ali não é profundidade', () => {
+  // Era fixo na convenção do vídeo, e o sintoma foi silencioso: o clipe de
+  // áudio pedia a faixa -2, o clamp prendia em 0, e ele não saía do lugar.
+  const plan = clipDragPlan({
+    ...base, dy: 40, trackPitch: 40, track: 0, maxTrack: 4, invertedRows: false,
+  });
+  assert.equal(plan.track, 1);
+});
+
+test('subir no áudio faz o espelho', () => {
+  const plan = clipDragPlan({
+    ...base, dy: -40, trackPitch: 40, track: 2, maxTrack: 4, invertedRows: false,
+  });
+  assert.equal(plan.track, 1);
+});
+
+test('a convenção do vídeo continua sendo o padrão', () => {
+  // Omitir o parâmetro tem que dar exatamente o comportamento antigo.
+  const comPadrao = clipDragPlan({ ...base, dy: 40, trackPitch: 40, track: 2, maxTrack: 4 });
+  const explicito = clipDragPlan({
+    ...base, dy: 40, trackPitch: 40, track: 2, maxTrack: 4, invertedRows: true,
+  });
+  assert.deepEqual(comPadrao, explicito);
+});

@@ -4,7 +4,8 @@ import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
 import {
-  clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer, topTrack,
+  clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer,
+  topTrackOf, trackKind,
 } from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
@@ -303,7 +304,7 @@ export default function App() {
     });
     commit(p => ({
       ...p,
-      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+      layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
     setSelectedId(layer.id);
     setTab('props');
@@ -314,7 +315,7 @@ export default function App() {
     // clipe existente esconderia o que já estava lá sem aviso.
     commit(p => ({
       ...p,
-      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+      layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
     setSelectedId(layer.id);
     setTab('props');
@@ -584,7 +585,7 @@ export default function App() {
     if (!source) return flash('Nada copiado ainda');
 
     const span = { start: +player.t.toFixed(3), duration: source.duration };
-    const slot = pasteSlot(projectRef.current.layers, span, source.track);
+    const slot = pasteSlot(projectRef.current.layers, span, source.track, trackKind(source));
 
     const copy: Layer = {
       ...source,
@@ -628,7 +629,8 @@ export default function App() {
     });
 
     commit(p => {
-      const slot = pasteSlot(p.layers, faixa, topTrack(p.layers) + 1);
+      // Faixa de áudio nova, no espaço de faixa do ÁUDIO.
+        const slot = pasteSlot(p.layers, faixa, topTrackOf(p.layers, 'audio') + 1, 'audio');
       return {
         ...p,
         // O vídeo fica mudo no MESMO passo do histórico: desfazer tem que

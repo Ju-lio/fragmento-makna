@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitLayer, compactTracks, topTrack, overlaps, freeWindow, trimLeft, trimRight, MIN_CLIP,
-  pasteSlot,
+  pasteSlot, topTrackOf,
 } from '../src/engine/project.ts';
-import { textLayer, videoLayer } from './fixtures.ts';
+import { audioLayer, textLayer, videoLayer } from './fixtures.ts';
 import type { VideoLayer } from '../src/engine/types.ts';
 
 // --- corte --------------------------------------------------------------
@@ -235,4 +235,47 @@ test('encostar não é sobrepor', () => {
 
 test('projeto vazio aceita colar na faixa 0', () => {
   assert.deepEqual(pasteSlot([], { start: 3, duration: 2 }, 0), { start: 3, track: 0 });
+});
+
+// --- espaços de faixa separados -----------------------------------------
+
+const musica = (over = {}) => audioLayer({ mediaId: 'm', ...over });
+
+test('a faixa 0 do áudio não é a faixa 0 do vídeo', () => {
+  // A ambiguidade que o modelo antigo tinha: nada distinguia as duas.
+  const layers = [textLayer({ id: 1, track: 0, start: 0, duration: 10 }), musica({ id: 2, track: 0 })];
+  assert.equal(topTrackOf(layers, 'visual'), 0);
+  assert.equal(topTrackOf(layers, 'audio'), 0);
+});
+
+test('compactar renumera cada tipo por conta própria', () => {
+  // Juntos, uma faixa de áudio passaria a depender de quantas de vídeo existem.
+  const compactado = compactTracks([
+    textLayer({ id: 1, track: 5 }),
+    textLayer({ id: 2, track: 9 }),
+    musica({ id: 3, track: 7 }),
+  ]);
+  assert.deepEqual(compactado.map(l => l.track), [0, 1, 0]);
+});
+
+test('um áudio não bloqueia a faixa de mesmo número no vídeo', () => {
+  // Colar um texto na faixa 0 tem que caber, mesmo com música ocupando a
+  // faixa 0 do áudio no mesmo instante.
+  const layers = [musica({ id: 1, track: 0, start: 0, duration: 30 })];
+  assert.deepEqual(pasteSlot(layers, { start: 5, duration: 2 }, 0, 'visual'), { start: 5, track: 0 });
+});
+
+test('colar áudio procura faixa entre os ÁUDIOS', () => {
+  const layers = [
+    textLayer({ id: 1, track: 0, start: 0, duration: 30 }),
+    musica({ id: 2, track: 0, start: 0, duration: 30 }),
+  ];
+  // A faixa 0 do áudio está ocupada; a 0 do vídeo não conta pra essa decisão.
+  assert.equal(pasteSlot(layers, { start: 5, duration: 2 }, 0, 'audio').track, 1);
+});
+
+test('o trim de um áudio não enxerga o vídeo da faixa de mesmo número', () => {
+  const alvo = musica({ id: 1, track: 0, start: 5, duration: 5 });
+  const janela = freeWindow([alvo, textLayer({ id: 2, track: 0, start: 0, duration: 4.5 })], alvo);
+  assert.equal(janela.minStart, 0, 'o texto vizinho não limita o áudio');
 });
