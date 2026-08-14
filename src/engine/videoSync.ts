@@ -54,8 +54,19 @@ export function videoOwners(project: Project, t: number): LoadedVideoLayer[] {
  *    otherwise a scrub would leave the previous frame on screen.
  */
 
-/** Desvio a partir do qual vale começar a corrigir. Abaixo disso, não se vê. */
-const DRIFT_TOLERANCE = 0.08;
+/**
+ * Desvio a partir do qual vale começar a corrigir.
+ *
+ * Eram 80ms, herdados de quando corrigir significava **seek**: ali a zona morta
+ * larga era o que impedia uma tempestade de cortes na imagem. Com a correção
+ * por `playbackRate`, que é contínua e invisível, essa zona morta deixou de
+ * comprar alguma coisa e passou a custar: medindo a reprodução, o elemento
+ * ficava parado em -36..-47ms de atraso, dentro da faixa e portanto **nunca
+ * corrigido**. Isso não incomodava enquanto o som saía do mesmo elemento que a
+ * imagem (os dois erravam juntos); com o áudio numa faixa própria, virou
+ * desencontro audível entre o que se vê e o que se ouve.
+ */
+const DRIFT_TOLERANCE = 0.025;
 
 /**
  * Desvio a partir do qual a velocidade não alcança mais e só um seek resolve.

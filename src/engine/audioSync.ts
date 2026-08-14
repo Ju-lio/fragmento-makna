@@ -30,19 +30,32 @@ import type { Layer, SoundLayer } from './types.ts';
  * Deriva a partir da qual vale corrigir.
  *
  * ~45ms é onde o ouvido começa a perceber o som atrasado em relação à imagem
- * (ITU-R BT.1359). A tolerância era de 150ms, folgada porque toda correção
- * custava um clique; sem esse custo, não há motivo pra tolerar o que se ouve.
+ * (ITU-R BT.1359), e foi o primeiro valor aqui. Mas uma zona morta DE 45ms não
+ * garante 45ms de erro — garante que o erro passeia livremente até lá antes de
+ * alguém reagir, e medindo deu uma serra entre 0 e -87ms.
+ *
+ * O limiar do que se ouve é o teto do erro tolerável, não o ponto onde começar
+ * a agir. Corrigir bem antes, com o andamento (que não corta nada), é de graça.
  */
-const DRIFT_TOLERANCE = 0.045;
+const DRIFT_TOLERANCE = 0.02;
 
 /**
  * Desvio a partir do qual a velocidade não alcança mais e só um seek resolve.
  *
- * Nesta faixa não estamos mais falando de deriva e sim de um evento: o loop
- * voltou ao início, você arrastou o cursor durante a reprodução, o decoder
- * engasgou. Aí o corte no som é o mal menor — abaixo disso ele é o defeito.
+ * Era 0,4s, na ideia de que só um evento (loop, scrub, decoder engasgado)
+ * justificaria o corte. O que a medição mostrou é que o caso comum já nasce
+ * grande: **soltar o `play()` custa latência variável**, e a faixa entrava
+ * entre 1 e 157ms atrasada, diferente a cada reprodução. Com o limiar em 0,4s
+ * isso caía na correção por andamento, que a 4% leva ~3s pra fechar 120ms — ou
+ * seja, o clipe inteiro tocava fora de sincronia, e de um jeito diferente cada
+ * vez que você apertava play.
+ *
+ * Baixo agora pra pouco acima do limiar do que se ouve (~45ms, ITU-R BT.1359),
+ * com margem. A troca é deliberada: **um corte curto no primeiro instante é
+ * menos ruim que segundos de desencontro**. Abaixo disso continua valendo o
+ * andamento, que não corta nada.
  */
-const RESYNC_THRESHOLD = 0.4;
+const RESYNC_THRESHOLD = 0.09;
 
 /**
  * Teto do ajuste de andamento. 4% com o tom preservado não se percebe nem em

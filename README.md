@@ -636,6 +636,23 @@ rotação. Três detalhes que valem registro:
   efeitos — `rotate` é aditiva, então "deitado 15°" mais "balança ±3°" dá o que
   se espera.
 
+### Escalar segue o eixo que a mão andou
+
+A escala é uniforme (o modelo tem um tamanho só), então a quina **não pode**
+seguir o cursor nos dois eixos: encolher a largura encolhe a altura junto, e a
+quina sobe mesmo que a mão só tenha ido pra esquerda. Ela segue **um** eixo — o
+que você de fato moveu.
+
+Duas versões anteriores, e por que não bastavam. **Distância ao centro:** puxar
+200px na horizontal mal muda a hipotenusa, e a quina andava 106px — o cursor
+descolava e o arrasto parecia travado. **Projeção no raio:** minimiza a
+distância entre quina e ponteiro, o que é ótimo no papel e ainda deixava 71px de
+erro no eixo que a pessoa está olhando. Com o eixo dominante, medido: **1px** de
+erro em arrasto horizontal, vertical e diagonal.
+
+A conta roda no referencial da layer, não da tela — numa layer deitada, "o eixo
+em que a mão andou" é o eixo dela.
+
 ### O bug que só apareceu rodando
 
 Mover o título pra direita e depois tentar escalá-lo não fazia nada. A alça
@@ -1105,7 +1122,7 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
 arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 370 testes.
+com 376 testes.
 
 ### O caminho até "usável"
 

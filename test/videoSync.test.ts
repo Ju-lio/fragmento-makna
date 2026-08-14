@@ -8,6 +8,8 @@ import {
 import type { VideoTiming } from '../src/engine/types.ts';
 import { fakeVideo, project, textLayer, videoLayer } from './fixtures.ts';
 
+const rodando = { playing: true, currentTime: 0, paused: false, seeking: false };
+
 /** A 10s source, placed at t=2, showing seconds 1..5 of the file (trimStart=1). */
 const clip = (): VideoTiming => ({ start: 2, duration: 4, trimStart: 1, sourceDuration: 10 });
 
@@ -260,4 +262,15 @@ test('o condutor eleito é quem de fato move o elemento', () => {
   const p = cortado();
   syncVideoLayers(p, 6);
   assert.equal((p.layers[0] as { video: HTMLVideoElement }).video.currentTime, 6);
+});
+
+test('a zona morta da imagem não pode garantir atraso permanente', () => {
+  // Eram 80ms, herdados de quando corrigir significava seek. Com a correção
+  // por velocidade — contínua e invisível — a zona morta larga não comprava
+  // nada e custava: medindo, o elemento ficava parado em -36..-47ms de atraso,
+  // dentro da faixa e portanto nunca corrigido. Só passou a incomodar quando o
+  // som ganhou faixa própria: antes imagem e som erravam juntos.
+  const plan = videoSyncPlan(clip(), 3, { ...rodando, currentTime: 1.96 });
+  assert.notEqual(plan.rate, 1, '40ms de atraso já merecem correção');
+  assert.equal(plan.seekTo, null, 'e sem corte na imagem');
 });

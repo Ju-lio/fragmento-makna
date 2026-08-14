@@ -742,19 +742,7 @@
   pointer-events: none;
 }
 
-/*
-  O nome, sobre a onda, precisa de fundo próprio: texto claro sobre uma onda
-  clara some exatamente como um título sobre footage — o mesmo problema, e a
-  mesma resposta.
-*/
-.clip-audio .clip-name {
-  position: relative;
-  z-index: 1;
-  padding: 0 3px;
-  background: #0d0918;
-  box-shadow: 0 0 0 2px #0d0918;
-  color: var(--cream);
-}
+/* O clipe de áudio não tem rótulo — a onda ocupa a largura toda. Ver Timeline. */
 
 /*
   A faixinha de som, colada na base do clipe.

@@ -656,8 +656,17 @@ export function Timeline({
                     tentativa e erro — a batida e o silêncio entre as frases
                     estão no envelope, não no nome do arquivo.
                   */}
-                  {layer.type === 'audio' && <Waveform layer={layer} />}
-                  <span className="clip-name">{layer.name}</span>
+                  {layer.type === 'audio'
+                    ? (
+                      /*
+                        Sem nome no clipe de áudio: o rótulo tapava justamente a
+                        parte da onda onde o clipe começa, que é onde se mira pra
+                        cortar. O nome continua no `title` do clipe e no painel
+                        de props — ali ele não disputa espaço com a informação.
+                      */
+                      <Waveform layer={layer} />
+                    )
+                    : <span className="clip-name">{layer.name}</span>}
                   {/*
                     O som do clipe, visível e grudado nele. Não é uma layer
                     separada de propósito: a trilha de um vídeo anda junto com

@@ -119,7 +119,7 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     const base = layer.type === 'text' ? layer.size : layer.fit;
 
     drag(e, to => {
-      const factor = Math.max(MIN_SCALE, scaleFactor(from, to, center));
+      const factor = Math.max(MIN_SCALE, scaleFactor(from, to, center, st.rotate));
       const next = base * factor;
       onChange(
         layer.id,

@@ -123,22 +123,55 @@ test('layer sem caixa não pode ser pega', () => {
 
 // --- escalar ------------------------------------------------------------
 
-test('a escala sai da razão entre as distâncias ao centro', () => {
+test('puxar ao longo do raio escala na proporção do que a mão andou', () => {
   const centro = { x: 0, y: 0 };
   assert.equal(scaleFactor({ x: 100, y: 0 }, { x: 150, y: 0 }, centro), 1.5);
 });
 
-test('escalar funciona igual numa layer girada', () => {
-  // Pela distância e não pela projeção num eixo: "pra fora" numa layer deitada
-  // não é nem horizontal nem vertical.
+test('puxando na horizontal, a quina segue o cursor em X', () => {
+  // "Puxei 200 pra esquerda" quer dizer 200 mais estreito. Antes era pela
+  // distância ao centro e a caixa mal encolhia: medido no navegador, 200px de
+  // arrasto moviam a quina 106px.
   const centro = { x: 0, y: 0 };
-  const diagonal = scaleFactor({ x: 30, y: 40 }, { x: 60, y: 80 }, centro);
-  assert.equal(diagonal, 2);
+  const alca = { x: 300, y: 300 };
+
+  const f = scaleFactor(alca, { x: 100, y: 300 }, centro);
+  assert.ok(Math.abs(alca.x * f - 100) < 1e-6, `a quina foi parar em ${alca.x * f}`);
 });
 
-test('alça largada em cima do centro não explode a escala', () => {
-  // Um pixel de tremor viraria 10x.
+test('puxando na vertical, segue em Y', () => {
+  const centro = { x: 0, y: 0 };
+  const alca = { x: 300, y: 200 };
+
+  const f = scaleFactor(alca, { x: 300, y: 80 }, centro);
+  assert.ok(Math.abs(alca.y * f - 80) < 1e-6, `a quina foi parar em ${alca.y * f}`);
+});
+
+test('manda o eixo em que a MÃO andou, não o maior lado da caixa', () => {
+  // Numa caixa larga e baixa, um arrasto vertical curto ainda é vertical.
+  const centro = { x: 0, y: 0 };
+  const alca = { x: 800, y: 100 };
+  const f = scaleFactor(alca, { x: 800, y: 50 }, centro);
+  assert.ok(Math.abs(f - 0.5) < 1e-6, `deu ${f}`);
+});
+
+test('numa layer girada, o eixo é o DELA', () => {
+  // Deitada 90°, puxar pra baixo na tela é "pra fora" no eixo x da layer.
+  const centro = { x: 0, y: 0 };
+  // A alça em (0, 300) na tela é (300, 0) no referencial de uma layer a 90°.
+  const f = scaleFactor({ x: 0, y: 300 }, { x: 0, y: 150 }, centro, 90);
+  assert.ok(Math.abs(f - 0.5) < 1e-6, `deu ${f}`);
+});
+
+test('puxar na diagonal dobrando os dois eixos dá fator 2', () => {
+  const centro = { x: 0, y: 0 };
+  assert.equal(scaleFactor({ x: 30, y: 40 }, { x: 60, y: 80 }, centro), 2);
+});
+
+test('alça largada em cima do eixo do centro não explode a escala', () => {
+  // A razão iria a infinito, e um pixel de tremor viraria 10x.
   assert.equal(scaleFactor({ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 0, y: 0 }), 1);
+  assert.equal(scaleFactor({ x: 0, y: 50 }, { x: 100, y: 50 }, { x: 0, y: 0 }), 1);
 });
 
 // --- girar --------------------------------------------------------------

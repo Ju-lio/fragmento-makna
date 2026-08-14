@@ -526,7 +526,10 @@ export default function App() {
     commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
       if (layers.length === p.layers.length) return p;
-      setSelectedId(cur => (cur === id ? layers[layers.length - 1]?.id ?? null : cur));
+      // Nada é selecionado no lugar. Eleger a última da lista parecia gentileza
+      // e era chute: a próxima edição ia pra uma layer que você não escolheu, e
+      // um Delete seguido de outro apagava algo que não estava na mira.
+      setSelectedId(cur => (cur === id ? null : cur));
       return { ...p, layers: compactTracks(layers) };
     });
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
@@ -545,15 +548,30 @@ export default function App() {
     const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
     if (!layer) return flash('Selecione um clipe pra duplicar');
 
-    const copy: Layer = {
-      ...layer,
-      id: nextId(),
+    const span = {
       start: +(layer.start + layer.duration).toFixed(3),
-      effects: clone(layer.effects),
+      duration: layer.duration,
     };
 
-    commit(p => ({ ...p, layers: [...p.layers, copy] }));
-    setSelectedId(copy.id);
+    commit(p => {
+      /**
+       * "Logo depois" é a INTENÇÃO, não o destino garantido.
+       *
+       * Antes a cópia era largada ali de qualquer jeito, e se houvesse um clipe
+       * naquele trecho as duas passavam a se sobrepor na mesma faixa — o que
+       * quebra a invariante que sustenta a ordem de desenho. `pasteSlot` mantém
+       * a intenção e sobe uma faixa quando o lugar está ocupado.
+       */
+      const slot = pasteSlot(p.layers, span, layer.track, trackKind(layer));
+      const copy: Layer = {
+        ...layer,
+        id: nextId(),
+        ...slot,
+        effects: clone(layer.effects),
+      };
+      setSelectedId(copy.id);
+      return { ...p, layers: [...p.layers, copy] };
+    });
   }, [commit]);
 
   /**

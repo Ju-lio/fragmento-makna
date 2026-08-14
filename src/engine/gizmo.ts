@@ -118,20 +118,44 @@ export function pickLayer(
 }
 
 /**
- * Quanto a layer cresceu, pela razão entre as distâncias ao centro.
+ * Quanto a layer cresceu, pelo eixo em que a mão andou mais.
  *
- * Pela distância e não pela projeção num eixo: assim a alça continua fazendo a
- * mesma coisa numa layer girada, onde "pra fora" não é mais nem horizontal nem
- * vertical. Uniforme nos dois eixos porque o modelo tem um tamanho só — `size`
- * no texto, `fit` na mídia —, e inventar largura e altura separadas aqui criaria
- * um estado que o renderer não sabe desenhar.
+ * A escala é uniforme porque o modelo tem um tamanho só (`size` no texto, `fit`
+ * na mídia), e inventar largura e altura separadas criaria um estado que o
+ * renderer não sabe desenhar. Uniforme significa que a quina **não pode**
+ * seguir o cursor nos dois eixos ao mesmo tempo: encolher a largura encolhe a
+ * altura junto, e a quina sobe mesmo que a mão só tenha ido pra esquerda.
+ *
+ * Então ela segue **um** eixo — o que você de fato moveu. "Puxei 200 pra
+ * esquerda" quer dizer 200 mais estreito, e é isso que acontece.
+ *
+ * Duas tentativas anteriores, e por que não bastam:
+ *
+ *  - **Distância ao centro.** Puxar 200px na horizontal mal muda a hipotenusa
+ *    (a componente vertical continua inteira lá), então a caixa encolhia muito
+ *    menos do que a mão andou. Medido: 200px de arrasto moviam a quina 106px.
+ *  - **Projeção no raio.** Minimiza a distância entre a quina e o ponteiro, o
+ *    que é ótimo no papel e ainda deixa 71px de erro no eixo que a pessoa está
+ *    olhando.
+ *
+ * A conta roda no referencial da LAYER, não da tela: numa layer deitada, "o
+ * eixo em que a mão andou" é o eixo dela, e usar x/y da tela faria a alça
+ * responder torto exatamente quando há rotação.
  */
-export function scaleFactor(from: Point, to: Point, center: Point): number {
-  const d0 = Math.hypot(from.x - center.x, from.y - center.y);
-  const d1 = Math.hypot(to.x - center.x, to.y - center.y);
-  // Perto demais do centro a razão explode: um pixel de tremor viraria 10x.
-  if (d0 < 1e-3) return 1;
-  return d1 / d0;
+export function scaleFactor(
+  from: Point, to: Point, center: Point, rotateDeg = 0,
+): number {
+  const a = toLocal(from, center, rotateDeg, 1);
+  const b = toLocal(to, center, rotateDeg, 1);
+
+  const useX = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
+  const ref = useX ? a.x : a.y;
+  const now = useX ? b.x : b.y;
+
+  // Alça largada em cima do eixo do centro: a razão explodiria, e um pixel de
+  // tremor viraria 10x.
+  if (Math.abs(ref) < 1e-6) return 1;
+  return now / ref;
 }
 
 /** Quantos graus o ponteiro girou em torno do centro, entre dois pontos. */

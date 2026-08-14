@@ -53,45 +53,53 @@ test('entrando agora, posiciona exato antes de soltar', () => {
 
 // --- deriva -------------------------------------------------------------
 
-test('deriva abaixo do que se ouve é deixada em paz', () => {
-  // Corrigir o que ninguém percebe só gasta — e mexer no andamento à toa é a
-  // receita pra faixa ficar oscilando em torno do relógio.
-  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02 });
+test('deriva minúscula é deixada em paz', () => {
+  // Mexer no andamento a cada micro-oscilação é a receita pra faixa ficar
+  // caçando o relógio pra sempre.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.01 });
   assert.equal(plan.seekTo, null);
   assert.equal(plan.rate, 1);
   assert.equal(plan.play, true);
 });
 
-test('deriva audível corrige por VELOCIDADE, não por seek', () => {
+test('deriva perceptível corrige por VELOCIDADE, não por seek', () => {
   // Um seek num elemento que está tocando é um corte no som toda vez. Com
   // `preservesPitch`, ±4% de andamento não se percebe e não corta nada.
-  const atrasada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.9 });
+  const atrasada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.95 });
   assert.equal(atrasada.seekTo, null, 'sem corte no som');
   assert.ok(atrasada.rate > 1, 'acelera pra alcançar o relógio');
 
-  const adiantada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.1 });
+  const adiantada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.05 });
   assert.equal(adiantada.seekTo, null);
   assert.ok(adiantada.rate < 1, 'segura pra deixar o relógio alcançar');
 });
 
 test('a correção de andamento tem teto', () => {
   // Acima de ~4% a faixa soa apressada: trocar um defeito por outro.
-  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.7 });
-  assert.equal(plan.rate, 1.04);
+  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.92 }).rate, 1.04);
 });
 
-test('a tolerância do som fica no limiar do que se ouve', () => {
-  // 45ms é onde o ouvido começa a pegar o som atrasado em relação à imagem.
-  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.04 }).rate, 1);
-  assert.notEqual(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.06 }).rate, 1);
+test('a correção começa MUITO antes do limiar do que se ouve', () => {
+  // Uma zona morta de 45ms não garante 45ms de erro: garante que o erro passeia
+  // livre até lá antes de alguém reagir. Medindo, dava uma serra de 0 a -87ms.
+  // O limiar audível é o teto tolerável, não o ponto de agir.
+  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.015 }).rate, 1);
+  assert.notEqual(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.03 }).rate, 1);
 });
 
-test('perdido de vez, aí sim corrige por seek', () => {
-  // Não é mais deriva, é evento: o loop voltou ao início, ou você arrastou o
-  // cursor durante a reprodução. Aqui a velocidade nunca alcançaria.
-  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 1 });
+test('acima do limiar audível, corta e acerta de uma vez', () => {
+  // Soltar o `play()` custa latência variável, e a faixa entrava até 157ms
+  // atrasada — diferente a cada reprodução. Deixar isso pro andamento levava
+  // ~3s pra fechar, ou seja o clipe inteiro fora de sincronia. Um corte curto
+  // no primeiro instante é menos ruim que segundos de desencontro.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.85 });
   assert.equal(plan.seekTo, 3, 'salta pro instante certo');
   assert.equal(plan.rate, 1, 'e volta ao andamento normal');
+});
+
+test('perdido de vez também corrige por seek', () => {
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 1 });
+  assert.equal(plan.seekTo, 3);
 });
 
 test('com um seek em voo, não empilha outro', () => {
