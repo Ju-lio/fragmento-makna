@@ -68,10 +68,14 @@ export function effectProgress(eff: Effect, layer: TimeSpan, t: number): number 
 }
 
 /** Full animated state of a layer at time `t`. */
-export function resolveState(layer: TimeSpan & { x?: number; y?: number; effects?: Effect[] }, t: number): LayerState {
+export function resolveState(
+  layer: TimeSpan & { x?: number; y?: number; rotate?: number; effects?: Effect[] },
+  t: number,
+): LayerState {
   const st = BASE_STATE();
   st.x += layer.x || 0;
   st.y += layer.y || 0;
+  st.rotate += layer.rotate || 0;
 
   for (const eff of layer.effects || []) {
     const p = effectProgress(eff, layer, t);

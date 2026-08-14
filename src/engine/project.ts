@@ -49,6 +49,7 @@ export function makeTextLayer(overrides: Partial<TextLayer> = {}): TextLayer {
     font: DISPLAY_FONT,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     // Nasce sem contorno nem sombra: um texto que já se lê não precisa deles, e
     // ligá-los por padrão mudaria a cara de todo projeto que já existe.
@@ -314,6 +315,7 @@ export function makeVideoLayer(
     mute: false,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     fit: 1,
     effects: [],
@@ -341,6 +343,7 @@ export function makeAudioLayer(
     mediaId,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     volume: 1,
     mute: false,
@@ -362,6 +365,7 @@ export function makeImageLayer(
     duration: 3,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     fit: 0.8,
     img,

@@ -68,6 +68,14 @@ interface LayerBase extends TimeSpan {
   name: string;
   x: number;
   y: number;
+  /**
+   * Rotação de base, em graus.
+   *
+   * Separada da rotação dos efeitos, e somada a ela — `rotate` é prop aditiva,
+   * então "deitado 15°" mais "balança ±3°" dá o que se espera. Sem este campo o
+   * gizmo não teria onde escrever: girar viraria editar JSON de efeito.
+   */
+  rotate: number;
   effects: Effect[];
   /**
    * Faixa da timeline. Número maior desenha por cima.

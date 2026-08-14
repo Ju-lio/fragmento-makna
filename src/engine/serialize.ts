@@ -39,9 +39,10 @@ import type {
  * que já existem — o que preserva exatamente o material que o projeto tinha.
  */
 /**
- * 4 → 5: texto ganhou contorno e sombra (`TextDecor`). Um projeto do formato 4
- * não tinha nenhum dos dois, então a migração é o padrão desligado — que é
- * exatamente como ele já era desenhado.
+ * 4 → 5: texto ganhou contorno e sombra (`TextDecor`), e toda layer ganhou
+ * `rotate` de base — o campo onde o gizmo escreve ao girar. Nos dois casos um
+ * projeto do formato 4 vira o padrão desligado, que é exatamente como ele já
+ * era desenhado.
  */
 export const PROJECT_FORMAT = 5;
 
@@ -62,6 +63,7 @@ interface SerializedBase {
   duration: number;
   x: number;
   y: number;
+  rotate: number;
   track: number;
   effects: Effect[];
 }
@@ -125,6 +127,7 @@ function serializeLayer(l: Layer): SerializedLayer {
     id: l.id, name: l.name,
     start: l.start, duration: l.duration,
     x: l.x, y: l.y,
+    rotate: l.rotate,
     track: l.track,
     effects: l.effects,
   };
@@ -283,6 +286,8 @@ function readLayer(
     duration: num(l.duration, 1),
     x: num(l.x, 0),
     y: num(l.y, 0),
+    // Ausente num projeto antigo: sem rotação é como ele já se desenhava.
+    rotate: num(l.rotate, 0),
     track: Math.max(0, Math.round(num(l.track, defaultTrack))),
     effects: readEffects(l.effects),
   };

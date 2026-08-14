@@ -118,7 +118,7 @@ export function renderSignature(project: Project): string {
   const layers = drawOrder(project).map(l => {
     // Campo a campo e por tipo: assim o compilador cobra o que só existe em
     // algumas layers, e um campo novo no modelo não entra aqui por acidente.
-    const common = [l.type, l.track, l.start, l.duration, l.x, l.y, l.effects];
+    const common = [l.type, l.track, l.start, l.duration, l.x, l.y, l.rotate, l.effects];
     if (l.type === 'text') {
       return [
         ...common, l.text, l.size, l.color, l.font,

@@ -37,6 +37,7 @@ src/
     fonts.ts           carga explícita da fonte do canvas
     viewport.ts        zoom, fit e pan do preview
     timelineView.ts    zoom e rolagem da timeline
+    gizmo.ts           posicionar, escalar e girar no palco
     videoSync.ts       alinha os <video> ao relógio
     mediaOwner.ts      quem conduz cada elemento quando vários clipes o dividem
     frameCache.ts      cache de frames compostos + assinatura
@@ -477,6 +478,48 @@ arrasta o cursor, quem manda na vista é você.
 | Zoom in / out | botões `−` / `+` |
 | Mostrar o projeto inteiro | botão `TUDO` |
 | Rolar | roda, ou arrastar a barra |
+
+## Gizmo no palco
+
+Ninguém posiciona um título digitando coordenada. Arrastar move, as quinas
+escalam, a alça de cima gira (com `Shift` prendendo de 15 em 15).
+
+**A decisão que dispensou toda conta de zoom:** o gizmo mora *dentro* da
+`.stage-holder`, junto do canvas. O holder já carrega a `transform` do viewport,
+então basta escrever tudo em pixels **lógicos da composição** — os mesmos do
+`drawFrame` — e o navegador põe no lugar. A única coisa que precisa desfazer o
+zoom são as alças em si, porque uma alça de 11px viraria 2px a 25%, e isso é uma
+variável CSS (`--unzoom`).
+
+A matemática toda vive em `gizmo.ts`, pura e testável sem DOM: a caixa da layer,
+a conversão pro referencial dela, o acerto, o fator de escala e o delta de
+rotação. Três detalhes que valem registro:
+
+- **A caixa tem que sair da mesma conta do desenho.** `layerBox` repete a
+  entrelinha do `drawText` e o `Math.min` do `drawSource` de propósito — duas
+  contas em lugares diferentes é exatamente o que faria a moldura não coincidir
+  com o que está na tela.
+- **Escalar mede distância ao centro, não projeção num eixo.** Numa layer
+  girada, "pra fora" não é nem horizontal nem vertical. E é uniforme porque o
+  modelo tem um tamanho só (`size` no texto, `fit` na mídia): inventar largura e
+  altura separadas aqui criaria um estado que o renderer não sabe desenhar.
+- **Girar precisou de um campo novo.** `rotate` só existia como prop de efeito;
+  o gizmo não teria onde escrever. Virou campo de base da layer, somado ao dos
+  efeitos — `rotate` é aditiva, então "deitado 15°" mais "balança ±3°" dá o que
+  se espera.
+
+### O bug que só apareceu rodando
+
+Mover o título pra direita e depois tentar escalá-lo não fazia nada. A alça
+existia, respondia a `elementFromPoint`, e o handler até calculava o fator
+certo — mas com a layer deslocada a quina caía em x=1107 numa janela de palco
+que termina em 1075, e o `overflow: hidden` do viewport a recortava.
+
+A causa real era o fit: ele deixava 24px fixos de folga, então o canvas
+praticamente encostava nas bordas e **qualquer** conteúdo posicionado meio pra
+fora da composição ficava inalcançável. A margem virou fração do contêiner
+(`FIT_MARGIN`), o que dá área clicável em volta do canvas — e o que sobrar disso
+se alcança com zoom, que já tem atalho.
 
 ## Legibilidade do texto: contorno e sombra
 
@@ -933,8 +976,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
-com 311 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
+com 334 testes.
 
 ### O caminho até "usável"
 
@@ -943,8 +986,6 @@ exportar, sem bater numa parede.**
 
 **Falta pra chegar lá:**
 
-- **Gizmo no canvas** — arrastar pra posicionar, alças pra escalar e girar.
-  Ninguém posiciona um título digitando coordenada.
 - **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,

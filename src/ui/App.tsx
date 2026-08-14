@@ -636,7 +636,13 @@ export default function App() {
       </header>
 
       <main className="workspace">
-        <Stage project={project} onResize={resizeProject} />
+        <Stage
+          project={project}
+          onResize={resizeProject}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onChange={updateLayer}
+        />
 
         <aside className="sidebar">
           <Win

@@ -63,7 +63,7 @@ export const effect = (over: Partial<Effect> = {}): Effect => ({ tracks: [], ...
 export function textLayer(over: Partial<TextLayer> = {}): TextLayer {
   return {
     id: 1, type: 'text', name: 'Texto',
-    start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [],
+    start: 0, duration: 4, x: 0, y: 0, rotate: 0, track: 0, effects: [],
     text: 'OI', size: 100, color: '#fff', font: 'X',
     stroke: '#000', strokeWidth: 0, shadow: '#000', shadowBlur: 0, shadowOffset: 0,
     ...over,
@@ -73,7 +73,7 @@ export function textLayer(over: Partial<TextLayer> = {}): TextLayer {
 export function videoLayer(over: Partial<VideoLayer> = {}): VideoLayer {
   return {
     id: 2, type: 'video', name: 'Vídeo',
-    start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [], fit: 1,
+    start: 0, duration: 4, x: 0, y: 0, rotate: 0, track: 0, effects: [], fit: 1,
     trimStart: 0, sourceDuration: 10,
     video: fakeVideo(), mediaId: 'media-video',
     volume: 1, mute: false,
@@ -88,7 +88,7 @@ export function fakeAudio(init: FakeVideoInit = {}): HTMLAudioElement {
 export function audioLayer(over: Partial<AudioLayer> = {}): AudioLayer {
   return {
     id: 4, type: 'audio', name: 'Áudio',
-    start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [],
+    start: 0, duration: 4, x: 0, y: 0, rotate: 0, track: 0, effects: [],
     trimStart: 0, sourceDuration: 30,
     audio: fakeAudio(), mediaId: 'media-audio',
     volume: 1, mute: false,
@@ -99,7 +99,7 @@ export function audioLayer(over: Partial<AudioLayer> = {}): AudioLayer {
 export function imageLayer(over: Partial<ImageLayer> = {}): ImageLayer {
   return {
     id: 3, type: 'image', name: 'Imagem',
-    start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [], fit: 0.8,
+    start: 0, duration: 4, x: 0, y: 0, rotate: 0, track: 0, effects: [], fit: 0.8,
     img: fakeImage(), mediaId: 'media-img',
     ...over,
   };

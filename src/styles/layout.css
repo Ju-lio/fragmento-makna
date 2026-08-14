@@ -767,3 +767,62 @@
   border: 2px solid var(--ink);
   padding: 2px 6px;
 }
+
+/* --- gizmo do palco --- */
+/*
+  Vive dentro da `.stage-holder`, sobre o canvas, e mede a composição em pixels
+  LÓGICOS — a transform do viewport, que já está no holder, faz o resto. É por
+  isso que nada aqui embaixo consulta o zoom, exceto as alças.
+*/
+.gizmo-root {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* O fundo tem que continuar recebendo o pan: só a layer atingida captura. */
+  background: transparent;
+}
+
+.gizmo {
+  position: absolute;
+  box-sizing: border-box;
+  border: calc(2px * var(--unzoom, 1)) dashed var(--gold);
+  pointer-events: none;
+}
+
+.gizmo-handle,
+.gizmo-rotate {
+  position: absolute;
+  width: calc(11px * var(--unzoom, 1));
+  height: calc(11px * var(--unzoom, 1));
+  background: var(--gold);
+  border: calc(2px * var(--unzoom, 1)) solid var(--ink);
+  pointer-events: auto;
+}
+
+/* As quinas, cada uma centrada no próprio vértice. */
+.gizmo-nw { top: 0; left: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.gizmo-ne { top: 0; right: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
+.gizmo-se { bottom: 0; right: 0; transform: translate(50%, 50%); cursor: nwse-resize; }
+.gizmo-sw { bottom: 0; left: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
+
+/* A haste liga a alça de girar à moldura — sem ela o círculo parece solto. */
+.gizmo-stem {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: calc(2px * var(--unzoom, 1));
+  height: calc(26px * var(--unzoom, 1));
+  background: var(--gold);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.gizmo-rotate {
+  left: 50%;
+  bottom: 100%;
+  border-radius: 50%;
+  background: var(--mint);
+  transform: translate(-50%, calc(26px * var(--unzoom, 1)));
+  margin-bottom: calc(26px * var(--unzoom, 1));
+  cursor: grab;
+}
+.gizmo-rotate:active { cursor: grabbing; }

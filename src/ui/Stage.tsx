@@ -10,11 +10,15 @@ import {
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource } from '../engine/frameSource.ts';
 import { StageBar } from './StageBar.tsx';
-import type { Project } from '../engine/types.ts';
+import { Gizmo } from './Gizmo.tsx';
+import type { LayerPatch, Project } from '../engine/types.ts';
 
 interface StageProps {
   project: Project;
   onResize: (width: number, height: number) => void;
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+  onChange: (id: number, patch: LayerPatch, coalesce?: boolean) => void;
 }
 
 /**
@@ -25,7 +29,7 @@ interface StageProps {
  * straight to the canvas. Playing back, scrubbing and panning all re-render
  * exactly nothing.
  */
-export function Stage({ project, onResize }: StageProps) {
+export function Stage({ project, onResize, selectedId, onSelect, onChange }: StageProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -334,6 +338,17 @@ export function Stage({ project, onResize }: StageProps) {
             ref={canvasRef}
             style={{ width: project.width, height: project.height }}
             className="stage-canvas"
+          />
+          {/*
+            Dentro do holder, junto do canvas: o holder já carrega a transform
+            do viewport, então o gizmo escreve em pixels lógicos e o navegador
+            põe no lugar — sem nenhuma conta de zoom no posicionamento.
+          */}
+          <Gizmo
+            project={project}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onChange={onChange}
           />
         </div>
       </div>
