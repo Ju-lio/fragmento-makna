@@ -1,34 +1,65 @@
 /**
  * Mantém as trilhas de som alinhadas ao relógio do player.
  *
- * Parece o `videoSync`, mas a correção de deriva é o **oposto** — e de
- * propósito. Lá, corrigir por seek fazia a imagem voltar um quadro, e a saída
- * foi ajustar `playbackRate`. Aqui isso seria pior: mudar a velocidade de uma
- * faixa muda o tom dela, e meio semitom de desafinação é muito mais audível
- * que um quadro repetido é visível. Então som corrige por **seek**, com uma
- * tolerância folgada — o pulo de um seek de áudio é um clique curto, e abaixo
- * de ~150ms a deriva não se percebe.
+ * Duas regras carregam este arquivo, e as duas custaram bug:
  *
- * A outra diferença: som só existe durante a reprodução. Não há "scrub
- * sonoro" — arrastar o cursor tocando pedacinhos de áudio é ruído, não
+ * 1. **Um elemento por arquivo, não por layer.** Cortar um clipe (`splitLayer`)
+ *    copia a layer com spread, então as duas metades apontam pro MESMO
+ *    `<audio>`/`<video>` — e o acervo faz o mesmo ao reaproveitar um arquivo.
+ *    Deixar cada layer conduzir o elemento fazia a metade inativa pausar o que
+ *    a ativa tinha acabado de soltar. Ver `soundOwners`.
+ *
+ * 2. **Corrige por velocidade, não por seek.** Era o contrário, na premissa de
+ *    que mudar a velocidade desafina. Não desafina: `preservesPitch` é o padrão
+ *    dos navegadores há anos, e ±4% de andamento com o tom preservado é
+ *    inaudível. Já o seek num elemento que está tocando é um corte no som toda
+ *    vez — e como cada correção chegava atrasada da própria latência do seek,
+ *    ele se repetia. Seek agora é só pra evento (loop, scrub, clipe entrando).
+ *
+ * A outra diferença pro vídeo: som só existe durante a reprodução. Não há
+ * "scrub sonoro" — arrastar o cursor tocando pedacinhos de áudio é ruído, não
  * informação, e nenhum editor faz isso.
  */
 
-import { effectiveGain, isSoundActive, sourceTimeOf } from './audioMix.ts';
+import { effectiveGain, isSoundActive, soundLayers, sourceTimeOf } from './audioMix.ts';
+import { ownersByMedia } from './mediaOwner.ts';
 import type { Layer, SoundLayer } from './types.ts';
 
 /**
- * Deriva tolerada antes de corrigir. Bem mais folgada que a do vídeo: cada
- * correção é um clique audível, então corrigir demais é pior que derivar um
- * pouco.
+ * Deriva a partir da qual vale corrigir.
+ *
+ * ~45ms é onde o ouvido começa a perceber o som atrasado em relação à imagem
+ * (ITU-R BT.1359). A tolerância era de 150ms, folgada porque toda correção
+ * custava um clique; sem esse custo, não há motivo pra tolerar o que se ouve.
  */
-const DRIFT_TOLERANCE = 0.15;
+const DRIFT_TOLERANCE = 0.045;
+
+/**
+ * Desvio a partir do qual a velocidade não alcança mais e só um seek resolve.
+ *
+ * Nesta faixa não estamos mais falando de deriva e sim de um evento: o loop
+ * voltou ao início, você arrastou o cursor durante a reprodução, o decoder
+ * engasgou. Aí o corte no som é o mal menor — abaixo disso ele é o defeito.
+ */
+const RESYNC_THRESHOLD = 0.4;
+
+/**
+ * Teto do ajuste de andamento. 4% com o tom preservado não se percebe nem em
+ * música; acima disso a faixa começa a soar apressada, que é trocar um defeito
+ * por outro.
+ */
+const MAX_RATE_TRIM = 0.04;
+
+/** Ganho da correção: 45ms de atraso já saturam o teto acima. */
+const RATE_GAIN = 1.0;
 
 /** O que um elemento de som deve fazer neste instante. */
 export interface SoundPlan {
   seekTo: number | null;
   play: boolean;
   volume: number;
+  /** Andamento — o mecanismo de correção durante a reprodução. */
+  rate: number;
 }
 
 export interface SoundElementState {
@@ -50,30 +81,61 @@ export function soundSyncPlan(
   { playing, currentTime, paused = true, seeking = false }: SoundElementState,
 ): SoundPlan {
   const volume = effectiveGain(layer);
+  const silent = { seekTo: null, play: false, volume, rate: 1 };
 
   // Parado, ou fora do trecho do clipe: silêncio. Não posiciona nada — um seek
   // com o player pausado só gastaria decoder pra ninguém ouvir.
-  if (!playing || !isSoundActive(layer, t)) return { seekTo: null, play: false, volume };
+  if (!playing || !isSoundActive(layer, t)) return silent;
 
   const want = sourceTimeOf(layer, t);
   // O clipe pode ter sido esticado além do arquivo; pedir tempo que não existe
   // deixa o elemento num estado de erro do qual ele não sai sozinho.
-  if (want < 0 || want >= layer.sourceDuration) return { seekTo: null, play: false, volume };
+  if (want < 0 || want >= layer.sourceDuration) return silent;
 
-  // Correção em voo: empilhar outra só multiplica os cliques.
-  if (seeking) return { seekTo: null, play: true, volume };
+  // Correção em voo: empilhar outra só multiplica os cortes no som.
+  if (seeking) return { seekTo: null, play: true, volume, rate: 1 };
 
   // Entrando agora: posiciona exato antes de soltar, que é quando o seek não
   // custa nada porque ninguém está ouvindo ainda.
-  if (paused) return { seekTo: want, play: true, volume };
+  if (paused) return { seekTo: want, play: true, volume, rate: 1 };
 
-  const drift = Math.abs(currentTime - want);
-  return { seekTo: drift > DRIFT_TOLERANCE ? want : null, play: true, volume };
+  const error = want - currentTime;          // > 0: o elemento está atrasado
+  const drift = Math.abs(error);
+
+  // Perdido de vez: velocidade não alcança mais. Ver RESYNC_THRESHOLD.
+  if (drift > RESYNC_THRESHOLD) return { seekTo: want, play: true, volume, rate: 1 };
+
+  if (drift > DRIFT_TOLERANCE) {
+    const trim = Math.max(-MAX_RATE_TRIM, Math.min(MAX_RATE_TRIM, error * RATE_GAIN));
+    return { seekTo: null, play: true, volume, rate: +(1 + trim).toFixed(3) };
+  }
+
+  return { seekTo: null, play: true, volume, rate: 1 };
 }
 
 /** O elemento de mídia de uma layer com som. */
 export function soundElement(layer: SoundLayer): HTMLMediaElement {
   return layer.type === 'audio' ? layer.audio : layer.video;
+}
+
+/** Esta layer deve estar produzindo som audível neste instante? */
+function audibleAt(layer: SoundLayer, t: number): boolean {
+  if (!isSoundActive(layer, t) || effectiveGain(layer) === 0) return false;
+  const want = sourceTimeOf(layer, t);
+  return want >= 0 && want < layer.sourceDuration;
+}
+
+/**
+ * Uma layer por ARQUIVO — a que de fato conduz o elemento neste instante.
+ * Ver `ownersByMedia` pro porquê da disputa existir; aqui só entra o critério
+ * de "em uso", que pra som é estar soando.
+ *
+ * Sobreposição real de dois clipes do MESMO arquivo continua tocando só um —
+ * isso é limite do elemento, não escolha. É o mesmo motivo de o export usar
+ * `OfflineAudioContext`, onde cada clipe tem fonte própria.
+ */
+export function soundOwners(layers: readonly Layer[], t: number): SoundLayer[] {
+  return ownersByMedia(soundLayers(layers), layer => audibleAt(layer, t));
 }
 
 /**
@@ -85,6 +147,10 @@ export function soundElement(layer: SoundLayer): HTMLMediaElement {
  */
 export function attachAudioElement(audio: HTMLAudioElement): HTMLAudioElement {
   audio.preload = 'auto';
+  // Explícito porque a correção de deriva depende disso: é o que separa "4% mais
+  // rápido" de "meio semitom acima". É o padrão dos navegadores, mas um padrão
+  // que a gente assume calado é um padrão que muda sem ninguém perceber.
+  audio.preservesPitch = true;
   return audio;
 }
 
@@ -111,9 +177,8 @@ export function syncSoundLayers(
   playing: boolean,
   { driveVideo = false }: SyncSoundOptions = {},
 ): void {
-  for (const layer of layers) {
-    if (layer.type !== 'audio' && layer.type !== 'video') continue;
-
+  // Uma layer por elemento: ver `soundOwners`.
+  for (const layer of soundOwners(layers, t)) {
     const el = soundElement(layer);
     if (!el) continue;
 
@@ -130,6 +195,8 @@ export function syncSoundLayers(
       const wanted = plan.play && plan.volume > 0;
 
       if (wanted && plan.seekTo !== null) el.currentTime = plan.seekTo;
+      if (el.playbackRate !== plan.rate) el.playbackRate = plan.rate;
+
       if (wanted && el.paused) {
         el.play().catch(() => { /* autoplay barrado: volta no próximo gesto */ });
       } else if (!wanted && !el.paused) {
@@ -145,11 +212,19 @@ export function syncSoundLayers(
   }
 }
 
-/** Cala tudo — usado quando a reprodução para. */
+/**
+ * Cala tudo — usado quando a reprodução para.
+ *
+ * Zera o andamento junto: a correção de deriva deixa o elemento fora de 1, e
+ * quem vier depois (o próximo play, o export) não tem por que herdar o resíduo
+ * da reprodução anterior. É o mesmo cuidado que `pauseAllVideo` toma.
+ */
 export function stopAllSound(layers: readonly Layer[]): void {
   for (const layer of layers) {
     if (layer.type !== 'audio') continue;
     const el = layer.audio;
-    if (el && !el.paused) el.pause();
+    if (!el) continue;
+    el.playbackRate = 1;
+    if (!el.paused) el.pause();
   }
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   videoSyncPlan, sourceTimeAt, isLayerActive, previewBusyState, hasActiveVideo,
   syncVideoLayers, claimVideoElements, releaseVideoElements, videoElementsOwner,
+  videoOwners,
 } from '../src/engine/videoSync.ts';
 import type { VideoTiming } from '../src/engine/types.ts';
 import { fakeVideo, project, textLayer, videoLayer } from './fixtures.ts';
@@ -203,4 +204,60 @@ test('só o dono que reivindicou consegue liberar', () => {
 
   releaseVideoElements(dono);
   assert.equal(videoElementsOwner(), null);
+});
+
+// --- um elemento, vários clipes -----------------------------------------
+
+/**
+ * Cortar um clipe com Ctrl+B deixa as duas metades apontando pro MESMO
+ * `<video>` — `splitLayer` copia a layer com spread e a referência vai junto.
+ * Deixar as duas conduzirem fazia a inativa pausar o elemento que a ativa
+ * tinha acabado de soltar, e o clipe congelava logo depois do corte.
+ */
+const cortado = () => {
+  const video = fakeVideo();
+  return project([
+    videoLayer({ id: 1, start: 0, duration: 4, trimStart: 0, video, mediaId: 'v' }),
+    videoLayer({ id: 2, start: 4, duration: 4, trimStart: 4, video, mediaId: 'v' }),
+  ]);
+};
+
+test('duas metades do mesmo arquivo elegem UM condutor do elemento', () => {
+  assert.equal(videoOwners(cortado(), 2).length, 1);
+});
+
+test('quem está no ar conduz, mesmo vindo antes na lista', () => {
+  assert.equal(videoOwners(cortado(), 2)[0]?.id, 1, 'no primeiro trecho, a primeira');
+  assert.equal(videoOwners(cortado(), 6)[0]?.id, 2, 'no segundo trecho, a segunda');
+});
+
+test('passado o último clipe ainda sobra um condutor', () => {
+  // De propósito: o plano dele é pausar o elemento, que senão continuaria
+  // rolando depois do fim.
+  const donos = videoOwners(cortado(), 20);
+  assert.equal(donos.length, 1);
+  assert.equal(videoSyncPlan(donos[0]!, 20, { playing: true, currentTime: 0 }).play, false);
+});
+
+test('vídeos de arquivos diferentes não disputam nada', () => {
+  const p = project([
+    videoLayer({ id: 1, start: 0, duration: 4, video: fakeVideo(), mediaId: 'um' }),
+    videoLayer({ id: 2, start: 10, duration: 4, video: fakeVideo(), mediaId: 'dois' }),
+  ]);
+  assert.deepEqual(videoOwners(p, 2).map(l => l.id).sort(), [1, 2]);
+});
+
+test('layer de vídeo sem elemento carregado fica de fora', () => {
+  const p = project([
+    videoLayer({ id: 1, video: undefined as unknown as HTMLVideoElement, mediaId: 'v' }),
+  ]);
+  assert.deepEqual(videoOwners(p, 1), []);
+});
+
+test('o condutor eleito é quem de fato move o elemento', () => {
+  // A ponta aplicada: em t=6 quem manda é a segunda metade, que lê o arquivo
+  // a partir de 4s — logo o elemento tem que pousar em 6, não em 2.
+  const p = cortado();
+  syncVideoLayers(p, 6);
+  assert.equal((p.layers[0] as { video: HTMLVideoElement }).video.currentTime, 6);
 });

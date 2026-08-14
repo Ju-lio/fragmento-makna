@@ -2,8 +2,10 @@ import { drawFrame } from './renderer.ts';
 import {
   frameCache, signatureOf, frameIndexAt, timeAtFrameIndex, CACHE_FPS,
 } from './frameCache.ts';
-import { isLayerActive, sourceTimeAt, claimVideoElements, releaseVideoElements } from './videoSync.ts';
-import type { Project, VideoLayer } from './types.ts';
+import {
+  isLayerActive, sourceTimeAt, videoOwners, claimVideoElements, releaseVideoElements,
+} from './videoSync.ts';
+import type { Project } from './types.ts';
 import type { Range } from './player.ts';
 import { Progress } from './progress.ts';
 
@@ -118,9 +120,10 @@ function seekVideoTo(video: HTMLVideoElement, time: number): Promise<void> {
  */
 export async function stageVideosAt(project: Project, t: number): Promise<void> {
   const waits: Array<Promise<void>> = [];
-  const active = project.layers.filter(
-    (l): l is VideoLayer => l.type === 'video' && Boolean(l.video) && isLayerActive(l, t),
-  );
+  // Um clipe por arquivo, senão dois clipes sobrepostos do mesmo vídeo mandam
+  // o mesmo elemento pra dois instantes e esperam os dois seeks — o que sempre
+  // resolve com o quadro de um dos dois, sem dizer qual. Ver `ownersByMedia`.
+  const active = videoOwners(project, t).filter(l => isLayerActive(l, t));
 
   for (const layer of active) {
     const want = Math.max(0, Math.min(sourceTimeAt(layer, t), layer.sourceDuration));

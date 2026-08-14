@@ -175,6 +175,52 @@ export function topTrack(layers: readonly Layer[]): number {
   return layers.reduce((max, l) => Math.max(max, l.track), -1);
 }
 
+/** Piso da duração. Um projeto vazio ainda precisa de régua pra soltar o primeiro clipe. */
+export const MIN_PROJECT = 1;
+
+/**
+ * Quanto dura o projeto: onde termina o último clipe.
+ *
+ * Era um campo que você digitava, e isso tinha dois defeitos que se somavam.
+ * O primeiro: clipe que passasse do número ficava **fora do export**, sem nada
+ * avisar — você montava 12s, o campo dizia 8, e o arquivo saía cortado. O
+ * segundo: o número não era serializado, então reabrir um projeto de 60s o
+ * devolvia com 8 e encolhia a régua inteira.
+ *
+ * Derivar mata os dois de uma vez, e não há informação a perder — não existe
+ * projeto cujo tamanho certo seja "menor que o próprio conteúdo".
+ */
+export function projectDuration(layers: readonly Layer[]): number {
+  const end = layers.reduce((max, l) => Math.max(max, l.start + l.duration), 0);
+  return Math.max(MIN_PROJECT, round(end));
+}
+
+/**
+ * Sobra de régua depois do fim do conteúdo — a "pista" pra onde arrastar.
+ *
+ * Sem ela a duração derivada vira uma armadilha circular: o arrasto prende o
+ * clipe dentro da duração, e a duração vem dos clipes, então o projeto nunca
+ * poderia crescer. É por isso que a régua da timeline é mais longa que o
+ * projeto, e por isso que as duas medidas são coisas separadas — quem exporta e
+ * quem dá loop usa o CONTEÚDO; só o desenho da timeline usa a pista.
+ */
+const TAIL_MIN = 1;
+const TAIL_MAX = 5;
+const TAIL_SHARE = 0.15;
+
+/**
+ * Até onde a régua da timeline vai: o conteúdo, mais a pista.
+ *
+ * A pista é proporcional, com piso e teto. Fixa em 5s ela sufocava projeto
+ * curto — num de 8s seriam 38% da régua em vazio — e sumia em projeto longo.
+ * Assim ela é sempre visível e nunca domina.
+ */
+export function rulerDuration(layers: readonly Layer[]): number {
+  const content = projectDuration(layers);
+  const tail = Math.max(TAIL_MIN, Math.min(TAIL_MAX, content * TAIL_SHARE));
+  return round(content + tail);
+}
+
 /**
  * Renumera as faixas pra 0..n-1, eliminando as que ficaram vazias.
  *

@@ -3,7 +3,7 @@ import { player } from '../engine/player.ts';
 import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
-import { clone, compactTracks, nextId, splitLayer, topTrack } from '../engine/project.ts';
+import { clone, compactTracks, nextId, projectDuration, splitLayer, topTrack } from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
@@ -228,6 +228,18 @@ export default function App() {
 
     return () => { unsubState(); unsubTick(); player.stop(); };
   }, []);
+
+  /**
+   * A duração do projeto é DERIVADA do conteúdo, não digitada.
+   *
+   * Um efeito só, aqui, cobre todo caminho que mexe em layers — edição, undo,
+   * importação, arrasto, restauração do disco. A alternativa era cada um deles
+   * lembrar de atualizar o relógio, e o que esquecesse produziria exatamente o
+   * bug que isto veio matar: clipe fora da duração, cortado do export sem aviso.
+   */
+  useEffect(() => {
+    player.setDuration(projectDuration(project.layers));
+  }, [project.layers]);
 
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 1600); };
 

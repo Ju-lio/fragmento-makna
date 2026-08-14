@@ -36,7 +36,9 @@ src/
     project.ts         modelo de dados
     fonts.ts           carga explícita da fonte do canvas
     viewport.ts        zoom, fit e pan do preview
+    timelineView.ts    zoom e rolagem da timeline
     videoSync.ts       alinha os <video> ao relógio
+    mediaOwner.ts      quem conduz cada elemento quando vários clipes o dividem
     frameCache.ts      cache de frames compostos + assinatura
     frameSource.ts     de onde tirar cada quadro (cache ou ao vivo)
     prerender.ts       preenche um trecho quadro a quadro
@@ -274,14 +276,69 @@ adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
 de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
 o que aconteceria se a assinatura varresse `project.layers` cru.
 
-### A correção de deriva é o oposto da do vídeo
+### Um elemento por arquivo, não por clipe
 
-O vídeo corrige por `playbackRate` porque um seek fazia a imagem voltar um
-quadro. Em áudio isso seria pior: mudar a velocidade muda o **tom**, e meio
-semitom de desafinação é muito mais audível do que um quadro repetido é visível.
+O sintoma: depois de cortar uma música com Ctrl+B, a **primeira** metade tocava
+muda. Cortar de novo, e a penúltima metade também. Nada na timeline parecia
+errado.
 
-Então som corrige por seek, com tolerância folgada (150ms contra 80ms do vídeo).
-Cada correção é um clique curto; corrigir demais é pior que derivar um pouco.
+A causa está no `splitLayer`: ele copia a layer com spread, e `audio` é uma
+referência a um elemento do DOM — as duas metades ficam apontando pro **mesmo**
+`<audio>`. O acervo faz o mesmo ao reaproveitar um arquivo, e a restauração de
+um projeto salvo também (um elemento por `mediaId`, não por layer). O
+`syncSoundLayers` então percorria as duas e deixava as duas escreverem no
+elemento: a metade ativa mandava `play()`, a inativa mandava `pause()`, e a que
+vinha depois no array ganhava. Como a segunda metade é sempre a de trás, ela
+calava a primeira durante todo o trecho dela.
+
+A correção (`ownersByMedia`) elege **uma layer por arquivo** a cada instante,
+antes de qualquer escrita: quem está em uso ganha; entre dois em uso, o último
+da lista, que é o que está por cima. Sem ninguém em uso sobra o primeiro, cujo
+plano é justamente parar o elemento — senão ele rolaria pra sempre depois do
+último clipe.
+
+A mesma disputa existia na **imagem**, com sintoma diferente: o clipe congelava
+logo depois de um corte, porque a metade inativa pausava o `<video>` que a ativa
+tinha soltado. E no pré-render, dois clipes sobrepostos do mesmo arquivo mandavam
+o elemento pra dois instantes e esperavam os dois seeks — resolvia com o quadro
+de um dos dois, sem dizer qual. Por isso o eleitor é genérico e vive em
+`mediaOwner.ts`: só o critério de "em uso" muda entre `soundOwners` (estar
+soando) e `videoOwners` (estar no ar). Três cópias divergiriam, e o modo de
+divergir é ficar mudo ou piscando.
+
+Fica um limite honesto: dois clipes do mesmo arquivo **sobrepostos** tocam só
+um. Um elemento tem um cursor só; não é escolha, é o que ele é. É exatamente
+por isso que o export não usa elementos, e sim um `OfflineAudioContext` com uma
+fonte própria por clipe.
+
+### Deriva: por velocidade, como no vídeo
+
+Aqui a explicação anterior estava errada, e o erro custou os estalos.
+
+O argumento era: o vídeo corrige por `playbackRate`, mas em áudio isso mudaria o
+**tom**, e meio semitom de desafinação é mais audível que um quadro repetido é
+visível. Logo, som corrigiria por seek, com tolerância folgada de 150ms.
+
+A premissa não vale há anos: `preservesPitch` é o padrão dos navegadores, então
+`playbackRate` muda o **andamento** sem mexer no tom. E os dois lados da conta
+estavam ruins:
+
+- Um seek num elemento que está tocando é um corte no som **toda vez**. Pior, a
+  correção nascia atrasada da própria latência do seek — o que a fazia se
+  repetir. Eram os estalos.
+- 150ms de som atrasado passa longe do limiar em que se percebe o desencontro
+  com a imagem: ~45ms (ITU-R BT.1359). A tolerância folgada não era prudência,
+  era o desencontro sendo tolerado por construção — inclusive o atraso de
+  partida do `play()`, que é justo dessa ordem e nunca chegava a ser corrigido.
+
+Hoje o som corrige como o vídeo: `playbackRate` com teto de ±4% (inaudível com o
+tom preservado), acima de 45ms de deriva. `preservesPitch = true` fica explícito
+nos dois lados — é o que separa "4% mais rápido" de "dois semitons acima", e um
+padrão que se assume calado é um padrão que muda sem ninguém perceber.
+
+Seek continua existindo, mas só acima de 400ms, onde não é mais deriva e sim
+evento: o loop voltou ao início, você arrastou o cursor durante a reprodução, o
+decoder engasgou. Aí o corte no som é o mal menor.
 
 Uma armadilha que só apareceu testando: tocando **do cache**, `handlePlay`
 pausava os `<video>` — eles não pintavam nada, então deixá-los rodando só
@@ -319,6 +376,134 @@ arquivo soaria diferente do preview.
 O PCM sai em `f32-planar` (canais em sequência, não intercalados). Trocar os
 dois formatos produz um arquivo que toca, com os canais embaralhados — o tipo de
 erro que só se percebe ouvindo.
+
+**O som cobre a grade de quadros, não `from..to`.** O vídeo não começa em
+`from`: começa no quadro da grade mais próximo, e o último quadro dura mais
+1/fps depois de `to`. Mixar no intervalo cru punha as duas trilhas em origens
+diferentes — até meio quadro de desencontro sempre que o IN foi marcado no
+cursor, que quase nunca cai na grade porque `player.t` vem do rAF — e deixava o
+último quadro sem som.
+
+**A barra de progresso nasce antes da mixagem.** `exportStatus.begin()` e
+`activeToken` ficavam depois dela, e a mixagem é justamente a fase que decodifica
+os arquivos inteiros: pelo trecho mais demorado do export a aba ficava parada,
+sem barra e com o PARAR inerte. Quem exportava uma música de três minutos passava
+esse tempo sem saber se tinha travado. O laço de áudio também ganhou o mesmo
+freio de fila do laço de vídeo — sem ele, três minutos viravam ~2100 blocos de
+PCM empilhados de uma vez, síncronos, sem nada devolver a vez ao navegador.
+
+**Faixa que não decodifica agora avisa.** O `failed` do `renderAudio` era
+calculado e descartado: uma trilha que este navegador não abre sumia do arquivo
+em silêncio, e você descobria assistindo o resultado.
+
+### AAC não existe em toda build — e falhar nele não parece falhar nele
+
+O sintoma era `AudioEncoder.encode: Encoder must be configured first`, depois de
+a mixagem inteira já ter rodado. A mensagem não menciona codec nenhum, e o
+`configure()` logo acima não tinha lançado nada.
+
+A causa: **AAC é proprietário e o encoder não vem em toda build de Chromium** —
+no Linux, com frequência não vem. Medido neste navegador:
+`AudioEncoder.isConfigSupported('mp4a.40.2')` → `false`, `'opus'` → `true`. E
+`configure()` de um codec ausente **não lança**: ele derruba o encoder em
+silêncio pelo callback de erro, e quem reclama é o `encode()` seguinte — com uma
+mensagem sobre configuração, não sobre suporte.
+
+A correção é a que o vídeo já usava: uma lista de candidatos e uma pergunta
+antes (`isConfigSupported`), não um `configure()` na esperança.
+`AUDIO_CODEC_CANDIDATES` tenta AAC e cai pra **Opus**, que é livre, está em todo
+lugar e o MP4 aceita. O codec escolhido é decidido **antes do muxer**, porque é
+ele que nomeia a trilha na construção — declarar uma trilha e não ter encoder
+pra preenchê-la deixa o arquivo com uma faixa vazia.
+
+Sem nenhum dos dois, o export segue sem som e diz isso (`audioSkipped`), em vez
+de morrer levando o vídeo junto. E o rótulo do resultado leva os dois codecs
+("H.264 High + Opus"): o arquivo continua abrindo em todo lugar, mas é bom você
+saber que caiu pra reserva.
+
+## Zoom e rolagem na timeline
+
+A régua espremia o projeto inteiro na largura da janela, sempre. Num projeto de
+60s um clipe de 2s virava **93 pixels** — largo demais pra mirar a alça de trim,
+estreito demais pra ler o nome. Era a parede entre o editor e "montar um Reels
+de 60s".
+
+O que fez isso ficar barato foi o modelo de coordenadas. A alternativa óbvia —
+reposicionar cada clipe em pixels quando o zoom muda — obrigaria a recalcular a
+timeline inteira a cada passo. Em vez disso a timeline ganhou um elemento de
+conteúdo de `duration × pxPerSecond` pixels, e **clipes, marcas e cursor
+continuam posicionados em porcentagem dele**, exatamente como antes. Dar zoom é
+mudar uma largura; a porcentagem de cada clipe nunca muda. É o mesmo truque do
+palco, onde o zoom é uma `transform` só.
+
+O efeito colateral bom: nenhuma das contas de scrub, trim ou arrasto precisou
+mudar. Todas mediam o elemento de verdade com `getBoundingClientRect`, que agora
+cresce junto — arrastar 300px a 136 px/s move exatamente 2,21s.
+
+A rolagem é a nativa do navegador (`overflow-x`), não uma reimplementação:
+`scrollLeft` é escrita direta no DOM, então rolar custa **zero re-render**. O
+zoom, esse sim, re-renderiza — mas é ação discreta (um clique, um passo de roda),
+e é ele que redistribui as marcas da régua.
+
+Três detalhes que só apareceram rodando o app de verdade:
+
+- **A roda vertical não rolava nada.** O navegador só rola um contêiner
+  horizontal sozinho com `deltaX` — trackpad de dois dedos ou Shift+roda. Um
+  mouse comum ficava sem saída, então a roda passou a ser tratada aqui.
+- **A barra de rolagem é de sobreposição** e some quando você não está rolando —
+  some justamente no estado em que ela seria a única coisa dizendo "tem mais
+  projeto pra esse lado". Nem `scrollbar-color` nem `::-webkit-scrollbar`
+  reservam espaço no Chromium testado. A afordância virou o rótulo do trecho
+  visível (`18.6–27.7s`), que de quebra diz *onde* você está — coisa que a barra
+  nunca disse.
+- **O rótulo da última marca vazava** pra fora do conteúdo e criava ~28px de
+  rolagem fantasma: a timeline "cabendo inteira" e mesmo assim rolando um
+  pouco. Perto do fim o rótulo agora vira pra dentro.
+
+O passo das marcas sai do **zoom**, não da duração — é quanto espaço um rótulo
+tem na tela que decide se ele cabe. Sai de uma escada fixa (`0.1, 0.25, 0.5, 1,
+2, 5, 10, 15, 30, 60, 120, 300`): passos de 0,3s ou 7s são tão legíveis quanto
+um relógio quebrado.
+
+Durante a reprodução a vista segue o cursor **por página**, não continuamente:
+seguir pixel a pixel deixa a timeline inteira deslizando debaixo do olho, e aí
+não dá pra ler nem mirar nada enquanto toca. Quando o cursor sai, ele reaparece
+na outra ponta com uma página inteira pela frente. Só tocando — enquanto você
+arrasta o cursor, quem manda na vista é você.
+
+| Ação | Atalho |
+|---|---|
+| Zoom no cursor | `Ctrl` + roda sobre a timeline |
+| Zoom in / out | botões `−` / `+` |
+| Mostrar o projeto inteiro | botão `TUDO` |
+| Rolar | roda, ou arrastar a barra |
+
+## Duração: derivada, não digitada
+
+Era um campo que você preenchia, com dois defeitos que se somavam. Clipe que
+passasse do número ficava **fora do export sem nada avisar** — você montava 12s,
+o campo dizia 8, o arquivo saía cortado. E o número não era serializado, então
+reabrir um projeto de 60s o devolvia com 8 e encolhia a régua inteira.
+
+Agora `projectDuration` devolve onde termina o último clipe, e um efeito só no
+`App` mantém o relógio em dia. Um efeito, e não uma chamada em cada lugar que
+mexe em layer: edição, undo, importação, arrasto e restauração do disco passam
+todos por ele, e o que esquecesse produziria de volta exatamente o bug.
+
+**A parte não óbvia: derivar sozinho trava o projeto.** O arrasto prende o clipe
+dentro da duração, e a duração passou a vir dos clipes — circular, e o projeto
+nunca mais poderia crescer. (Foi o que o primeiro teste no navegador mostrou:
+arrastar o último clipe pra frente não mexia em nada.)
+
+A saída foi separar duas medidas que estavam conflatadas:
+
+- **duração** = o conteúdo. Quem **executa** usa esta: export, loop, limite do
+  scrub.
+- **régua** = conteúdo + uma pista de sobra. Quem **desenha** usa esta: clipes,
+  marcas, cursor, zoom.
+
+A pista é proporcional (15%, entre 1s e 5s). Fixa em 5s ela sufocava projeto
+curto — num de 8s seriam 38% da régua em vazio — e sumia em projeto longo.
 
 ## Navegar quadro a quadro
 
@@ -639,6 +824,12 @@ existindo, mas só em três situações em que ele é o mal menor:
 A correção é limitada a ±12%: acima disso a aceleração fica visível, que é
 trocar um defeito por outro.
 
+Desde que o editor tem som, esse mesmo `playbackRate` carrega a **fala** do
+clipe junto. Por isso `preservesPitch = true` é explícito no
+`attachVideoElement`: sem ele, 12% de velocidade seriam ~2 semitons de
+desafinação. O caminho do áudio usa o mesmo mecanismo, com teto bem mais
+apertado — ver "Deriva: por velocidade, como no vídeo".
+
 Detalhe adjacente, do mesmo sintoma: `player.play()` guardava
 `performance.now()` como origem do relógio, mas o tick lê o timestamp do rAF —
 que é o instante em que o **quadro** começou, e eventos de input são
@@ -698,10 +889,10 @@ e resolução de render adaptativa, resolução de projeto, marcação de trecho
 layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
-quadro** (setas), **áudio** (importar, volume, mudo, mixado no export) e
+quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
-com 260 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
+com 308 testes.
 
 ### O caminho até "usável"
 
@@ -710,15 +901,10 @@ exportar, sem bater numa parede.**
 
 **Falta pra chegar lá:**
 
-- **Zoom e scroll na timeline.** Hoje a régua espreme o projeto inteiro na
-  largura; num projeto de 60s um clipe de 2s vira 3% da tela. É a parede mais
-  próxima.
 - **Gizmo no canvas** — arrastar pra posicionar, alças pra escalar e girar.
   Ninguém posiciona um título digitando coordenada.
 - **Legibilidade de texto** — contorno e sombra. Texto claro sobre imagem clara
   simplesmente some.
-- **Duração do projeto derivada do conteúdo.** Hoje é um campo que você digita, e
-  clipes podem ficar pra fora dele.
 - **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,

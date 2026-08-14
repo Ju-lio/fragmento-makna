@@ -359,16 +359,67 @@
   seleciona os rótulos da régua e o cursor vira barra de texto no meio do
   movimento.
 */
+/*
+  A janela que rola. `overflow-y` é explícito porque `overflow-x: auto` sozinho
+  já obrigaria o eixo vertical a virar `auto` também — e aí a timeline ganharia
+  uma segunda barra, vertical, sem nada pra rolar nela.
+*/
 .tl-wrap {
   position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
 }
 .tl-wrap * { touch-action: none; }
 
+/*
+  O conteúdo, cuja largura em pixels É o zoom (`duration × pxPerSecond`). Tudo
+  aqui dentro continua posicionado em porcentagem, então ampliar não recalcula
+  clipe nenhum.
+
+  O respiro embaixo é pra linha de inserção da última faixa, que fica meia
+  altura abaixo dela — com `overflow-y: hidden`, sem esse espaço ela sumiria
+  justamente no gesto que precisa dela.
+*/
+.tl-content {
+  position: relative;
+  padding-bottom: 8px;
+}
+
+/*
+  A barra precisa ser CLÁSSICA, não de sobreposição.
+
+  A de sobreposição some quando você não está rolando, e some justamente no
+  estado em que ela é a única coisa dizendo "tem mais projeto pra esse lado" —
+  a timeline ampliada fica indistinguível de uma que acaba ali. `scrollbar-color`
+  é o que tira o navegador do modo sobreposição; sozinho, o `::-webkit-scrollbar`
+  abaixo não reservava espaço nenhum.
+*/
+.tl-wrap {
+  scrollbar-width: thin;
+  scrollbar-color: var(--plum-lt) var(--void);
+}
+.tl-wrap::-webkit-scrollbar { height: 12px; }
+.tl-wrap::-webkit-scrollbar-track {
+  background: var(--void);
+  border: 2px solid var(--ink);
+}
+.tl-wrap::-webkit-scrollbar-thumb {
+  background: var(--plum-lt);
+  border: 2px solid var(--ink);
+}
+.tl-wrap::-webkit-scrollbar-thumb:hover { background: var(--plum-hi); }
+
+/* Os botões de zoom andam juntos, colados como um controle só. */
+.tl-zoom { display: flex; gap: 3px; align-items: center; }
+
 .ruler {
   position: relative;
+  /* Nada da régua pode transbordar: o que transborda vira rolagem fantasma na
+     janela da timeline, que passa a rolar mesmo com o projeto inteiro à vista. */
+  overflow: hidden;
   height: 16px;
   background: var(--plum-lt);
   border: 2px solid var(--ink);
@@ -391,6 +442,8 @@
   color: var(--cream-d);
   white-space: nowrap;
 }
+/* Última(s) marca(s): o rótulo cresce pra dentro em vez de pra fora. */
+.tick-lab-end { left: auto; right: 3px; }
 
 .tracks { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .track {
@@ -695,4 +748,22 @@
   font-size: 12px;
   font-weight: 700;
   box-shadow: 4px 4px 0 var(--shadow);
+}
+
+/* Trecho visível da timeline. Discreto: é referência, não controle. */
+.tl-range {
+  font-size: 8px;
+  color: var(--cream-d);
+  white-space: nowrap;
+  min-width: 62px;
+}
+
+/* Duração do projeto: leitura derivada do conteúdo, não campo editável. */
+.tl-duration {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--mint);
+  background: var(--void);
+  border: 2px solid var(--ink);
+  padding: 2px 6px;
 }

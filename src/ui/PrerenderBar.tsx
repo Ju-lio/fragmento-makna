@@ -104,6 +104,15 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
       if (!result) return onMessage('Export cancelado');
 
       downloadBlob(result.blob, result.fileName);
+
+      // Faixa que não decodificou some do arquivo, e antes sumia calada: você
+      // só descobria assistindo. O aviso vem na frente do resumo porque é a
+      // parte que pede uma ação sua.
+      if (result.audioSkipped) return onMessage(result.audioSkipped);
+      if (result.audioFailed.length) {
+        return onMessage(`Sem o som de: ${result.audioFailed.join(', ')}`);
+      }
+
       onMessage(
         `${result.frames} quadros em ${result.codec}${result.hasAudio ? ' com áudio' : ' (sem áudio)'}`,
       );

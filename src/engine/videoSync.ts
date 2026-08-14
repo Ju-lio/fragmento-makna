@@ -1,4 +1,5 @@
 import { player } from './player.ts';
+import { ownersByMedia } from './mediaOwner.ts';
 import type { Project, VideoLayer, VideoProbe, VideoTiming } from './types.ts';
 
 /** O que `videoSyncPlan` decide para um único elemento, num único quadro. */
@@ -25,6 +26,18 @@ function videoLayers(project: Project): LoadedVideoLayer[] {
   return project.layers.filter(
     (l): l is LoadedVideoLayer => l.type === 'video' && Boolean(l.video),
   );
+}
+
+/**
+ * Uma layer por arquivo — a que conduz o `<video>` neste instante.
+ *
+ * Ver `ownersByMedia`: cortar um clipe deixa as duas metades apontando pro
+ * mesmo elemento, e deixar as duas escreverem fazia a metade inativa pausar o
+ * que a ativa tinha soltado. Na imagem isso aparecia como o clipe piscando ou
+ * congelando logo depois de um corte.
+ */
+export function videoOwners(project: Project, t: number): LoadedVideoLayer[] {
+  return ownersByMedia(videoLayers(project), layer => isLayerActive(layer, t));
 }
 
 /**
@@ -108,6 +121,9 @@ export function attachVideoElement(video: HTMLVideoElement): HTMLVideoElement {
    */
   video.playsInline = true;
   video.preload = 'auto';
+  // A correção de deriva daqui mexe no `playbackRate`, e o clipe tem fala
+  // dentro. Sem isto, ±12% de velocidade seriam ~2 semitons de desafinação.
+  video.preservesPitch = true;
   video.addEventListener('seeked', () => {
     if (!player.playing) player.invalidate();
   });
@@ -171,7 +187,8 @@ export function syncVideoLayers(project: Project, t: number): void {
   // Outro dono está posicionando os elementos: não disputa.
   if (owner !== null) return;
 
-  for (const layer of videoLayers(project)) {
+  // Uma layer por elemento: ver `videoOwners`.
+  for (const layer of videoOwners(project, t)) {
     const video = layer.video;
     const plan = videoSyncPlan(layer, t, {
       playing: player.playing,

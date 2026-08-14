@@ -108,7 +108,12 @@ class Player {
   }
 
   setDuration(d: number): void {
-    this.duration = Math.max(0.5, d);
+    const next = Math.max(0.5, d);
+    // Sai cedo quando nada mudou: a duração passou a ser DERIVADA do conteúdo,
+    // então isto é chamado a cada edição de layer — inclusive as que não mexem
+    // no comprimento, que são a maioria.
+    if (next === this.duration) return;
+    this.duration = next;
     if (this.t > this.duration) this.t = this.duration;
     this._dirty = true;
     this._emitState();
