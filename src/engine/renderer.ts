@@ -1,14 +1,37 @@
 import { resolveState } from './effects.ts';
 import { drawOrder } from './project.ts';
-import type { ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
+import type { DecodedFrame, ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
+
+/** De onde sai o quadro de uma layer de vídeo. Ver `videoDecode.ts`. */
+export type FrameLookup = (layer: VideoLayer) => DecodedFrame | null;
 
 export interface DrawOptions {
   /** Pula o desfoque (a conta mais cara do quadro). Ver `degraded` no retorno. */
   fastPreview?: boolean;
+  /**
+   * O quadro decodificado de cada layer de vídeo, neste instante.
+   *
+   * Entra por parâmetro, e não por um registro global que o desenho consultasse
+   * sozinho, porque é isso que mantém `drawFrame` **função pura de (projeto,
+   * tempo, quadros)** — a propriedade da qual o "Preview = Export" depende.
+   * Sem ela, preview e exportador poderiam desenhar o mesmo instante com
+   * quadros diferentes e nada no tipo denunciaria.
+   *
+   * Devolver `null` faz o desenho cair no `<video>`, e marca o quadro como
+   * degradado: o elemento mostra o que ele tiver, não o instante pedido.
+   */
+  frameFor?: FrameLookup;
 }
 
 export interface DrawResult {
-  /** Algum desfoque foi de fato pulado neste quadro. Ver o comentário abaixo. */
+  /**
+   * Este quadro saiu abaixo do que o export produziria.
+   *
+   * Duas causas: um desfoque pulado pelo modo rápido, ou uma layer de vídeo
+   * desenhada a partir do `<video>` por falta do quadro decodificado. Nos dois
+   * casos o frame pode ser reexibido, mas não pode ser tomado por definitivo —
+   * é o que impede o cache de mentir.
+   */
   degraded: boolean;
 }
 
@@ -37,7 +60,7 @@ export function drawFrame(
   t: number,
   opts: DrawOptions = {},
 ): DrawResult {
-  const { fastPreview = false } = opts;
+  const { fastPreview = false, frameFor } = opts;
   const W = project.width;
   const H = project.height;
 
@@ -87,7 +110,10 @@ export function drawFrame(
     // Só a sombra precisa disto — ver `drawText`.
     if (layer.type === 'text') drawText(ctx, layer, st, (ctx.canvas.width / W) * st.scale);
     else if (layer.type === 'image' && layer.img) drawSource(ctx, layer, layer.img, W, H);
-    else if (layer.type === 'video' && layer.video) drawVideo(ctx, layer, W, H);
+    else if (layer.type === 'video') {
+      const caiuNoElemento = drawVideo(ctx, layer, W, H, frameFor?.(layer) ?? null);
+      if (caiuNoElemento) degraded = true;
+    }
 
     ctx.restore();
   }
@@ -169,11 +195,35 @@ function drawText(
   if (canSpace) ctx.letterSpacing = '0px';
 }
 
-function drawVideo(ctx: CanvasRenderingContext2D, layer: VideoLayer, W: number, H: number) {
+/**
+ * Desenha a layer de vídeo. Devolve `true` quando teve que cair no `<video>`.
+ *
+ * O quadro decodificado é o caminho certo: ele **é** o quadro daquele instante,
+ * pedido por número e não por posição aproximada. O `<video>` fica como rede de
+ * segurança pra arquivo que este navegador não decodifica — melhor uma imagem
+ * aproximada que nenhuma imagem — e por isso o retorno é usado pra marcar o
+ * quadro como degradado.
+ */
+function drawVideo(
+  ctx: CanvasRenderingContext2D,
+  layer: VideoLayer,
+  W: number,
+  H: number,
+  frame: DecodedFrame | null,
+): boolean {
+  if (frame) {
+    const s = Math.min(W / frame.displayWidth, H / frame.displayHeight) * (layer.fit ?? 0.8);
+    const w = frame.displayWidth * s;
+    const h = frame.displayHeight * s;
+    frame.draw(ctx, -w / 2, -h / 2, w, h);
+    return false;
+  }
+
   const v = layer.video;
   // HAVE_CURRENT_DATA: before this, drawImage would throw or paint nothing.
-  if (v.readyState < 2) return;
+  if (!v || v.readyState < 2) return true;
   drawSource(ctx, layer, v, W, H, v.videoWidth, v.videoHeight);
+  return true;
 }
 
 /** Draws an image/video centred on the origin, scaled to fit the composition. */

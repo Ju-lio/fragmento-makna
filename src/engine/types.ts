@@ -221,3 +221,20 @@ export interface VideoProbe {
   /** Não-nulo quando o arquivo falhou. Ver `videosParkedAt`. */
   error?: MediaError | null;
 }
+
+/**
+ * O mínimo que o desenho precisa de um quadro decodificado.
+ *
+ * Existe pelo mesmo motivo de `VideoProbe`: mantém o `renderer` livre da
+ * biblioteca de decodificação, e torna o desenho testável com um quadro falso.
+ * O `VideoSample` do mediabunny satisfaz esta forma — ver `videoDecode.ts`.
+ */
+export interface DecodedFrame {
+  /** Tamanho já com aspecto e rotação resolvidos. */
+  displayWidth: number;
+  displayHeight: number;
+  draw(
+    ctx: CanvasRenderingContext2D,
+    dx: number, dy: number, dWidth?: number, dHeight?: number,
+  ): void;
+}

@@ -24,6 +24,7 @@ import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
 import { attachAudioElement, syncSoundLayers, stopAllSound, soundClock } from '../engine/audioSync.ts';
 import { clearPeaks } from '../engine/waveformStore.ts';
+import { framesAt, registerBlob, releaseDecoders } from '../engine/videoDecode.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
@@ -159,6 +160,7 @@ export default function App() {
 
         await Promise.all(media.map(m => new Promise<void>(done => {
           const url = urlFor(m.id, m.blob);
+          registerBlob(m.id, m.blob);
           if (m.type.startsWith('audio/')) {
             const a = attachAudioElement(new Audio());
             a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
@@ -358,6 +360,11 @@ export default function App() {
     // entra — perder a mídia ao recarregar é ruim, não poder editar agora é pior.
     const mediaId = newMediaId();
     putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
+
+    // O decodificador precisa dos bytes AGORA — `putMedia` acima é assíncrono,
+    // e um arquivo recém-arrastado tem que aparecer no palco sem esperar o
+    // IndexedDB fechar a transação. Ver `registerBlob`.
+    registerBlob(mediaId, file);
 
     const url = urlFor(mediaId, file);
     attachMedia(file.type, url, mediaId, file.name, element => {
@@ -728,6 +735,7 @@ export default function App() {
     // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
     // que possa trazer as layers de volta.
     releaseAll();
+    releaseDecoders();
     clearPeaks();
     // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
     // a próxima faixa destacada nascer lendo uma fonte morta.
@@ -756,7 +764,7 @@ export default function App() {
     cv.height = project.height;
     const ctx = cv.getContext('2d');
     if (!ctx) return flash('Canvas indisponível — não deu pra exportar');
-    drawFrame(ctx, project, player.t);
+    drawFrame(ctx, project, player.t, { frameFor: framesAt(player.t) });
     const a = document.createElement('a');
     a.download = `frame_${player.t.toFixed(2)}s.png`;
     a.href = cv.toDataURL('image/png');

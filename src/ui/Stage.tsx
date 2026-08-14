@@ -2,9 +2,10 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
+import { framesAt, framesReadyAt, requestFramesAt } from '../engine/videoDecode.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import {
-  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner, videosParkedAt,
+  syncVideoLayers, previewBusyState, videoElementsOwner, videosParkedAt,
 } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource } from '../engine/frameSource.ts';
@@ -152,7 +153,29 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
       syncVideoLayers(project, t);
 
       /**
+       * O quadro exato vem do decodificador, não do `<video>`.
+       *
+       * Enquanto ele não chega, **segura a imagem anterior** em vez de compor
+       * com o que estiver por perto. É a diferença entre "mostrei menos quadros
+       * do que o arquivo tem" e "mostrei um quadro que o arquivo não tem" — e
+       * vale tanto parado quanto reproduzindo, porque agora não existe mais o
+       * regime em que a imagem é aproximada por construção.
+       *
+       * Decodificar custa menos que um quadro de tempo real (ver `videoDecode`),
+       * então na prática isso engasga no começo e depois acompanha. Quando o
+       * quadro chega, o `invalidate` repinta.
+       */
+      if (!framesReadyAt(project, t)) {
+        void requestFramesAt(project, t).then(() => player.invalidate());
+        return;
+      }
+
+      /**
        * Parado, só compõe com o `<video>` que JÁ POUSOU no quadro pedido.
+       *
+       * Vale só pras mídias que o decodificador não abre — `videosParkedAt`
+       * ignora as demais, senão o preview esperaria um elemento de que a
+       * imagem nem depende mais.
        *
        * `syncVideoLayers` escreve `currentTime` e volta na hora — o seek é
        * assíncrono. Desenhar em seguida, no mesmo tick, compunha com a imagem
@@ -171,16 +194,19 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       if (!player.playing && !videosParkedAt(project, t)) return;
 
-      const { degraded } = drawFrame(ctx, project, t, { fastPreview });
+      const { degraded } = drawFrame(ctx, project, t, { fastPreview, frameFor: framesAt(t) });
 
       /**
-       * Reproduzindo ao vivo, o `<video>` corre no relógio dele e só é
-       * corrigido quando desvia mais de 80ms. O quadro capturado aí serve
-       * pra reexibir, mas não é fiel ao instante da grade — então entra como
-       * degradado, e o pré-render vai regerá-lo com o seek exato.
+       * O quadro capturado agora é fiel: veio do quadro decodificado daquele
+       * instante, o mesmo que o export vai usar.
+       *
+       * Antes era preciso marcar toda captura feita durante a reprodução como
+       * degradada, porque o `<video>` corria solto e a imagem mostrava onde ele
+       * estivesse. Com o decodificador esse regime deixou de existir — o que
+       * ainda pode degradar um quadro é o desfoque pulado, ou uma mídia que só
+       * o `<video>` abre, e os dois casos o `drawFrame` já relata.
        */
-      const videoApprox = player.playing && hasActiveVideo(project, t);
-      captureFrame(sig, index, degraded || videoApprox);
+      captureFrame(sig, index, degraded);
     });
     player.invalidate();
     return unsub;

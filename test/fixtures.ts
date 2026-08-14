@@ -37,6 +37,9 @@ export interface FakeVideoInit {
   seeking?: boolean;
   readyState?: number;
   error?: MediaError | null;
+  /** O desenho precisa deles: sem tamanho, `drawSource` sai sem pintar nada. */
+  videoWidth?: number;
+  videoHeight?: number;
 }
 
 export function fakeVideo(init: FakeVideoInit = {}): HTMLVideoElement {
@@ -47,6 +50,8 @@ export function fakeVideo(init: FakeVideoInit = {}): HTMLVideoElement {
     seeking: false,
     readyState: 4,
     playbackRate: 1,
+    videoWidth: 640,
+    videoHeight: 360,
     play() { v.paused = false; return Promise.resolve(); },
     pause() { v.paused = true; },
     ...init,

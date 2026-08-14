@@ -39,6 +39,7 @@ src/
     viewport.ts        zoom, fit e pan do preview
     timelineView.ts    zoom e rolagem da timeline
     gizmo.ts           posicionar, escalar e girar no palco
+    videoDecode.ts     decodifica os quadros (WebCodecs) — a fonte da imagem
     videoSync.ts       alinha os <video> ao relógio
     mediaOwner.ts      quem conduz cada elemento quando vários clipes o dividem
     frameCache.ts      cache de frames compostos + assinatura
@@ -1177,18 +1178,65 @@ de 0,25s existe contra o salto de voltar pra uma aba parada; já o delta do som 
 tempo tem que andar 400ms, senão a imagem fica pra trás justamente na travada em
 que ela já está sofrendo.
 
-### O que continua não sendo exato, e por quê
+### O último resíduo era o próprio `<video>` — e ele saiu do caminho
 
-Reprodução ao vivo a partir de elementos `<video>` **não tem como ser
-exata**: o elemento roda no relógio do pipeline de mídia, e a imagem que ele
-carrega num instante qualquer é a que ele carrega. Por isso o quadro capturado
-durante a reprodução ao vivo continua entrando no cache como `degraded`, e o
-pré-render o regera com o seek exato.
+Sobrava uma infidelidade sem conserto por ajuste: **um `<video>` é um tocador,
+não um leitor de quadros.** Você pede uma posição e ele chega lá quando chegar;
+o que estiver na tela nesse meio-tempo é o quadro anterior. Isso é aceitável pra
+assistir e é exatamente o errado pra editar. Nenhuma tolerância resolve, porque
+é o que o elemento **é**.
 
-O que mudou é que agora isso é o **único** resíduo, e ele está confinado à
-reprodução ao vivo. Parado — que é onde se corta — o quadro é exato. Com
-**⚙ AUTO PRÉ-RENDER** ligado, a reprodução também é, porque sai da mesma
-composição quadro a quadro que o export.
+Então ele saiu do caminho da imagem. Hoje os quadros são demuxados e
+decodificados por nós, com WebCodecs (`VideoDecoder`, via mediabunny) — o
+movimento simétrico do export, que já usava `VideoEncoder`. A pergunta deixou de
+ser "leve o elemento até t" e passou a ser **"me dê o quadro de t"**.
+
+O `<video>` continua existindo, como fonte de **som** e como rede de segurança
+pra arquivo que este navegador não decodifica. Nesse caso o desenho relata o
+quadro como degradado, então o cache nunca o toma por definitivo.
+
+**Dois regimes, porque medir mostrou 20x de diferença.** Num H.264 1080p com
+keyframe a cada 60 quadros, neste navegador:
+
+| acesso | mecanismo | por quadro |
+|---|---|---|
+| sequencial | `samples()` (gerador) | ~0,5–4 ms |
+| sequencial | `getSample()` avulso | **~50 ms** |
+| aleatório (scrub) | `getSample()` avulso | ~40 ms |
+
+`getSample` refaz o trabalho desde o keyframe anterior a cada chamada, e a 30fps
+o orçamento é 33ms — quadro a quadro não fecha a conta em 1080p. Por isso a
+reprodução puxa de um **gerador** que corre adiante, e só o scrub usa a chamada
+avulsa, onde 40ms é bem melhor que o seek de um `<video>`.
+
+Três coisas que só apareceram rodando:
+
+- **O impasse da preguiça.** A checagem "os quadros estão prontos?" só
+  *consultava* o registro de decodificadores, sem criar nenhum — então
+  respondia "sim, não há nada a esperar", ninguém pedia quadro, e o
+  decodificador nunca nascia. O preview ficava no `<video>` de reserva pra
+  sempre, sem nada indicando. A correção foi ter **três** estados em vez de
+  dois: *abrindo* não é *não dá*.
+- **A fronteira do quadro não sobrevive a ponto flutuante.** A busca é pelo
+  último quadro com timestamp ≤ o pedido, e o quadro 61 a 30fps começa em
+  2,0333333…: um pedido um bilionésimo abaixo devolve o quadro 60 — um quadro
+  inteiro de erro. Medido, e por isso existe um empurrão de 1µs, grande o
+  bastante pra vencer o arredondamento e 30 mil vezes menor que um quadro.
+- **O `<video>` parado era trabalho jogado fora.** Pior que inútil: o seek do
+  elemento acorda o decodificador do navegador pro mesmo arquivo, competindo
+  com o nosso justo durante o scrub. Parado, quem decodifica não toca mais no
+  elemento.
+
+Medido no editor, andando quadro a quadro pelas setas com um vídeo cujo quadro
+traz o número desenhado: o timestamp entregue bate exatamente com a grade
+(`0,17s → 0,1667`, `0,20s → 0,2`, `0,23s → 0,2333`), e os oito passos deram
+**oito imagens distintas** — contra cinco pelo caminho do `<video>`, que repetia
+quadros.
+
+O preço é honesto: o pacote foi de 306 kB para 647 kB (97 → 185 kB comprimido).
+É o demuxer. Em troca, `⚙ AUTO PRÉ-RENDER` deixou de ser o que separa uma
+imagem exata de uma aproximada — passou a ser só o que separa **liso** de
+**engasgado**.
 
 ## Corrigir deriva por velocidade, nunca por seek
 
@@ -1298,8 +1346,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 405 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre, quadros decodificados por WebCodecs), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 412 testes.
 
 ### O caminho até "usável"
 

@@ -3,8 +3,9 @@ import {
   frameCache, signatureOf, frameIndexAt, timeAtFrameIndex, CACHE_FPS,
 } from './frameCache.ts';
 import {
-  isLayerActive, sourceTimeAt, videoOwners, claimVideoElements, releaseVideoElements,
+  isLayerActive, videoOwners, claimVideoElements, releaseVideoElements,
 } from './videoSync.ts';
+import { canDecode, ensureFrame, framesAt, sourceTimeFor } from './videoDecode.ts';
 import type { Project } from './types.ts';
 import type { Range } from './player.ts';
 import { Progress } from './progress.ts';
@@ -119,21 +120,36 @@ function seekVideoTo(video: HTMLVideoElement, time: number): Promise<void> {
  * e o arquivo exportado deixaria de bater com o preview.
  */
 export async function stageVideosAt(project: Project, t: number): Promise<void> {
-  const waits: Array<Promise<void>> = [];
   // Um clipe por arquivo, senão dois clipes sobrepostos do mesmo vídeo mandam
   // o mesmo elemento pra dois instantes e esperam os dois seeks — o que sempre
   // resolve com o quadro de um dos dois, sem dizer qual. Ver `ownersByElement`.
   const active = videoOwners(project, t).filter(l => isLayerActive(l, t));
 
-  for (const layer of active) {
-    const want = Math.max(0, Math.min(sourceTimeAt(layer, t), layer.sourceDuration));
+  await Promise.all(active.map(async layer => {
+    const want = sourceTimeFor(layer, t);
+
+    /**
+     * Caminho normal: pedir o quadro ao decodificador.
+     *
+     * Não há seek nenhum envolvido — pede-se o quadro que cobre `want` e ele
+     * vem. É por isso que o pré-render ficou mais rápido e, principalmente,
+     * mais confiável: o `seeked` de um `<video>` podia chegar antes do quadro
+     * existir, e o `SEEK_TIMEOUT_MS` abaixo existe justamente porque seek se
+     * perde. Um decodificador não tem nenhum dos dois problemas.
+     */
+    if (await canDecode(layer.mediaId)) {
+      await ensureFrame(layer.mediaId, want);
+      return;
+    }
+
+    // Rede de segurança: arquivo que este navegador não decodifica ainda pode
+    // tocar num `<video>`. Pior imagem, mas imagem.
     if (!layer.video.paused) layer.video.pause();
     // A reprodução deixa o elemento num rate corrigido; aqui queremos o quadro
     // exato, sem herdar nada do ajuste de deriva do preview.
     layer.video.playbackRate = 1;
-    waits.push(seekVideoTo(layer.video, want));
-  }
-  if (waits.length) await Promise.all(waits);
+    await seekVideoTo(layer.video, want);
+  }));
 }
 
 export async function prerenderRange(project: Project, {
@@ -186,7 +202,7 @@ export async function prerenderRange(project: Project, {
       await stageVideosAt(project, t);
       if (token.cancelled) return { rendered, cancelled: true };
 
-      drawFrame(ctx, project, t, { fastPreview: false });
+      drawFrame(ctx, project, t, { fastPreview: false, frameFor: framesAt(t) });
 
       const bitmap = await createImageBitmap(canvas);
       // Pré-render é sempre qualidade cheia — por isso `degraded: false`, e por
