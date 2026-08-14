@@ -204,3 +204,29 @@ test('soundElement acha o elemento certo pra cada tipo', () => {
   assert.equal(soundElement(a), a.audio);
   assert.equal(soundElement(v), v.video, 'a trilha do vídeo sai do próprio <video>');
 });
+
+// --- troca de clipe (o remix) -------------------------------------------
+
+test('trocar de clipe PULA, mesmo que o salto seja pequeno', () => {
+  // O caso do remix: várias fatias do mesmo arquivo, em ordem trocada,
+  // dividindo um `<audio>` só. Tratado como deriva, um salto de poucos
+  // milissegundos virava ajuste de andamento — que nunca resolve uma
+  // descontinuidade, e a faixa seguia lendo o arquivo em linha reta.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02, switched: true });
+  assert.equal(plan.seekTo, 3, 'vai pro ponto do clipe novo');
+  assert.equal(plan.rate, 1);
+});
+
+test('a troca de clipe vence um seek em voo', () => {
+  // O seek em voo mirava o clipe ANTERIOR; insistir nele deixaria o elemento
+  // no lugar errado.
+  const plan = soundSyncPlan(trilha(), 4, {
+    ...rodando, currentTime: 1, seeking: true, switched: true,
+  });
+  assert.equal(plan.seekTo, 3);
+});
+
+test('sem troca, deriva pequena segue sendo deriva', () => {
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02, switched: false });
+  assert.equal(plan.seekTo, null, 'nada de corte no som à toa');
+});

@@ -45,3 +45,31 @@ export function ownersByElement<T>(
 
   return [...byElement.values()];
 }
+
+/**
+ * Quem conduzia cada elemento na última vez. Guardado por elemento, não por
+ * layer, porque é o elemento que tem o cursor.
+ */
+const lastOwner = new WeakMap<object, number>();
+
+/**
+ * O elemento trocou de clipe desde a última passada? Já registra o novo.
+ *
+ * Existe porque **trocar de clipe é um CORTE, não deriva** — e as duas coisas
+ * eram indistinguíveis pra quem corrige a posição. Um remix é o caso puro:
+ * várias fatias do mesmo arquivo, em ordem trocada, dividindo um `<video>` só.
+ * Quando a fatia A termina e a B começa lendo de outro ponto, o cursor precisa
+ * PULAR pra lá.
+ *
+ * Sem isto, esse pulo chegava na correção de deriva como um erro qualquer, e
+ * abaixo do limiar de resync ele virava ajuste de **velocidade** — que jamais
+ * resolve uma descontinuidade. O elemento seguia lendo o arquivo em linha reta
+ * enquanto a imagem (vinda do cache) mostrava o remix: o preview tocava
+ * "1 2 3 4 5 6 7 8 9…" onde deveria tocar "1 2 3 4 | 5 6 7 | 5 6 7".
+ */
+export function ownerChanged(element: object, layerId: number): boolean {
+  const before = lastOwner.get(element);
+  if (before === layerId) return false;
+  lastOwner.set(element, layerId);
+  return true;
+}

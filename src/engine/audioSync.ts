@@ -23,7 +23,7 @@
  */
 
 import { effectiveGain, isSoundActive, soundLayers, sourceTimeOf } from './audioMix.ts';
-import { ownersByElement } from './mediaOwner.ts';
+import { ownersByElement, ownerChanged } from './mediaOwner.ts';
 import type { Layer, SoundLayer } from './types.ts';
 
 /**
@@ -81,6 +81,8 @@ export interface SoundElementState {
   currentTime: number;
   paused?: boolean;
   seeking?: boolean;
+  /** Este elemento acabou de trocar de clipe? Ver `ownerChanged`. */
+  switched?: boolean;
 }
 
 /**
@@ -92,7 +94,7 @@ export interface SoundElementState {
 export function soundSyncPlan(
   layer: SoundLayer,
   t: number,
-  { playing, currentTime, paused = true, seeking = false }: SoundElementState,
+  { playing, currentTime, paused = true, seeking = false, switched = false }: SoundElementState,
 ): SoundPlan {
   const volume = effectiveGain(layer);
   const silent = { seekTo: null, play: false, volume, rate: 1 };
@@ -105,6 +107,16 @@ export function soundSyncPlan(
   // O clipe pode ter sido esticado além do arquivo; pedir tempo que não existe
   // deixa o elemento num estado de erro do qual ele não sai sozinho.
   if (want < 0 || want >= layer.sourceDuration) return silent;
+
+  /**
+   * Trocou de clipe: isto é um CORTE, e corte se resolve pulando.
+   *
+   * É o caso do remix — várias fatias do mesmo arquivo em ordem trocada,
+   * dividindo um `<audio>` só. O salto entre elas pode ser de poucos
+   * milissegundos no arquivo; tratado como deriva, viraria ajuste de andamento,
+   * que nunca resolve uma descontinuidade, e a faixa seguia lendo em linha reta.
+   */
+  if (switched) return { seekTo: want, play: true, volume, rate: 1 };
 
   // Correção em voo: empilhar outra só multiplica os cortes no som.
   if (seeking) return { seekTo: null, play: true, volume, rate: 1 };
@@ -196,14 +208,20 @@ export function syncSoundLayers(
     const el = soundElement(layer);
     if (!el) continue;
 
+    // Só registra a posse quando de fato conduz o elemento: em reprodução ao
+    // vivo quem manda no `<video>` é o `videoSync`, e marcar aqui roubaria dele
+    // a troca de clipe.
+    const drives = layer.type === 'audio' || driveVideo;
+
     const plan = soundSyncPlan(layer, t, {
       playing,
       currentTime: el.currentTime,
       paused: el.paused,
       seeking: el.seeking,
+      switched: drives && ownerChanged(el, layer.id),
     });
 
-    if (layer.type === 'audio' || driveVideo) {
+    if (drives) {
       // Trilha em silêncio não precisa rolar: com a imagem vindo do cache, um
       // <video> mudo tocando só gasta decoder pra ninguém.
       const wanted = plan.play && plan.volume > 0;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ownersByElement } from '../src/engine/mediaOwner.ts';
+import { ownersByElement, ownerChanged } from '../src/engine/mediaOwner.ts';
 
 /**
  * O caso que originou tudo: um clipe cortado ao meio. As duas metades apontam
@@ -79,4 +79,35 @@ test('a ordem de saída segue a primeira aparição de cada elemento', () => {
     { id: 'c', el: x, ativa: true },
   ]);
   assert.deepEqual(r.map(l => l.id), ['c', 'b']);
+});
+
+// --- troca de dono ------------------------------------------------------
+
+test('a primeira passada já conta como troca', () => {
+  // O elemento não estava com ninguém: posicioná-lo é obrigatório.
+  assert.equal(ownerChanged({ n: 'novo' }, 1), true);
+});
+
+test('o mesmo dono seguido não é troca', () => {
+  const el = { n: 'a' };
+  ownerChanged(el, 1);
+  assert.equal(ownerChanged(el, 1), false);
+  assert.equal(ownerChanged(el, 1), false);
+});
+
+test('voltar pro dono anterior conta como troca de novo', () => {
+  // É literalmente o remix: A, B, A. A volta pra A precisa pular tanto quanto
+  // a ida pra B.
+  const el = { n: 'a' };
+  ownerChanged(el, 1);
+  assert.equal(ownerChanged(el, 2), true);
+  assert.equal(ownerChanged(el, 1), true);
+});
+
+test('elementos diferentes têm memórias diferentes', () => {
+  const a = { n: 'a' };
+  const b = { n: 'b' };
+  ownerChanged(a, 1);
+  assert.equal(ownerChanged(b, 1), true, 'b nunca teve dono');
+  assert.equal(ownerChanged(a, 1), false, 'a continua com o mesmo');
 });

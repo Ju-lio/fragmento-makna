@@ -1,5 +1,5 @@
 import { player } from './player.ts';
-import { ownersByElement } from './mediaOwner.ts';
+import { ownersByElement, ownerChanged } from './mediaOwner.ts';
 import type { Project, VideoLayer, VideoProbe, VideoTiming } from './types.ts';
 
 /** O que `videoSyncPlan` decide para um único elemento, num único quadro. */
@@ -17,6 +17,8 @@ export interface VideoElementState {
   currentTime: number;
   paused?: boolean;
   seeking?: boolean;
+  /** Este elemento acabou de trocar de clipe? Ver `ownerChanged`. */
+  switched?: boolean;
 }
 
 /** Só layers de vídeo com elemento carregado — o que a sincronia de fato mexe. */
@@ -163,7 +165,7 @@ export function attachVideoElement(video: HTMLVideoElement): HTMLVideoElement {
 export function videoSyncPlan(
   layer: VideoTiming,
   t: number,
-  { playing, currentTime, paused = true, seeking = false }: VideoElementState,
+  { playing, currentTime, paused = true, seeking = false, switched = false }: VideoElementState,
 ): VideoPlan {
   if (!isLayerActive(layer, t)) return { seekTo: null, play: false, rate: 1 };
 
@@ -173,6 +175,17 @@ export function videoSyncPlan(
 
   // Parado: pousa exatamente no quadro, ignorando o que não dá pra ver.
   if (!playing) return { seekTo: drift > SEEK_EPSILON ? want : null, play: false, rate: 1 };
+
+  /**
+   * Trocou de clipe: isto é um CORTE, e corte se resolve pulando.
+   *
+   * Vem ANTES do `seeking` de propósito — um seek em voo mirava o clipe
+   * anterior, e insistir nele deixaria o elemento no lugar errado. E vem antes
+   * da deriva porque um remix pode saltar poucos milissegundos no arquivo: como
+   * "deriva" isso viraria ajuste de velocidade, que nunca resolve uma
+   * descontinuidade.
+   */
+  if (switched) return { seekTo: drift > SEEK_EPSILON ? want : null, play: true, rate: 1 };
 
   // Já tem correção em voo. Empilhar outra só afunda mais o decoder — e é
   // assim que uma correção isolada vira tempestade de seeks.
@@ -206,6 +219,7 @@ export function syncVideoLayers(project: Project, t: number): void {
       currentTime: video.currentTime,
       paused: video.paused,
       seeking: video.seeking,
+      switched: ownerChanged(video, layer.id),
     });
 
     if (plan.seekTo !== null) video.currentTime = plan.seekTo;

@@ -274,3 +274,19 @@ test('a zona morta da imagem não pode garantir atraso permanente', () => {
   assert.notEqual(plan.rate, 1, '40ms de atraso já merecem correção');
   assert.equal(plan.seekTo, null, 'e sem corte na imagem');
 });
+
+test('trocar de clipe PULA a imagem, mesmo com salto pequeno', () => {
+  // Um remix salta poucos milissegundos no arquivo entre uma fatia e a
+  // seguinte. Como "deriva" isso virava correção de velocidade, que nunca
+  // resolve uma descontinuidade.
+  const plan = videoSyncPlan(clip(), 3, { ...rodando, currentTime: 1.9, switched: true });
+  assert.equal(plan.seekTo, 2, 'pousa no ponto do clipe novo');
+  assert.equal(plan.rate, 1);
+});
+
+test('a troca de clipe vence um seek em voo, também na imagem', () => {
+  const plan = videoSyncPlan(clip(), 3, {
+    ...rodando, currentTime: 0.5, seeking: true, switched: true,
+  });
+  assert.equal(plan.seekTo, 2);
+});

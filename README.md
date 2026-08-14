@@ -313,6 +313,36 @@ A migração de projetos salvos é a própria compactação: no formato 5 uma fa
 áudio podia ser a 3 só porque existiam três de vídeo, e renumerar cada tipo
 traduz isso sem mover clipe nenhum no tempo.
 
+### Trocar de clipe é um CORTE, não deriva
+
+O bug que mais custou pra enxergar, e o mais bonito: um **remix** — várias
+fatias do mesmo arquivo, em ordem trocada, na timeline. A imagem mostrava o
+remix certinho (vinha do cache de quadros) e o export saía perfeito, mas o som
+do preview lia o arquivo **em linha reta**: `1 2 3 4 5 6 7 8 9…` onde deveria
+tocar `1 2 3 4 | 5 6 7 | 5 6 7`.
+
+A causa está em duas coisas verdadeiras que juntas dão errado. Fatias do mesmo
+arquivo dividem **um** elemento (ver acima), e quem corrige a posição desse
+elemento só sabia comparar "onde o cursor está" com "onde deveria estar". Quando
+a fatia A termina e a B começa lendo de outro ponto, essa diferença chega como
+um número — indistinguível de deriva. E deriva se corrige por **velocidade**,
+que jamais resolve uma descontinuidade: o elemento seguia lendo adiante,
+levemente acelerado, para sempre.
+
+O conserto é nomear a diferença. `ownerChanged` lembra qual layer conduzia cada
+elemento; trocar de dono é um corte, e corte se resolve **pulando** — sempre,
+por menor que seja o salto. Vem antes até do "já tem seek em voo", porque esse
+seek mirava o clipe anterior.
+
+Medido no navegador com três fatias de 1s lendo de 0s, 4s e 0s do arquivo: o
+cursor sai de 0,19→0,80, **pula pra 4,0**, corre até 4,79, e **volta pra 0,07**.
+Antes lia 0→2,9 direto.
+
+Fica um resíduo: logo depois do pulo o cursor está ~200ms atrás, porque o seek
+leva tempo pra pousar enquanto o relógio anda. Ele fecha sozinho pela correção
+de velocidade. Baixar o limiar de resync da imagem melhorou pouco (254 → 212ms)
+e reintroduziria o risco de seek no meio da reprodução, então ficou como está.
+
 ### A onda, e por que o clipe de áudio não é só outra cor
 
 Cortar no ritmo é impossível olhando um retângulo colorido: o que se procura é a
@@ -1122,7 +1152,7 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
 arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 376 testes.
+com 385 testes.
 
 ### O caminho até "usável"
 
