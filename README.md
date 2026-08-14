@@ -479,6 +479,30 @@ arrasta o cursor, quem manda na vista é você.
 | Mostrar o projeto inteiro | botão `TUDO` |
 | Rolar | roda, ou arrastar a barra |
 
+## Copiar, recortar, colar
+
+A área de transferência é **própria**, não a do sistema. Uma layer não é texto:
+ela carrega efeitos e uma referência ao elemento de mídia. Passar pelo clipboard
+do sistema significaria serializar e reanexar a mídia na volta, e colar num
+projeto que não tem aquele arquivo daria uma layer quebrada.
+
+Colar cai no **cursor**, não onde o original estava — colar é um jeito de dizer
+"quero isto aqui". A parte que precisa de regra é a faixa: ela não aceita
+sobreposição, então o lugar pedido pode simplesmente não caber. `pasteSlot`
+procura de baixo pra cima a partir da faixa de origem (pra que colar perto
+mantenha a camada) e abre uma faixa nova no topo se nenhuma servir. Recusar
+seria a pior resposta possível — a pessoa acabou de mandar colar.
+
+Os efeitos são clonados **na cópia e na colagem**: colar duas vezes não pode
+produzir duas layers que dividem a mesma lista de efeitos.
+
+| Ação | Atalho |
+|---|---|
+| Copiar / recortar / colar | `Ctrl` `C` / `X` / `V` |
+| Duplicar | `Ctrl` `D` |
+| Cortar no cursor | `Ctrl` `B` |
+| Apagar | `Delete` |
+
 ## Gizmo no palco
 
 Ninguém posiciona um título digitando coordenada. Arrastar move, as quinas
@@ -976,17 +1000,17 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
-com 334 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 339 testes.
 
 ### O caminho até "usável"
 
 O critério: **montar um vídeo de 60s pra Reels — cortes, música, títulos — e
 exportar, sem bater numa parede.**
 
-**Falta pra chegar lá:**
+**Falta pra chegar lá:** nada — o critério foi cumprido. O que vem abaixo é o
+que separa de um clone, não pré-requisito.
 
-- **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,
 snap magnético, presets de texto, pool de mídia, presets de export.

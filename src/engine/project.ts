@@ -253,6 +253,34 @@ export function overlaps(a: TimeSpan, b: TimeSpan): boolean {
   return a.start < b.start + b.duration && b.start < a.start + a.duration;
 }
 
+/**
+ * Onde encaixar um clipe colado, no instante `at`.
+ *
+ * Colar é diferente de duplicar: duplicar sabe pra onde ir (logo depois do
+ * original), colar tem que achar lugar. A faixa não aceita sobreposição, então
+ * "colar no cursor" pode simplesmente não caber — e recusar seria a pior
+ * resposta possível, porque a pessoa acabou de mandar colar.
+ *
+ * Procura de baixo pra cima a partir da faixa preferida (a de origem, pra que
+ * colar perto mantenha a camada), e abre uma faixa nova no topo se nenhuma
+ * servir. Sempre cabe em algum lugar, e o lugar é previsível.
+ */
+export function pasteSlot(
+  layers: readonly Layer[],
+  span: TimeSpan,
+  preferredTrack: number,
+): { start: number; track: number } {
+  const top = topTrack(layers);
+  const livre = (track: number) =>
+    !layers.some(l => l.track === track && overlaps(l, span));
+
+  for (let track = Math.max(0, preferredTrack); track <= top; track++) {
+    if (livre(track)) return { start: span.start, track };
+  }
+  // Nenhuma serve: faixa nova, que por definição está vazia.
+  return { start: span.start, track: top + 1 };
+}
+
 // --- corte --------------------------------------------------------------
 
 /**

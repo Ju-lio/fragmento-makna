@@ -3,7 +3,9 @@ import { player } from '../engine/player.ts';
 import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
-import { clone, compactTracks, nextId, projectDuration, splitLayer, topTrack } from '../engine/project.ts';
+import {
+  clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer, topTrack,
+} from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
@@ -523,6 +525,50 @@ export default function App() {
     setSelectedId(copy.id);
   }, [commit]);
 
+  /**
+   * Área de transferência PRÓPRIA, não a do sistema.
+   *
+   * Uma layer não é texto: ela carrega efeitos e uma referência ao elemento de
+   * mídia. Serializar pro clipboard do sistema significaria reanexar a mídia na
+   * volta, e colar num projeto que não tem aquele arquivo daria uma layer
+   * quebrada. Guardar a referência aqui mantém tudo coerente — e clipes do
+   * mesmo arquivo dividindo um elemento é caso resolvido (ver `ownersByMedia`).
+   */
+  const clipboardRef = useRef<Layer | null>(null);
+
+  const copySelected = useCallback((cortar = false) => {
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    if (!layer) return flash('Selecione um clipe primeiro');
+
+    clipboardRef.current = { ...layer, effects: clone(layer.effects) };
+    if (cortar) deleteLayer(layer.id);
+    else flash(`"${layer.name}" copiado`);
+  }, [deleteLayer]);
+
+  /**
+   * Cola no CURSOR, e não onde o original estava: colar é um jeito de dizer
+   * "quero isto aqui", e "aqui" é onde o playhead está.
+   */
+  const pasteClipboard = useCallback(() => {
+    const source = clipboardRef.current;
+    if (!source) return flash('Nada copiado ainda');
+
+    const span = { start: +player.t.toFixed(3), duration: source.duration };
+    const slot = pasteSlot(projectRef.current.layers, span, source.track);
+
+    const copy: Layer = {
+      ...source,
+      id: nextId(),
+      ...slot,
+      // Clonados na cópia E na colagem: colar duas vezes não pode produzir duas
+      // layers que dividem a mesma lista de efeitos.
+      effects: clone(source.effects),
+    };
+
+    commit(p => ({ ...p, layers: [...p.layers, copy] }));
+    setSelectedId(copy.id);
+  }, [commit]);
+
   // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
   // é o que você espera, e o "b" é só a letra b.
   useEffect(() => {
@@ -546,10 +592,13 @@ export default function App() {
       else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
       else if (key === 'b') { e.preventDefault(); splitSelected(); }
       else if (key === 'd') { e.preventDefault(); duplicateSelected(); }
+      else if (key === 'c') { e.preventDefault(); copySelected(); }
+      else if (key === 'x') { e.preventDefault(); copySelected(true); }
+      else if (key === 'v') { e.preventDefault(); pasteClipboard(); }
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [undo, redo, splitSelected, duplicateSelected, deleteLayer]);
+  }, [undo, redo, splitSelected, duplicateSelected, deleteLayer, copySelected, pasteClipboard]);
 
   /** Recomeça do zero — e só aqui a mídia órfã é de fato apagada. */
   const newProject = async () => {

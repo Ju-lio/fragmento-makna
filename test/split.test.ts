@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitLayer, compactTracks, topTrack, overlaps, freeWindow, trimLeft, trimRight, MIN_CLIP,
+  pasteSlot,
 } from '../src/engine/project.ts';
 import { textLayer, videoLayer } from './fixtures.ts';
 import type { VideoLayer } from '../src/engine/types.ts';
@@ -196,4 +197,42 @@ test('sem vizinho, o trim continua limitado só pela fonte', () => {
   // A regra antiga não pode ter sido substituída, só somada.
   const clipe = { start: 5, duration: 2, trimStart: 0, sourceDuration: 3 };
   assert.equal(trimRight(clipe, 99)?.duration, 3, 'limitado pelo arquivo');
+});
+
+// --- colar --------------------------------------------------------------
+
+test('colar cai na faixa de origem quando ela está livre', () => {
+  // Colar perto do original tem que manter a camada — senão a ordem de desenho
+  // muda sozinha e o resultado não é o que se viu ao copiar.
+  const layers = [textLayer({ id: 1, track: 2, start: 0, duration: 2 })];
+  const slot = pasteSlot(layers, { start: 5, duration: 2 }, 2);
+  assert.deepEqual(slot, { start: 5, track: 2 });
+});
+
+test('faixa de origem ocupada: sobe pra próxima livre', () => {
+  const layers = [
+    textLayer({ id: 1, track: 0, start: 4, duration: 4 }),
+    textLayer({ id: 2, track: 1, start: 0, duration: 1 }),
+  ];
+  assert.equal(pasteSlot(layers, { start: 5, duration: 2 }, 0).track, 1);
+});
+
+test('nenhuma faixa serve: abre uma nova no topo', () => {
+  // Recusar seria a pior resposta: a pessoa acabou de mandar colar.
+  const layers = [
+    textLayer({ id: 1, track: 0, start: 0, duration: 10 }),
+    textLayer({ id: 2, track: 1, start: 0, duration: 10 }),
+  ];
+  assert.equal(pasteSlot(layers, { start: 5, duration: 2 }, 0).track, 2);
+});
+
+test('encostar não é sobrepor', () => {
+  // Um clipe terminando exatamente onde o outro começa é o caso normal — é o
+  // que um corte produz.
+  const layers = [textLayer({ id: 1, track: 0, start: 0, duration: 5 })];
+  assert.equal(pasteSlot(layers, { start: 5, duration: 2 }, 0).track, 0);
+});
+
+test('projeto vazio aceita colar na faixa 0', () => {
+  assert.deepEqual(pasteSlot([], { start: 3, duration: 2 }, 0), { start: 3, track: 0 });
 });
