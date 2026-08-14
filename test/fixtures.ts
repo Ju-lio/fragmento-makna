@@ -65,6 +65,7 @@ export function textLayer(over: Partial<TextLayer> = {}): TextLayer {
     id: 1, type: 'text', name: 'Texto',
     start: 0, duration: 4, x: 0, y: 0, track: 0, effects: [],
     text: 'OI', size: 100, color: '#fff', font: 'X',
+    stroke: '#000', strokeWidth: 0, shadow: '#000', shadowBlur: 0, shadowOffset: 0,
     ...over,
   };
 }

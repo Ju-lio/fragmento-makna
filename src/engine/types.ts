@@ -79,7 +79,30 @@ interface LayerBase extends TimeSpan {
   track: number;
 }
 
-export interface TextLayer extends LayerBase {
+/**
+ * Como o texto se destaca do que está atrás.
+ *
+ * Existe porque título claro sobre imagem clara simplesmente some, e é o caso
+ * mais comum de todos: legenda por cima de footage. Contorno e sombra são as
+ * duas saídas clássicas, e servem a situações diferentes — o contorno segura
+ * sobre fundo agitado, a sombra é mais discreta sobre fundo liso.
+ *
+ * Fora do vocabulário de efeitos de propósito: `prop` é fechado e mapeia pra
+ * CSS/canvas, e isto aqui é aparência fixa da layer, não algo que anima.
+ */
+export interface TextDecor {
+  /** Cor do contorno. Largura 0 desliga, e é o padrão. */
+  stroke: string;
+  /** Espessura VISÍVEL do contorno, em pixels do projeto. */
+  strokeWidth: number;
+  /** Cor da sombra. Sem desfoque nem deslocamento, não desenha nada. */
+  shadow: string;
+  shadowBlur: number;
+  /** Deslocamento vertical. Sombra projetada é sempre pra baixo. */
+  shadowOffset: number;
+}
+
+export interface TextLayer extends LayerBase, TextDecor {
   type: 'text';
   text: string;
   size: number;

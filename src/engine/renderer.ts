@@ -83,7 +83,9 @@ export function drawFrame(
     if (Math.abs(st.brightness - 1) > 0.001) filters.push(`brightness(${st.brightness.toFixed(3)})`);
     ctx.filter = filters.length ? filters.join(' ') : 'none';
 
-    if (layer.type === 'text') drawText(ctx, layer, st);
+    // Escala total até o pixel físico: a do canvas vezes a da própria layer.
+    // Só a sombra precisa disto — ver `drawText`.
+    if (layer.type === 'text') drawText(ctx, layer, st, (ctx.canvas.width / W) * st.scale);
     else if (layer.type === 'image' && layer.img) drawSource(ctx, layer, layer.img, W, H);
     else if (layer.type === 'video' && layer.video) drawVideo(ctx, layer, W, H);
 
@@ -97,7 +99,31 @@ export function drawFrame(
   return { degraded };
 }
 
-function drawText(ctx: CanvasRenderingContext2D, layer: Extract<Layer, { type: 'text' }>, st: LayerState) {
+/**
+ * Desenha o texto, com contorno e sombra quando pedidos.
+ *
+ * Três passadas, nesta ordem, e a ordem é o que faz o resultado ficar legível:
+ *
+ *  1. **Sombra**, atrás de tudo. Desenhada sobre a silhueta mais externa (o
+ *     contorno, se houver; senão o preenchimento), então a sombra segue o
+ *     contorno da forma final em vez de escapar por baixo dele.
+ *  2. **Contorno**, sem sombra — senão cada passada projetaria a sua e as duas
+ *     se sobreporiam, engrossando a sombra num borrão.
+ *  3. **Preenchimento**, por cima.
+ *
+ * `shadowScale` existe por um detalhe do canvas que quebraria a promessa
+ * "preview = export": **sombra não é afetada pela transformação**. `lineWidth`
+ * é, então o contorno acompanha o zoom sozinho; já `shadowBlur` e
+ * `shadowOffsetY` estão em pixels de tela, e o preview desenha numa fração da
+ * resolução do export. Sem multiplicar aqui, a mesma sombra sairia várias vezes
+ * maior no preview do que no arquivo final.
+ */
+function drawText(
+  ctx: CanvasRenderingContext2D,
+  layer: Extract<Layer, { type: 'text' }>,
+  st: LayerState,
+  shadowScale: number,
+) {
   ctx.font = `${layer.size}px ${layer.font || DISPLAY_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -111,7 +137,34 @@ function drawText(ctx: CanvasRenderingContext2D, layer: Extract<Layer, { type: '
   const lines = String(layer.text).split('\n');
   const lh = layer.size * 1.12;
   const y0 = -((lines.length - 1) * lh) / 2;
-  lines.forEach((ln, i) => ctx.fillText(ln, 0, y0 + i * lh));
+  const eachLine = (draw: (line: string, y: number) => void) =>
+    lines.forEach((ln, i) => draw(ln, y0 + i * lh));
+
+  const outlined = layer.strokeWidth > 0 && Boolean(layer.stroke);
+  const shaded = Boolean(layer.shadow) && (layer.shadowBlur > 0 || layer.shadowOffset !== 0);
+
+  if (outlined) {
+    ctx.strokeStyle = layer.stroke;
+    // Dobrado porque `strokeText` centra o traço na borda do glifo: metade cai
+    // pra dentro da letra. Sem isto, um contorno de 8px aparece com 4.
+    ctx.lineWidth = layer.strokeWidth * 2;
+    // Cantos arredondados: em ponta, os vértices agudos de uma fonte pesada
+    // disparam farpas bem mais longas que a espessura pedida.
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+  }
+
+  if (shaded) {
+    ctx.save();
+    ctx.shadowColor = layer.shadow;
+    ctx.shadowBlur = layer.shadowBlur * shadowScale;
+    ctx.shadowOffsetY = layer.shadowOffset * shadowScale;
+    eachLine((ln, y) => (outlined ? ctx.strokeText(ln, 0, y) : ctx.fillText(ln, 0, y)));
+    ctx.restore();
+  }
+
+  if (outlined) eachLine((ln, y) => ctx.strokeText(ln, 0, y));
+  eachLine((ln, y) => ctx.fillText(ln, 0, y));
 
   if (canSpace) ctx.letterSpacing = '0px';
 }

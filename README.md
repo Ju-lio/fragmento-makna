@@ -478,6 +478,48 @@ arrasta o cursor, quem manda na vista é você.
 | Mostrar o projeto inteiro | botão `TUDO` |
 | Rolar | roda, ou arrastar a barra |
 
+## Legibilidade do texto: contorno e sombra
+
+Título claro sobre imagem clara simplesmente some, e é o caso mais comum de
+todos — legenda por cima de footage. Duas saídas clássicas, que servem a
+situações diferentes: o contorno segura sobre fundo agitado, a sombra é mais
+discreta sobre fundo liso.
+
+Ficam **fora do vocabulário de efeitos** de propósito: `prop` é fechado e mapeia
+pra CSS/canvas, e isto é aparência fixa da layer, não algo que anima. Nascem
+zerados — texto que já se lê não precisa deles, e ligá-los por padrão mudaria a
+cara de todo projeto existente. O botão `LEGÍVEL` vem antes dos números porque a
+resposta certa é quase sempre a mesma (contorno escuro grosso, proporcional ao
+corpo), e ninguém quer descobrir isso ajustando dois campos.
+
+O desenho é em três passadas, e a ordem é o que faz o resultado ficar legível:
+a **sombra** primeiro, projetada sobre a silhueta mais externa (o contorno, se
+houver) pra que ela siga a forma final em vez de escapar por baixo; depois o
+**contorno**, sem sombra — senão cada passada projetaria a sua e as duas
+engrossariam num borrão; por fim o **preenchimento**. O contorno vai com
+`lineWidth` dobrado, porque `strokeText` centra o traço na borda do glifo e
+metade cai dentro da letra, e com `lineJoin: 'round'`, senão os vértices agudos
+de uma fonte pesada disparam farpas mais longas que a espessura pedida.
+
+### A armadilha: sombra de canvas não é afetada pela transformação
+
+`lineWidth` está em coordenadas do usuário, então o contorno acompanha o zoom
+sozinho. `shadowBlur` e `shadowOffsetY`, **não** — estão em pixels de tela, e o
+preview desenha numa fração da resolução do export (ver "resolução física ≠
+exibida"). A mesma sombra sairia várias vezes maior no preview do que no
+arquivo, quebrando a promessa "Preview = Export" no lugar mais difícil de
+notar: você ajusta a sombra vendo uma coisa e entrega outra.
+
+Por isso `drawText` recebe um `shadowScale` — a escala do canvas vezes a da
+própria layer — e multiplica os dois valores. Medido no navegador, comparando a
+mesma composição em canvas de 934×526 e de 330×186 (2,8× de diferença), pela
+fração da tela que a sombra ocupa:
+
+| | desvio entre as duas resoluções |
+|---|---|
+| sem escalar (controle) | **64,2%** — e a sombra cresce quando a resolução cai, como previsto |
+| escalando | **10,9%** — resíduo de limiar num gradiente suave |
+
 ## Duração: derivada, não digitada
 
 Era um campo que você preenchia, com dois defeitos que se somavam. Clipe que
@@ -891,8 +933,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
-com 308 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
+com 311 testes.
 
 ### O caminho até "usável"
 
@@ -903,8 +945,6 @@ exportar, sem bater numa parede.**
 
 - **Gizmo no canvas** — arrastar pra posicionar, alças pra escalar e girar.
   Ninguém posiciona um título digitando coordenada.
-- **Legibilidade de texto** — contorno e sombra. Texto claro sobre imagem clara
-  simplesmente some.
 - **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,

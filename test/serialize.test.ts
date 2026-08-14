@@ -4,7 +4,7 @@ import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError, PROJECT_FORMAT,
 } from '../src/engine/serialize.ts';
 import { project, textLayer, videoLayer, imageLayer, fakeVideo, fakeImage } from './fixtures.ts';
-import type { VideoLayer } from '../src/engine/types.ts';
+import type { TextLayer, VideoLayer } from '../src/engine/types.ts';
 
 /** Resolve qualquer id — o caso em que toda a mídia continua disponível. */
 const anyMedia = () => fakeVideo();
@@ -233,4 +233,51 @@ test('a faixa sobrevive à ida e volta', () => {
   const original = project([textLayer({ track: 3 }), textLayer({ id: 9, track: 3, start: 6 })]);
   const { project: back } = deserializeProject(serializeProject(original), anyMedia);
   assert.deepEqual(back.layers.map(l => l.track), [3, 3]);
+});
+
+// --- contorno e sombra do texto -----------------------------------------
+
+test('contorno e sombra sobrevivem à ida e volta', () => {
+  const layer = textLayer({
+    stroke: '#112233', strokeWidth: 6, shadow: '#445566', shadowBlur: 9, shadowOffset: 3,
+  });
+  const { project: back } = deserializeProject(
+    serializeProject(project([layer])), () => null,
+  );
+  const t = back.layers[0] as TextLayer;
+  assert.equal(t.stroke, '#112233');
+  assert.equal(t.strokeWidth, 6);
+  assert.equal(t.shadow, '#445566');
+  assert.equal(t.shadowBlur, 9);
+  assert.equal(t.shadowOffset, 3);
+});
+
+test('projeto antigo abre com contorno e sombra desligados', () => {
+  // É exatamente como ele já se desenhava — não há informação a recuperar.
+  const antigo = serializeProject(project([textLayer()])) as unknown as {
+    format: number; layers: Record<string, unknown>[];
+  };
+  antigo.format = 4;
+  for (const l of antigo.layers) {
+    delete l.stroke; delete l.strokeWidth;
+    delete l.shadow; delete l.shadowBlur; delete l.shadowOffset;
+  }
+
+  const { project: back } = deserializeProject(antigo as never, () => null);
+  const t = back.layers[0] as TextLayer;
+  assert.equal(t.strokeWidth, 0, 'sem contorno');
+  assert.equal(t.shadowBlur, 0, 'sem sombra');
+  assert.equal(t.shadowOffset, 0);
+  assert.ok(t.stroke.length > 0, 'mas com uma cor pronta pra quando você ligar');
+});
+
+test('largura de contorno negativa é recusada', () => {
+  // `lineWidth` negativo é ignorado pelo canvas em silêncio — o texto sairia
+  // sem contorno nenhum e ninguém saberia por quê.
+  const ruim = serializeProject(project([textLayer()])) as unknown as {
+    layers: Record<string, unknown>[];
+  };
+  (ruim.layers[0] as Record<string, unknown>).strokeWidth = -5;
+  const { project: back } = deserializeProject(ruim as never, () => null);
+  assert.equal((back.layers[0] as TextLayer).strokeWidth, 0);
 });

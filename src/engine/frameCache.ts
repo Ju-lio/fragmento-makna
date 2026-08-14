@@ -119,7 +119,12 @@ export function renderSignature(project: Project): string {
     // Campo a campo e por tipo: assim o compilador cobra o que só existe em
     // algumas layers, e um campo novo no modelo não entra aqui por acidente.
     const common = [l.type, l.track, l.start, l.duration, l.x, l.y, l.effects];
-    if (l.type === 'text') return [...common, l.text, l.size, l.color, l.font];
+    if (l.type === 'text') {
+      return [
+        ...common, l.text, l.size, l.color, l.font,
+        l.stroke, l.strokeWidth, l.shadow, l.shadowBlur, l.shadowOffset,
+      ];
+    }
     // `mediaId` e não `src`: o `blob:` é sorteado a cada sessão, então usá-lo
     // faria um projeto reaberto nunca reaproveitar nada — e dois clipes do
     // mesmo arquivo pareceriam mídias diferentes.

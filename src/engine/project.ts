@@ -50,6 +50,13 @@ export function makeTextLayer(overrides: Partial<TextLayer> = {}): TextLayer {
     x: 0,
     y: 0,
     track: 0,
+    // Nasce sem contorno nem sombra: um texto que já se lê não precisa deles, e
+    // ligá-los por padrão mudaria a cara de todo projeto que já existe.
+    stroke: '#171021',
+    strokeWidth: 0,
+    shadow: '#171021',
+    shadowBlur: 0,
+    shadowOffset: 0,
     effects: [preset('fade-up')],
     ...overrides,
   };

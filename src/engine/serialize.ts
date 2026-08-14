@@ -38,7 +38,12 @@ import type {
  * existir só implicitamente nas layers. A migração deriva o acervo das layers
  * que já existem — o que preserva exatamente o material que o projeto tinha.
  */
-export const PROJECT_FORMAT = 4;
+/**
+ * 4 → 5: texto ganhou contorno e sombra (`TextDecor`). Um projeto do formato 4
+ * não tinha nenhum dos dois, então a migração é o padrão desligado — que é
+ * exatamente como ele já era desenhado.
+ */
+export const PROJECT_FORMAT = 5;
 
 export interface SerializedProject {
   format: number;
@@ -70,10 +75,21 @@ interface SerializedSound {
 }
 
 export type SerializedLayer =
-  | (SerializedBase & { type: 'text'; text: string; size: number; color: string; font: string })
+  | (SerializedBase & SerializedDecor & {
+    type: 'text'; text: string; size: number; color: string; font: string;
+  })
   | (SerializedBase & { type: 'image'; fit: number; mediaId: string })
   | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
   | (SerializedBase & SerializedSound & { type: 'audio' });
+
+/** Contorno e sombra do texto. Ver `TextDecor`. */
+interface SerializedDecor {
+  stroke: string;
+  strokeWidth: number;
+  shadow: string;
+  shadowBlur: number;
+  shadowOffset: number;
+}
 
 /** Um elemento pronto pra uma layer de mídia, resolvido a partir do id. */
 export type MediaElement = HTMLImageElement | HTMLVideoElement | HTMLAudioElement;
@@ -114,7 +130,11 @@ function serializeLayer(l: Layer): SerializedLayer {
   };
 
   if (l.type === 'text') {
-    return { ...base, type: 'text', text: l.text, size: l.size, color: l.color, font: l.font };
+    return {
+      ...base, type: 'text', text: l.text, size: l.size, color: l.color, font: l.font,
+      stroke: l.stroke, strokeWidth: l.strokeWidth,
+      shadow: l.shadow, shadowBlur: l.shadowBlur, shadowOffset: l.shadowOffset,
+    };
   }
   if (l.type === 'image') {
     return { ...base, type: 'image', fit: l.fit, mediaId: l.mediaId };
@@ -274,6 +294,13 @@ function readLayer(
       size: num(l.size, 100),
       color: str(l.color, '#f7efdc'),
       font: str(l.font, 'sans-serif'),
+      // Ausentes num projeto antigo: o padrão é desligado, que é como ele já
+      // se desenhava.
+      stroke: str(l.stroke, '#171021'),
+      strokeWidth: Math.max(0, num(l.strokeWidth, 0)),
+      shadow: str(l.shadow, '#171021'),
+      shadowBlur: Math.max(0, num(l.shadowBlur, 0)),
+      shadowOffset: num(l.shadowOffset, 0),
     } satisfies TextLayer;
   }
 
