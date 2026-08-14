@@ -1,11 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
-import { previewMode } from '../engine/previewMode.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import {
-  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner,
+  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner, videosParkedAt,
 } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource } from '../engine/frameSource.ts';
@@ -106,7 +105,20 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        * Fixando a grade, cache e render viram a mesma coisa e ficam
        * intercambiáveis.
        */
-      const fastPreview = previewMode.fast || player.playing;
+      /**
+       * Qualidade reduzida só enquanto ROLA, nunca com o vídeo parado.
+       *
+       * Vale pro que se desenha (o desfoque é pulado) e pro que se aceita do
+       * cache (um quadro capturado ao vivo, com o `<video>` na posição
+       * aproximada, é `degraded`). Parado, os dois voltam a ser exatos — é aí
+       * que você inspeciona um quadro, e mostrar aproximação nessa hora é o
+       * mesmo que mentir sobre o que está editado.
+       *
+       * Antes isto também obedecia ao interruptor manual (`⚡ FAST`), que
+       * ficava ligado inclusive pausado. Ver `autoPrerender.ts` pra por que
+       * esse botão deixou de mexer em qualidade.
+       */
+      const fastPreview = player.playing;
 
       const { index, t, useCache } = pickFrameSource({
         rawT,
@@ -137,9 +149,28 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       if (player.playing && player.fromCache) return;
 
-      // Nudge the <video> elements onto the clock, then paint whatever
-      // frame they are currently holding.
       syncVideoLayers(project, t);
+
+      /**
+       * Parado, só compõe com o `<video>` que JÁ POUSOU no quadro pedido.
+       *
+       * `syncVideoLayers` escreve `currentTime` e volta na hora — o seek é
+       * assíncrono. Desenhar em seguida, no mesmo tick, compunha com a imagem
+       * ANTERIOR do elemento e mandava pra tela um quadro que o export nunca
+       * geraria. Parar em cima de um corte e ver o frame de antes dele vinha
+       * daqui, e é exatamente o que inviabiliza cortar com precisão.
+       *
+       * Segurar o quadro anterior transforma isso numa espera de alguns
+       * milissegundos — a mesma saída que o furo de cache já usa, e a barra de
+       * atividade ("decodificando") explica a pausa. O repaint é garantido:
+       * `attachVideoElement` escuta `seeked` e `loadeddata`.
+       *
+       * Só vale PARADO. Durante a reprodução ao vivo o elemento nunca está
+       * "pousado" — ele roda solto por construção — e exigir isso aqui
+       * congelaria a imagem inteira.
+       */
+      if (!player.playing && !videosParkedAt(project, t)) return;
+
       const { degraded } = drawFrame(ctx, project, t, { fastPreview });
 
       /**
@@ -169,7 +200,7 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
       // Frame que vem do cache não espera por nada — mesmo que o <video> por
       // trás ainda esteja buscando, não é uma espera que você percebe.
       const project = projectRef.current;
-      const allowDegraded = previewMode.fast || player.playing;
+      const allowDegraded = player.playing;
       if (frameCache.get(signatureOf(project), frameIndexAt(t, project.fps), { allowDegraded })) {
         previewStatus.report(false);
         return;
@@ -186,14 +217,10 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
   // Any project edit must trigger exactly one repaint.
   useEffect(() => { player.invalidate(); });
 
-  // Flipping the fast-preview toggle, or starting/stopping playback, must
-  // repaint immediately — otherwise you'd see the old quality until the next
-  // unrelated change happened to invalidate the frame.
-  useEffect(() => {
-    const unsubMode = previewMode.subscribe(() => player.invalidate());
-    const unsubState = player.onState(() => player.invalidate());
-    return () => { unsubMode(); unsubState(); };
-  }, []);
+  // Começar ou parar a reprodução muda a qualidade do quadro, então tem que
+  // repintar na hora — senão você continuaria vendo o quadro simplificado da
+  // reprodução até alguma outra mudança por acaso invalidar a tela.
+  useEffect(() => player.onState(() => player.invalidate()), []);
 
   // --- physical resolution --------------------------------------------
   // The canvas's CSS size (how big it LOOKS) stays pinned to the composition's

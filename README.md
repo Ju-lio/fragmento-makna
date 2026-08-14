@@ -32,6 +32,7 @@ src/
     effects.ts         runtime: sampleTrack, effectProgress, resolveState
     renderer.ts        drawFrame(ctx, project, t) — função pura
     player.ts          relógio + loop rAF (fora do React de propósito)
+    playbackClock.ts   o avanço do playhead em quadros inteiros (puro)
     presets.ts         biblioteca inicial + doc do schema
     project.ts         modelo de dados
     fonts.ts           carga explícita da fonte do canvas
@@ -55,7 +56,7 @@ src/
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
     mediaStore.ts      blobs e projeto em IndexedDB
-    previewMode.ts     o interruptor ⚡ FAST
+    autoPrerender.ts   o interruptor ⚙ AUTO PRÉ-RENDER
     previewStatus.ts   sinal da barra de atividade
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
@@ -474,6 +475,13 @@ padrão que se assume calado é um padrão que muda sem ninguém perceber.
 Seek continua existindo, mas só acima de 400ms, onde não é mais deriva e sim
 evento: o loop voltou ao início, você arrastou o cursor durante a reprodução, o
 decoder engasgou. Aí o corte no som é o mal menor.
+
+**Isto foi depois superado, e vale saber em que sentido.** Corrigir o som pra
+alcançar o relógio do rAF era disciplinar o relógio bom pelo ruim, e a conta
+acima só escolhia o *mecanismo* menos ruim de fazer isso. Hoje o som é o
+relógio-mestre: a trilha condutora não é corrigida por nada, e as demais seguem
+ela. O que está descrito aqui continua valendo para as trilhas que **não** estão
+conduzindo — ver "O som virou o relógio-mestre".
 
 Uma armadilha que só apareceu testando: tocando **do cache**, `handlePlay`
 pausava os `<video>` — eles não pintavam nada, então deixá-los rodando só
@@ -936,8 +944,10 @@ A correção, em `viewport.ts` + `renderer.ts` + `Stage.tsx`:
   que nenhuma layer precise saber disso. Preview e export continuam usando a
   mesma função com o mesmo resultado proporcional.
 - **Fast preview**: desfoque é ignorado durante reprodução ativa e volta assim
-  que você pausa. O botão **⚡ FAST** força esse modo o tempo todo, e também
-  desliga a preparação automática do play (veja abaixo).
+  que você pausa — e só isso, sem interruptor manual. Com o vídeo parado o
+  quadro é sempre exato, porque é aí que você inspeciona o que editou. Quando
+  reproduzir sair mais caro que isso, a saída é preparar o trecho antes
+  (**⚙ AUTO PRÉ-RENDER**, veja abaixo), não desenhar pior.
 
 A qualidade de reamostragem (`imageSmoothingQuality`) é sempre `high`. Chegou
 a ser reduzida durante a reprodução, mas o ganho nunca foi medido e a
@@ -1004,13 +1014,18 @@ que passe por cima dele — mas o contrário promove.
 
 ## Play liso: preparar antes em vez de engasgar durante
 
-A regra: **esperar é aceitável, reproduzir tremendo não é.**
+Duas reproduções diferentes, escolhidas por **⚙ AUTO PRÉ-RENDER**:
 
-Ao dar play, se o trecho ainda não estiver inteiro no cache em qualidade
-cheia, o editor prepara primeiro (com barra de progresso, cancelável) e só
-então reproduz — a partir daí, direto do cache, sem decoder no caminho.
+- **Desligado (o padrão)**: toca na hora, ao vivo. O cache vai se enchendo
+  sozinho com o que passar na tela, então voltar num trecho que você acabou de
+  assistir já é de graça.
+- **Ligado**: se o trecho ainda não estiver inteiro no cache em qualidade
+  cheia, o editor prepara primeiro (com barra de progresso, cancelável) e só
+  então reproduz — a partir daí, direto do cache, sem decoder no caminho.
 
-`⚡ FAST` é a saída pro oposto: reproduz na hora, aceitando qualidade menor.
+O padrão inverteu depois de uso real. Esperar um pré-render era o preço cobrado
+de **toda** edição, inclusive das dezenas em que a pergunta é só "o clipe entra
+na hora certa?" — caro demais pra ser o comportamento padrão de apertar play.
 
 ### Tudo se alinha na taxa de quadros do projeto
 
@@ -1042,6 +1057,138 @@ de volta pra disputar o elemento.
 A trava (`claimVideoElements` / `releaseVideoElements`) fica dentro do
 `videoSync.ts`, **não em quem chama** — assim um chamador novo não
 reintroduz o problema por esquecimento.
+
+## O preview mostra o que o arquivo vai ter
+
+O sintoma que abriu esta fase, e que nenhuma das explicações anteriores cobria:
+**cada play saía diferente do anterior sem ninguém ter editado nada.** Som
+parando antes, clipe cortando antes, e nunca no mesmo lugar. Não dava pra
+montar um corte no ritmo porque não dava pra confiar que aquilo se repetiria.
+
+Não era tolerância mal calibrada. Eram três coisas, e a primeira é a raiz.
+
+### O relógio andava em tempo de parede
+
+`player.t` acumulava o `dt` do `requestAnimationFrame` (`t += dt`), e o
+arredondamento pra grade de quadros só acontecia lá na frente, na hora de
+indexar o cache. Ou seja: o preview amostrava **onde o rAF calhasse de cair**,
+não a grade. O exportador, esse sim, percorre índices exatos (`first..last`).
+
+Os dois nunca olharam pros mesmos instantes, e o desencontro mudava a cada
+reprodução porque depende do escalonamento do navegador:
+
+- Um engasgo de decoder de 100ms fazia `t` saltar 100ms de uma vez. A 30fps são
+  três quadros que aquela reprodução simplesmente não teve.
+- A fronteira de um corte é um instante exato. Com o rAF entregando 4,98 e
+  depois 5,01, o quadro de t=5,000 — que o export produz — nunca ia pra tela.
+  Era o "cortou antes" que não se conseguia reproduzir duas vezes igual.
+- O `dt` é limitado em 0,25s (contra o salto de voltar pra uma aba parada). Um
+  travamento maior descartava linha do tempo em silêncio, e o relógio ficava
+  atrás do mundo real — enquanto o `<audio>` seguia no relógio do hardware.
+
+Hoje o tempo decorrido é acumulado e convertido em **quadros inteiros**: `t` é
+sempre `quadro / fps`, jamais um valor entre dois quadros. A conta vive em
+`playbackClock.ts`, pura e testável, pelo mesmo motivo de `videoSyncPlan` viver
+fora do `videoSync` — errar um quadro aqui não se enxerga olhando a tela.
+
+Sob carga a reprodução **pula** quadros, que é o que qualquer editor faz e é
+honesto. O que ela não faz mais é inventar um instante intermediário. A
+propriedade, que os testes fixam:
+
+> **Todo instante que o preview mostra é um instante que o export renderiza.**
+> A reprodução pode mostrar menos quadros; nunca um quadro diferente.
+
+`seek` snapa pela mesma razão — o playhead só pousa em quadro que existe. Isso
+conserta de quebra um erro que o próprio exportador já documentava: marcar IN no
+cursor pegava um instante fora da grade, e o som saía até meio quadro deslocado
+da imagem.
+
+Medido no navegador, dando play duas vezes seguidas: **61 quadros distintos em
+2s a 30fps** (exatamente 2×30+1, nenhum pulado), **zero instantes fora da
+grade**, e as duas corridas produziram o **conjunto idêntico** de quadros.
+
+### O scrub pintava o quadro anterior, e nada corrigia depois
+
+O `seekVideoTo` do pré-render já documentava o perigo com todas as letras: o
+evento `seeked` às vezes dispara **antes** do `readyState` subir, e desenhar
+nessa janela pinta o frame anterior. O pré-render se protegia esperando
+`loadeddata`. O preview não tinha proteção nenhuma.
+
+O estrago era silencioso e permanente. Parado, aquele `seeked` era o **único**
+repaint agendado — se ele caísse na janela ruim, a tela ficava com o quadro
+errado e nada mais repintava. Você parava em cima de um corte e via o frame de
+antes dele, sem nenhum sinal de que era mentira. Para quem corta com precisão,
+era o pior caso possível.
+
+Duas correções, e a segunda é a que fecha o buraco de verdade:
+
+- Repintar nos **dois** eventos (`seeked` e `loadeddata`), não só no primeiro.
+- Parado, **só compor com o `<video>` que já pousou** (`videosParkedAt`).
+  Enquanto não pousou, segura o quadro anterior — a mesma saída que o furo de
+  cache já usava, e a barra de atividade explica a pausa.
+
+O teste é `seeking` + `readyState`, e **não** comparar `currentTime` com o
+instante pedido. Essa comparação parece mais rigorosa e é uma armadilha: o
+navegador pousa no quadro decodificável mais próximo, não no valor exato, então
+pedir 5,000 num arquivo a 29,97fps deixa o `currentTime` em 4,9967 pra sempre.
+Como condição de repintar, nunca se satisfaria e a tela congelaria de vez.
+
+Arquivo que falhou de vez é a exceção: não vem quadro nenhum, nunca, e esperar
+por ele deixaria o palco em branco pra sempre — inclusive os títulos, que não
+têm nada a ver com o vídeo quebrado. Elemento com `error` é composto sem espera.
+
+### O som virou o relógio-mestre
+
+Havia dois relógios na reprodução. O do rAF, que o navegador atrasa a cada
+coleta de lixo, engasgo de decoder ou aba em segundo plano. E o do `<audio>`,
+que corre no relógio do **hardware de som** e é o mais estável da plataforma.
+
+O editor corrigia o segundo pra alcançar o primeiro — disciplinava o relógio bom
+pelo ruim. O preço aparecia como som cortado em lugar diferente a cada
+reprodução: uma travada punha os dois a mais de 90ms de distância, e acima disso
+a única correção possível era um **seek**, que é corte audível.
+
+Invertido, o problema deixa de existir em vez de ser tolerado: a linha do tempo
+anda **o tanto que o som de fato andou**, e a imagem segue o som. Dessincronia
+entre áudio e vídeo vira impossível por construção.
+
+Três detalhes que fazem a inversão funcionar:
+
+- **`player.ts` não conhece áudio, e não deve.** Ele recebe uma função
+  (`setTimeSource`) que devolve a posição na linha do tempo. Quem sabe eleger a
+  trilha condutora é o `audioSync`, e é lá que essa regra vive.
+- **Usa-se o delta entre duas leituras, nunca a posição absoluta.** A posição
+  absoluta obrigaria a acertar o instante em que o `play()` chega ao alto-falante
+  (latência variável, de 1 a 157ms medidos) e daria um salto toda vez que a
+  trilha condutora mudasse. O delta só diz "saiu tanto de som desde o último
+  quadro", que é exatamente o que a linha do tempo precisa andar.
+- **Quem dita o relógio não se corrige.** Corrigir a referência pela cópia é
+  realimentação, não sincronia — e não é hipótese: como o playhead pousa na
+  grade, `t` fica sistematicamente até 1/fps atrás da posição real do elemento.
+  A 30fps são 33ms, acima da tolerância de 20ms. A condutora seria freada contra
+  um resíduo de arredondamento, e como a linha do tempo segue ela, a reprodução
+  inteira sairia lenta. As **outras** trilhas continuam sendo corrigidas para
+  ela — é assim que a sincronia acontece: todo mundo segue o som, o som não
+  segue ninguém.
+
+O clamp do delta do som é bem mais folgado que o do rAF, de propósito. O limite
+de 0,25s existe contra o salto de voltar pra uma aba parada; já o delta do som é
+**medição do que aconteceu de verdade** — se saíram 400ms de áudio, a linha do
+tempo tem que andar 400ms, senão a imagem fica pra trás justamente na travada em
+que ela já está sofrendo.
+
+### O que continua não sendo exato, e por quê
+
+Reprodução ao vivo a partir de elementos `<video>` **não tem como ser
+exata**: o elemento roda no relógio do pipeline de mídia, e a imagem que ele
+carrega num instante qualquer é a que ele carrega. Por isso o quadro capturado
+durante a reprodução ao vivo continua entrando no cache como `degraded`, e o
+pré-render o regera com o seek exato.
+
+O que mudou é que agora isso é o **único** resíduo, e ele está confinado à
+reprodução ao vivo. Parado — que é onde se corta — o quadro é exato. Com
+**⚙ AUTO PRÉ-RENDER** ligado, a reprodução também é, porque sai da mesma
+composição quadro a quadro que o export.
 
 ## Corrigir deriva por velocidade, nunca por seek
 
@@ -1151,8 +1298,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 385 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 405 testes.
 
 ### O caminho até "usável"
 

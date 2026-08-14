@@ -36,6 +36,7 @@ export interface FakeVideoInit {
   paused?: boolean;
   seeking?: boolean;
   readyState?: number;
+  error?: MediaError | null;
 }
 
 export function fakeVideo(init: FakeVideoInit = {}): HTMLVideoElement {

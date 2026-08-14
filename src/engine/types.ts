@@ -218,4 +218,6 @@ export interface VideoTiming extends TimeSpan {
 export interface VideoProbe {
   seeking: boolean;
   readyState: number;
+  /** Não-nulo quando o arquivo falhou. Ver `videosParkedAt`. */
+  error?: MediaError | null;
 }

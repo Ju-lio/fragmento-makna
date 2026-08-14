@@ -230,3 +230,43 @@ test('sem troca, deriva pequena segue sendo deriva', () => {
   const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02, switched: false });
   assert.equal(plan.seekTo, null, 'nada de corte no som à toa');
 });
+
+// --- relógio-mestre -----------------------------------------------------
+
+test('a trilha condutora não é corrigida — nem por andamento, nem por seek', () => {
+  /**
+   * Quem dita o relógio é a referência, e referência não se corrige pela cópia.
+   *
+   * O caso não é teórico: o playhead pousa na grade de quadros, então `t` fica
+   * sistematicamente até 1/fps atrás da posição real do elemento. A 30fps são
+   * 33ms, acima da tolerância de 20ms — a condutora seria freada contra um
+   * resíduo de arredondamento, e como a linha do tempo segue ela, a reprodução
+   * inteira sairia lenta.
+   */
+  const l = trilha();
+  const t = 5;
+  const want = 1 + (t - 2);                       // trimStart + (t - start)
+  const atrasado = { ...rodando, currentTime: want + 0.033 };
+
+  const comum = soundSyncPlan(l, t, atrasado);
+  assert.notEqual(comum.rate, 1, 'sem ser mestre, 33ms de deriva têm que corrigir');
+
+  const mestre = soundSyncPlan(l, t, { ...atrasado, master: true });
+  assert.deepEqual(mestre, { seekTo: null, play: true, volume: 1, rate: 1 });
+});
+
+test('mesmo perdida de vez, a condutora não leva seek', () => {
+  // Um seek na condutora corta o som E dá um salto no relógio de todo mundo.
+  const l = trilha();
+  const perdida = { ...rodando, currentTime: 40 };
+  assert.notEqual(soundSyncPlan(l, 5, perdida).seekTo, null, 'sem ser mestre, resync');
+  assert.equal(soundSyncPlan(l, 5, { ...perdida, master: true }).seekTo, null);
+});
+
+test('ser mestre não impede a trilha de entrar posicionada', () => {
+  // A entrada é o único momento em que o seek é de graça (ninguém está ouvindo
+  // ainda), e é ele que fixa o alinhamento absoluto. Vem antes do caso mestre.
+  const plan = soundSyncPlan(trilha(), 5, { playing: true, currentTime: 0, paused: true, master: true });
+  assert.equal(plan.seekTo, 4);
+  assert.equal(plan.play, true);
+});

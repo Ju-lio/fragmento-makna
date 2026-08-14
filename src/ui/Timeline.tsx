@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { trimLeft, trimRight } from '../engine/project.ts';
-import { previewMode } from '../engine/previewMode.ts';
+import { autoPrerender } from '../engine/autoPrerender.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
@@ -60,7 +60,7 @@ export function Timeline({
     contentWidth: timelineView.contentWidth,
     scrollable: timelineView.scrollable,
   }));
-  const [fast, setFast] = useState(previewMode.fast);
+  const [autoPre, setAutoPre] = useState(autoPrerender.on);
   const [range, setRange] = useState<{ in: number | null; out: number | null }>(
     () => ({ in: player.rangeIn, out: player.rangeOut }),
   );
@@ -110,7 +110,7 @@ export function Timeline({
       setDuration(p.duration);
       setRange({ in: p.rangeIn, out: p.rangeOut });
     });
-    const unsubMode = previewMode.subscribe(setFast);
+    const unsubMode = autoPrerender.subscribe(setAutoPre);
     const unsubPre = prerenderStatus.subscribe(s => setPreparing(s.running));
     // O zoom é ação discreta (um clique, um passo de roda), então um render por
     // evento é barato — o que não pode custar render é rolar, e rolar é nativo.
@@ -230,12 +230,12 @@ export function Timeline({
   };
 
   /**
-   * Play com fidelidade: se o trecho ainda não está inteiro no cache, prepara
-   * primeiro e só então reproduz. Foi a escolha explícita — esperar um pouco é
-   * aceitável, reproduzir com buraco e tremendo não é.
+   * Play imediato por padrão; fiel quando você pede.
    *
-   * `⚡ FAST` é a saída pra quando você quer o contrário: reproduz na hora,
-   * aceitando qualidade menor.
+   * Com `⚙ AUTO PRÉ-RENDER` ligado, um trecho que ainda não está inteiro no
+   * cache é preparado ANTES de soltar o play — a reprodução sai então da mesma
+   * composição quadro a quadro que o export. Desligado (o padrão), toca na hora
+   * e o cache se enche com o que passar na tela. Ver `autoPrerender.ts`.
    */
   const handlePlay = async () => {
     if (preparing) { cancelPrerender(); return; }
@@ -243,7 +243,7 @@ export function Timeline({
 
     const { from, to } = player.effectiveRange();
 
-    if (!previewMode.fast && !isRangeCached(project, { from, to })) {
+    if (autoPrerender.on && !isRangeCached(project, { from, to })) {
       player.seek(from);
       const scale = renderScale(viewport.zoom, window.devicePixelRatio || 1);
       const { cancelled } = await ensureRangeCached(project, { from, to, scale });
@@ -536,11 +536,11 @@ export function Timeline({
         </div>
 
         <button
-          className={`btn btn-sm${fast ? ' on' : ''}`}
-          onClick={() => previewMode.toggle()}
-          title="Ligado: reproduz na hora, com qualidade menor. Desligado: prepara o trecho antes e reproduz liso e fiel."
+          className={`btn btn-sm${autoPre ? ' on' : ''}`}
+          onClick={() => autoPrerender.toggle()}
+          title="Ligado: prepara o trecho antes de tocar — demora, e reproduz igual ao arquivo exportado. Desligado: toca na hora."
         >
-          ⚡ FAST
+          ⚙ AUTO PRÉ-RENDER
         </button>
 
         <div className="tl-zoom">

@@ -22,7 +22,7 @@ import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
-import { attachAudioElement, syncSoundLayers, stopAllSound } from '../engine/audioSync.ts';
+import { attachAudioElement, syncSoundLayers, stopAllSound, soundClock } from '../engine/audioSync.ts';
 import { clearPeaks } from '../engine/waveformStore.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
@@ -255,6 +255,16 @@ export default function App() {
       });
     });
 
+    /**
+     * O som passa a ditar o tempo. Ver `player.setTimeSource` e `soundClock`.
+     *
+     * Instalado uma vez, aqui, e não a cada mudança de projeto: a fonte lê o
+     * `projectRef` na hora da chamada, então ela acompanha a edição sozinha —
+     * reinstalar a cada render descartaria a leitura anterior e perderia o
+     * delta a cada quadro, deixando a reprodução parada.
+     */
+    player.setTimeSource(() => soundClock(projectRef.current.layers, player.t));
+
     // ?t=1.6 opens the editor parked at that timestamp.
     const t = parseFloat(new URLSearchParams(location.search).get('t') ?? '');
     if (Number.isFinite(t)) player.seek(t);
@@ -273,6 +283,17 @@ export default function App() {
   useEffect(() => {
     player.setDuration(projectDuration(project.layers));
   }, [project.layers]);
+
+  /**
+   * A grade de quadros do projeto é a do relógio. Pelo mesmo motivo da duração:
+   * um efeito só cobre projeto novo, importado e restaurado do disco.
+   *
+   * É o que faz o playhead pousar sempre num quadro que o export também
+   * renderiza — ver o cabeçalho de `player.ts`.
+   */
+  useEffect(() => {
+    player.setFps(project.fps);
+  }, [project.fps]);
 
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 1600); };
 

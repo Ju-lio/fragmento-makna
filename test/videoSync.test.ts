@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   videoSyncPlan, sourceTimeAt, isLayerActive, previewBusyState, hasActiveVideo,
   syncVideoLayers, claimVideoElements, releaseVideoElements, videoElementsOwner,
-  videoOwners,
+  videoOwners, videosParkedAt,
 } from '../src/engine/videoSync.ts';
 import type { VideoTiming } from '../src/engine/types.ts';
 import { fakeVideo, project, textLayer, videoLayer } from './fixtures.ts';
@@ -289,4 +289,73 @@ test('a troca de clipe vence um seek em voo, também na imagem', () => {
     ...rodando, currentTime: 0.5, seeking: true, switched: true,
   });
   assert.equal(plan.seekTo, 2);
+});
+
+// --- o quadro pousou? ---------------------------------------------------
+
+test('vídeo buscando não conta como pousado', () => {
+  /**
+   * A pergunta que separa uma composição fiel de uma plausível. Enquanto o
+   * elemento está buscando, o que está DENTRO dele é o quadro anterior — compor
+   * com ele produz uma imagem que o export nunca vai gerar. Parar em cima de um
+   * corte e ver o frame de antes dele vinha exatamente daqui.
+   */
+  const l = videoLayer({ video: fakeVideo({ seeking: true }) });
+  assert.equal(videosParkedAt(project([l]), 1), false);
+});
+
+test('vídeo sem dado pro quadro atual não conta como pousado', () => {
+  // `readyState < 2` (HAVE_CURRENT_DATA) é a régua do pré-render. O preview não
+  // pode aceitar como pronto um quadro que o export esperaria.
+  const l = videoLayer({ video: fakeVideo({ readyState: 1 }) });
+  assert.equal(videosParkedAt(project([l]), 1), false);
+});
+
+test('vídeo parado e com dado conta como pousado', () => {
+  const l = videoLayer({ video: fakeVideo({ seeking: false, readyState: 2 }) });
+  assert.equal(videosParkedAt(project([l]), 1), true);
+});
+
+test('vídeo fora do instante não atrapalha — só conta quem aparece', () => {
+  // Um clipe que nem está no ar pode estar buffering à vontade: ele não entra
+  // na composição, então esperar por ele seria travar a tela à toa.
+  const noAr = videoLayer({ id: 1, start: 0, duration: 4, video: fakeVideo({ readyState: 4 }) });
+  const fora = videoLayer({ id: 2, start: 20, duration: 4, video: fakeVideo({ seeking: true, readyState: 0 }) });
+  assert.equal(videosParkedAt(project([noAr, fora]), 1), true);
+});
+
+test('sem vídeo nenhum, sempre pousado', () => {
+  // Projeto só de texto não pode ficar esperando um decoder que não existe.
+  assert.equal(videosParkedAt(project([textLayer()]), 1), true);
+});
+
+// --- relógio-mestre -----------------------------------------------------
+
+test('o vídeo que dita o relógio não é corrigido contra si mesmo', () => {
+  // Acontece quando o som que toca é o do próprio clipe: `t` é derivado do
+  // `currentTime` DESTE elemento, então corrigir seria perseguir o
+  // arredondamento da grade e frear a reprodução inteira.
+  const l: VideoTiming = { start: 0, duration: 4, trimStart: 0, sourceDuration: 10 };
+  const atrasado = { ...rodando, currentTime: 1.05 };
+
+  assert.notEqual(videoSyncPlan(l, 1, atrasado).rate, 1, 'sem ser mestre, corrige');
+
+  const mestre = videoSyncPlan(l, 1, { ...atrasado, master: true });
+  assert.deepEqual(mestre, { seekTo: null, play: true, rate: 1 });
+});
+
+test('mesmo perdido de vez, o vídeo condutor não leva seek', () => {
+  const l: VideoTiming = { start: 0, duration: 4, trimStart: 0, sourceDuration: 10 };
+  const perdido = { ...rodando, currentTime: 9 };
+  assert.notEqual(videoSyncPlan(l, 1, perdido).seekTo, null, 'sem ser mestre, resync');
+  assert.equal(videoSyncPlan(l, 1, { ...perdido, master: true }).seekTo, null);
+});
+
+test('vídeo com erro não segura a tela — o resto do projeto continua aparecendo', () => {
+  // Arquivo quebrado não vai produzir quadro nunca. Esperar por ele deixaria o
+  // palco em branco pra sempre, inclusive os títulos, que não têm nada a ver.
+  const quebrado = videoLayer({
+    video: fakeVideo({ readyState: 0, error: { code: 4 } as MediaError }),
+  });
+  assert.equal(videosParkedAt(project([quebrado]), 1), true);
 });

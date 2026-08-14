@@ -47,6 +47,21 @@ export function sourceTimeOf(layer: { start: number; trimStart?: number }, t: nu
 }
 
 /**
+ * A inversa: onde na LINHA DO TEMPO está um elemento que lê `srcTime` do arquivo.
+ *
+ * Existe porque o som virou o relógio-mestre da reprodução (ver `soundClock` e
+ * `player.setTimeSource`): pra saber que horas são, o editor pergunta ao
+ * elemento onde ele está no arquivo e traduz de volta pra linha do tempo.
+ *
+ * Fica coladinha na `sourceTimeOf` de propósito. Uma inversa que mora longe da
+ * função que ela inverte é uma inversa que para de bater no dia em que o trim
+ * ganhar um caso novo, e o sintoma seria a imagem descolando do som.
+ */
+export function timelineTimeOf(layer: { start: number; trimStart?: number }, srcTime: number): number {
+  return layer.start + (srcTime - (layer.trimStart ?? 0));
+}
+
+/**
  * Monta a lista do que tocar num trecho.
  *
  * O recorte é a parte que erra fácil: uma música que começa antes do trecho

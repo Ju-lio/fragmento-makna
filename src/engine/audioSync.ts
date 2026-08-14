@@ -22,9 +22,10 @@
  * informação, e nenhum editor faz isso.
  */
 
-import { effectiveGain, isSoundActive, soundLayers, sourceTimeOf } from './audioMix.ts';
+import { effectiveGain, isSoundActive, soundLayers, sourceTimeOf, timelineTimeOf } from './audioMix.ts';
 import { ownersByElement, ownerChanged } from './mediaOwner.ts';
 import type { Layer, SoundLayer } from './types.ts';
+import type { ClockSample } from './player.ts';
 
 /**
  * Deriva a partir da qual vale corrigir.
@@ -83,6 +84,8 @@ export interface SoundElementState {
   seeking?: boolean;
   /** Este elemento acabou de trocar de clipe? Ver `ownerChanged`. */
   switched?: boolean;
+  /** Esta trilha é a que dita o relógio? Ver `clockLayer`. */
+  master?: boolean;
 }
 
 /**
@@ -94,7 +97,7 @@ export interface SoundElementState {
 export function soundSyncPlan(
   layer: SoundLayer,
   t: number,
-  { playing, currentTime, paused = true, seeking = false, switched = false }: SoundElementState,
+  { playing, currentTime, paused = true, seeking = false, switched = false, master = false }: SoundElementState,
 ): SoundPlan {
   const volume = effectiveGain(layer);
   const silent = { seekTo: null, play: false, volume, rate: 1 };
@@ -124,6 +127,23 @@ export function soundSyncPlan(
   // Entrando agora: posiciona exato antes de soltar, que é quando o seek não
   // custa nada porque ninguém está ouvindo ainda.
   if (paused) return { seekTo: want, play: true, volume, rate: 1 };
+
+  /**
+   * Quem dita o relógio NÃO se corrige. Corrigir a referência pela cópia é
+   * realimentação, não sincronia.
+   *
+   * E não é hipótese: o playhead pousa na grade de quadros, então `t` fica
+   * sistematicamente até 1/fps atrás da posição real do elemento (a sobra vive
+   * no acumulador do player). A 30fps isso são 33ms — acima da tolerância de
+   * 20ms daqui. A trilha condutora seria então freada contra um resíduo de
+   * arredondamento, e como a linha do tempo segue essa mesma trilha, a
+   * reprodução inteira sairia lenta.
+   *
+   * Ver `clockLayer`. As outras trilhas continuam sendo corrigidas para ela —
+   * é assim que a sincronia acontece: todo mundo segue o som, o som não segue
+   * ninguém.
+   */
+  if (master) return { seekTo: null, play: true, volume, rate: 1 };
 
   const error = want - currentTime;          // > 0: o elemento está atrasado
   const drift = Math.abs(error);
@@ -165,6 +185,55 @@ export function soundOwners(layers: readonly Layer[], t: number): SoundLayer[] {
 }
 
 /**
+ * O relógio que a reprodução deve seguir — a trilha condutora, se houver uma.
+ *
+ * Inverte quem manda. O rAF é o relógio ruim: o navegador o atrasa a cada
+ * coleta de lixo, engasgo de decoder ou aba em segundo plano. O elemento de som
+ * é o relógio bom: corre no hardware de áudio, que não engasga. Corrigir o bom
+ * pelo ruim — que era o modelo — significa que toda travada do navegador virava
+ * deriva, e deriva grande o bastante virava **seek**, que é corte audível. Em
+ * lugar diferente a cada reprodução, sem ninguém ter editado nada.
+ *
+ * Seguindo o som, a imagem nunca descola dele: a linha do tempo anda o tanto
+ * que o som andou. A sincronia deixa de ser algo que uma tolerância segura e
+ * passa a ser propriedade da construção.
+ *
+ * Devolve `null` quando não há som conduzindo — projeto mudo, trecho em
+ * silêncio, elemento pausado ou no meio de um seek. Aí o `player` volta pro
+ * rAF, que é o melhor disponível quando não existe nada melhor.
+ *
+ * O `id` identifica QUEM está conduzindo. É o que permite ao player descartar o
+ * delta quando a condução troca de trilha: entre duas trilhas, a diferença de
+ * posição não é tempo decorrido, é um salto.
+ */
+export function clockLayer(layers: readonly Layer[], t: number): SoundLayer | null {
+  for (const layer of soundOwners(layers, t)) {
+    if (!audibleAt(layer, t)) continue;
+    const el = soundElement(layer);
+    // Pausado ou buscando, `currentTime` não está andando com o som — ler daí
+    // devolveria delta zero, e a linha do tempo pararia junto.
+    if (!el || el.paused || el.seeking) continue;
+    return layer;
+  }
+  return null;
+}
+
+export function soundClock(layers: readonly Layer[], t: number): ClockSample | null {
+  const layer = clockLayer(layers, t);
+  if (!layer) return null;
+  return {
+    position: timelineTimeOf(layer, soundElement(layer).currentTime),
+    id: `${layer.type}:${layer.id}`,
+  };
+}
+
+/** Esta layer é a que dita o relógio neste instante? */
+export function isClockMaster(layers: readonly Layer[], t: number, layer: SoundLayer): boolean {
+  const master = clockLayer(layers, t);
+  return master !== null && master.id === layer.id && master.type === layer.type;
+}
+
+/**
  * Prepara um elemento de áudio recém-criado.
  *
  * Diferente do vídeo, aqui NÃO se força `muted` — é o ponto da layer. O preço
@@ -203,6 +272,10 @@ export function syncSoundLayers(
   playing: boolean,
   { driveVideo = false }: SyncSoundOptions = {},
 ): void {
+  // Eleito uma vez por tick, e não por trilha: a resposta é a mesma pra todas,
+  // e `clockLayer` percorre os donos por conta própria.
+  const master = playing ? clockLayer(layers, t) : null;
+
   // Uma layer por elemento: ver `soundOwners`.
   for (const layer of soundOwners(layers, t)) {
     const el = soundElement(layer);
@@ -219,6 +292,7 @@ export function syncSoundLayers(
       paused: el.paused,
       seeking: el.seeking,
       switched: drives && ownerChanged(el, layer.id),
+      master: master !== null && master.id === layer.id && master.type === layer.type,
     });
 
     if (drives) {
