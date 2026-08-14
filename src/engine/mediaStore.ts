@@ -91,6 +91,17 @@ export function urlFor(id: string, blob: Blob): string {
   return url;
 }
 
+/**
+ * A URL já criada pra esta mídia, ou `null`.
+ *
+ * Existe pra quem precisa de um SEGUNDO elemento sobre a mesma fonte sem ter os
+ * bytes na mão — separar o áudio de um clipe é isso: um `<audio>` novo lendo a
+ * mesma blob que o `<video>` já está lendo. Nada é baixado nem duplicado.
+ */
+export function existingUrl(id: string): string | null {
+  return urls.get(id) ?? null;
+}
+
 /** Libera todas as URLs desta sessão. Chamado ao trocar de projeto. */
 export function releaseAll(): void {
   for (const url of urls.values()) URL.revokeObjectURL(url);

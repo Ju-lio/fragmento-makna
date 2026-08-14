@@ -1,5 +1,5 @@
 import { player } from './player.ts';
-import { ownersByMedia } from './mediaOwner.ts';
+import { ownersByElement } from './mediaOwner.ts';
 import type { Project, VideoLayer, VideoProbe, VideoTiming } from './types.ts';
 
 /** O que `videoSyncPlan` decide para um único elemento, num único quadro. */
@@ -31,13 +31,13 @@ function videoLayers(project: Project): LoadedVideoLayer[] {
 /**
  * Uma layer por arquivo — a que conduz o `<video>` neste instante.
  *
- * Ver `ownersByMedia`: cortar um clipe deixa as duas metades apontando pro
+ * Ver `ownersByElement`: cortar um clipe deixa as duas metades apontando pro
  * mesmo elemento, e deixar as duas escreverem fazia a metade inativa pausar o
  * que a ativa tinha soltado. Na imagem isso aparecia como o clipe piscando ou
  * congelando logo depois de um corte.
  */
 export function videoOwners(project: Project, t: number): LoadedVideoLayer[] {
-  return ownersByMedia(videoLayers(project), layer => isLayerActive(layer, t));
+  return ownersByElement(videoLayers(project), l => l.video, layer => isLayerActive(layer, t));
 }
 
 /**

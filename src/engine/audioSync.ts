@@ -7,7 +7,8 @@
  *    copia a layer com spread, então as duas metades apontam pro MESMO
  *    `<audio>`/`<video>` — e o acervo faz o mesmo ao reaproveitar um arquivo.
  *    Deixar cada layer conduzir o elemento fazia a metade inativa pausar o que
- *    a ativa tinha acabado de soltar. Ver `soundOwners`.
+ *    a ativa tinha acabado de soltar. Ver `soundOwners`, e `ownersByElement`
+ *    pro caso em que dois clipes do mesmo arquivo têm elementos diferentes.
  *
  * 2. **Corrige por velocidade, não por seek.** Era o contrário, na premissa de
  *    que mudar a velocidade desafina. Não desafina: `preservesPitch` é o padrão
@@ -22,7 +23,7 @@
  */
 
 import { effectiveGain, isSoundActive, soundLayers, sourceTimeOf } from './audioMix.ts';
-import { ownersByMedia } from './mediaOwner.ts';
+import { ownersByElement } from './mediaOwner.ts';
 import type { Layer, SoundLayer } from './types.ts';
 
 /**
@@ -127,7 +128,7 @@ function audibleAt(layer: SoundLayer, t: number): boolean {
 
 /**
  * Uma layer por ARQUIVO — a que de fato conduz o elemento neste instante.
- * Ver `ownersByMedia` pro porquê da disputa existir; aqui só entra o critério
+ * Ver `ownersByElement` pro porquê da disputa existir; aqui só entra o critério
  * de "em uso", que pra som é estar soando.
  *
  * Sobreposição real de dois clipes do MESMO arquivo continua tocando só um —
@@ -135,7 +136,7 @@ function audibleAt(layer: SoundLayer, t: number): boolean {
  * `OfflineAudioContext`, onde cada clipe tem fonte própria.
  */
 export function soundOwners(layers: readonly Layer[], t: number): SoundLayer[] {
-  return ownersByMedia(soundLayers(layers), layer => audibleAt(layer, t));
+  return ownersByElement(soundLayers(layers), soundElement, layer => audibleAt(layer, t));
 }
 
 /**

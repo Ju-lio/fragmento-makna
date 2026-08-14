@@ -122,7 +122,7 @@ export async function stageVideosAt(project: Project, t: number): Promise<void> 
   const waits: Array<Promise<void>> = [];
   // Um clipe por arquivo, senão dois clipes sobrepostos do mesmo vídeo mandam
   // o mesmo elemento pra dois instantes e esperam os dois seeks — o que sempre
-  // resolve com o quadro de um dos dois, sem dizer qual. Ver `ownersByMedia`.
+  // resolve com o quadro de um dos dois, sem dizer qual. Ver `ownersByElement`.
   const active = videoOwners(project, t).filter(l => isLayerActive(l, t));
 
   for (const layer of active) {

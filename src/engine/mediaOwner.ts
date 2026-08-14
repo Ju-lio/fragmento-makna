@@ -1,10 +1,10 @@
 /**
  * Quem conduz cada elemento de mídia neste instante.
  *
- * Clipes do mesmo arquivo dividem **um** elemento. Não é escolha de design, é
- * como o projeto se monta: `splitLayer` copia a layer com spread e a referência
- * do `<video>`/`<audio>` vai junto, o acervo entrega o mesmo elemento a cada
- * reúso, e a restauração cria um elemento por `mediaId` — nunca por layer.
+ * Clipes do mesmo arquivo costumam dividir **um** elemento. Não é escolha de
+ * design, é como o projeto se monta: `splitLayer` copia a layer com spread e a
+ * referência do `<video>`/`<audio>` vai junto, o acervo entrega o mesmo elemento
+ * a cada reúso, e a restauração cria um elemento por arquivo — nunca por layer.
  *
  * Um elemento tem um cursor só, então mais de um candidato é uma disputa que
  * alguém perde. Perdia em silêncio, e sempre pro mesmo lado: quem vinha depois
@@ -21,16 +21,27 @@
  * Genérico porque a disputa é a mesma em três lugares (som, imagem, pré-render)
  * e só o critério de "em uso" muda. Três cópias divergiriam, e o modo de
  * divergir é ficar mudo ou piscando — que é o que já aconteceu.
+ *
+ * **A chave é o ELEMENTO, não o arquivo.** Foi por arquivo primeiro, e a
+ * diferença só aparece quando se destaca o áudio de um clipe: as duas layers
+ * apontam pro mesmo `mediaId` e para elementos **diferentes** (um `<video>`, um
+ * `<audio>` novo sobre a mesma blob). Agrupando por arquivo, uma calaria a
+ * outra — o mesmo bug do clipe cortado, chegando pelo outro lado. Agrupando
+ * pelo elemento, a pergunta passa a ser a real: quem está mexendo neste cursor?
  */
-export function ownersByMedia<T extends { mediaId: string }>(
+export function ownersByElement<T>(
   layers: readonly T[],
+  elementOf: (layer: T) => object | null | undefined,
   inUse: (layer: T) => boolean,
 ): T[] {
-  const byMedia = new Map<string, T>();
+  const byElement = new Map<object, T>();
 
   for (const layer of layers) {
-    if (!byMedia.has(layer.mediaId) || inUse(layer)) byMedia.set(layer.mediaId, layer);
+    const el = elementOf(layer);
+    // Sem elemento não há cursor pra disputar — e a layer não conduz nada.
+    if (!el) continue;
+    if (!byElement.has(el) || inUse(layer)) byElement.set(el, layer);
   }
 
-  return [...byMedia.values()];
+  return [...byElement.values()];
 }

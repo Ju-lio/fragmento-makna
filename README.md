@@ -277,6 +277,31 @@ adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
 de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
 o que aconteceria se a assinatura varresse `project.layers` cru.
 
+### Separar o áudio do vídeo
+
+Um clipe de vídeo carrega o próprio som. Separar põe esse som numa faixa
+própria e **cala** o vídeo — cala, não remove: é o que permite desfazer voltando
+o `mute`, e o que mantém o `mediaId` de pé nos dois lados, então o export
+continua decodificando o arquivo uma vez e servindo os dois clipes.
+
+A parte que exigiu mexer na fundação: a faixa destacada precisa de um `<audio>`
+**próprio**. Dividir o `<video>` com a imagem seria pedir pro editor calar uma
+das duas — exatamente o que separar veio desfazer. Os dois elementos leem a
+mesma `blob:`, então não há byte a mais nem download extra.
+
+Isso obrigou a mudar a chave da eleição de dono, de arquivo pra **elemento**
+(`ownersByElement`): as duas layers têm o mesmo `mediaId` e elementos
+diferentes, e agrupar por arquivo faria uma silenciar a outra — o bug do clipe
+cortado chegando pelo lado oposto. A pergunta certa nunca foi "qual arquivo é
+este", e sim "quem está mexendo neste cursor".
+
+O `MediaResolver` também passou a receber o tipo da layer junto com o id, senão
+reabrir o projeto devolveria o `<video>` pra uma layer de áudio e a disputa
+voltaria pela porta dos fundos.
+
+Verificado exportando: fonte a -21,1 dB de média, arquivo exportado a -21,1 dB —
+o som sai uma vez só, sem o vídeo mudo somar de novo por cima.
+
 ### Um elemento por arquivo, não por clipe
 
 O sintoma: depois de cortar uma música com Ctrl+B, a **primeira** metade tocava
@@ -1000,8 +1025,8 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
-com 339 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`,
+com 342 testes.
 
 ### O caminho até "usável"
 

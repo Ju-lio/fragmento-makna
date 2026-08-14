@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { soundSyncPlan, soundElement, soundOwners } from '../src/engine/audioSync.ts';
-import { audioLayer, imageLayer, textLayer, videoLayer } from './fixtures.ts';
+import { audioLayer, fakeAudio, imageLayer, textLayer, videoLayer } from './fixtures.ts';
 
 /** Música de 60s, colocada em t=2, mostrando a partir de 1s do arquivo. */
 const trilha = () => audioLayer({ start: 2, duration: 10, trimStart: 1, sourceDuration: 60 });
@@ -119,10 +119,14 @@ test('clipe esticado além do arquivo não pede tempo inexistente', () => {
  * muda — a segunda, mais adiante na lista, pausava o elemento que a primeira
  * tinha acabado de soltar.
  */
-const metades = () => [
-  audioLayer({ id: 1, start: 0, duration: 4, trimStart: 0 }),
-  audioLayer({ id: 2, start: 4, duration: 4, trimStart: 4 }),
-];
+const metades = () => {
+  // O MESMO elemento nas duas: é literalmente o que o spread do `splitLayer` faz.
+  const el = fakeAudio();
+  return [
+    audioLayer({ id: 1, start: 0, duration: 4, trimStart: 0, audio: el }),
+    audioLayer({ id: 2, start: 4, duration: 4, trimStart: 4, audio: el }),
+  ];
+};
 
 test('duas metades do mesmo arquivo elegem UMA dona do elemento', () => {
   assert.equal(soundOwners(metades(), 2).length, 1);
@@ -149,23 +153,35 @@ test('arquivos diferentes não disputam nada', () => {
   assert.deepEqual(donas.map(l => l.id).sort(), [1, 2]);
 });
 
-test('entre dois clipes do mesmo arquivo soando juntos, vence o de cima', () => {
+test('entre dois clipes do mesmo elemento soando juntos, vence o de cima', () => {
   // Um elemento tem um cursor só: alguém perde. Que perca por um critério, e
   // sempre o mesmo — o último da lista é o que está na frente.
+  const el = fakeAudio();
   const donas = soundOwners([
-    audioLayer({ id: 1, track: 0, start: 0, duration: 10 }),
-    audioLayer({ id: 2, track: 1, start: 0, duration: 10 }),
+    audioLayer({ id: 1, track: 0, start: 0, duration: 10, audio: el }),
+    audioLayer({ id: 2, track: 1, start: 0, duration: 10, audio: el }),
   ], 5);
   assert.equal(donas.length, 1);
   assert.equal(donas[0]?.id, 2);
 });
 
 test('layer muda não rouba o elemento de quem está tocando', () => {
+  const el = fakeAudio();
   const donas = soundOwners([
-    audioLayer({ id: 1, start: 0, duration: 10 }),
-    audioLayer({ id: 2, start: 0, duration: 10, mute: true }),
+    audioLayer({ id: 1, start: 0, duration: 10, audio: el }),
+    audioLayer({ id: 2, start: 0, duration: 10, mute: true, audio: el }),
   ], 5);
   assert.equal(donas[0]?.id, 1);
+});
+
+test('áudio destacado de um vídeo NÃO cala o vídeo', () => {
+  // Mesmo `mediaId`, elementos diferentes: é o que "separar áudio" produz.
+  // Agrupar por arquivo faria uma calar a outra.
+  const donas = soundOwners([
+    videoLayer({ id: 1, mediaId: 'clipe', start: 0, duration: 10 }),
+    audioLayer({ id: 2, mediaId: 'clipe', start: 0, duration: 10 }),
+  ], 5);
+  assert.deepEqual(donas.map(l => l.id).sort(), [1, 2]);
 });
 
 test('só layers com som entram na conta', () => {

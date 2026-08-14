@@ -5,11 +5,13 @@ import type { Layer, LayerPatch } from '../engine/types.ts';
 interface PropsPanelProps {
   layer: Layer | null;
   onChange: (id: number, patch: LayerPatch) => void;
+  /** Tira o som do clipe de vídeo e o põe numa faixa própria. */
+  onDetachAudio: (id: number) => void;
 }
 
 const SWATCHES = ['#f7efdc', '#f0c04a', '#e2615c', '#64c48a', '#6ba9d6', '#c9a6e8', '#241a33'];
 
-export function PropsPanel({ layer, onChange }: PropsPanelProps) {
+export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) {
   if (!layer) return <div className="hint">Selecione uma layer.</div>;
 
   const set = (patch: LayerPatch) => onChange(layer.id, patch);
@@ -114,6 +116,23 @@ export function PropsPanel({ layer, onChange }: PropsPanelProps) {
         <>
           {layer.type !== 'audio' && (
             <NumField label="Escala base" value={layer.fit} step={0.05} onChange={v => set({ fit: v })} />
+          )}
+
+          {/*
+            Separar o som é operação de VÍDEO: uma faixa de áudio já está
+            separada. Some depois de usar, porque o clipe fica mudo e separar
+            de novo produziria uma segunda faixa idêntica em silêncio.
+          */}
+          {layer.type === 'video' && !layer.mute && (
+            <Field label="Áudio do clipe">
+              <button
+                className="btn btn-sm"
+                onClick={() => onDetachAudio(layer.id)}
+                title="Move o som pra uma faixa própria e cala o clipe"
+              >
+                ⇥ SEPARAR ÁUDIO
+              </button>
+            </Field>
           )}
 
           {(layer.type === 'video' || layer.type === 'audio') && (

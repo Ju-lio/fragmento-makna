@@ -13,7 +13,7 @@ import {
 } from '../engine/serialize.ts';
 import type { MediaElement } from '../engine/serialize.ts';
 import {
-  newMediaId, putMedia, allMedia, urlFor, releaseAll, pruneMedia,
+  newMediaId, putMedia, allMedia, urlFor, existingUrl, releaseAll, pruneMedia,
   saveProject, loadProject, clearProject,
 } from '../engine/mediaStore.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
@@ -54,6 +54,29 @@ export default function App() {
    * aqui é o que traduz um de volta pro outro na hora de criar uma layer.
    */
   const elementsRef = useRef(new Map<string, MediaElement>());
+
+  /**
+   * `<audio>` extras, um por arquivo, criados sob demanda.
+   *
+   * Separado de `elementsRef` porque o elemento "natural" de um vídeo é o
+   * `<video>`, e uma faixa destacada precisa de um cursor PRÓPRIO — senão ela
+   * disputa a posição com a imagem e uma das duas cala (ver `ownersByElement`).
+   * Como os dois leem a mesma `blob:`, não há byte a mais nem download extra.
+   */
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
+
+  const audioElementFor = useCallback((mediaId: string): HTMLAudioElement | null => {
+    const found = audioElementsRef.current.get(mediaId);
+    if (found) return found;
+
+    const url = existingUrl(mediaId);
+    if (!url) return null;   // a mídia ainda não foi carregada nesta sessão
+
+    const el = attachAudioElement(new Audio());
+    el.src = url;
+    audioElementsRef.current.set(mediaId, el);
+    return el;
+  }, []);
 
   const historyRef = useRef<History<Project> | null>(null);
   historyRef.current ??= new History(project);
@@ -153,7 +176,13 @@ export default function App() {
         })));
         if (cancelled) return;
 
-        const { project: loaded, missingMedia } = deserializeProject(saved, id => elements.get(id) ?? null);
+        const { project: loaded, missingMedia } = deserializeProject(saved, (id, type) => (
+          // Layer de áudio quer um `<audio>`, mesmo quando o arquivo é vídeo:
+          // é o que uma faixa destacada é, depois de reabrir o projeto.
+          type === 'audio' && !(elements.get(id) instanceof HTMLAudioElement)
+            ? audioElementFor(id)
+            : elements.get(id) ?? null
+        ));
 
         // O acervo do painel usa este registro pra reencontrar os elementos.
         elementsRef.current = elements;
@@ -569,6 +598,49 @@ export default function App() {
     setSelectedId(copy.id);
   }, [commit]);
 
+  /**
+   * Separa o áudio de um clipe de vídeo numa faixa própria.
+   *
+   * O vídeo não perde o som — ele é **calado**, não removido. É o que permite
+   * desfazer voltando o `mute`, e o que mantém o `mediaId` de pé nos dois lados
+   * (o export decodifica o arquivo uma vez e serve os dois clipes).
+   *
+   * A faixa destacada ganha um `<audio>` PRÓPRIO sobre a mesma blob. Dividir o
+   * `<video>` com a imagem seria pedir pro editor calar uma das duas — que é
+   * exatamente o que separar veio desfazer.
+   */
+  const detachAudio = useCallback((id: number) => {
+    const layer = projectRef.current.layers.find(l => l.id === id);
+    if (!layer || layer.type !== 'video') return flash('Selecione um clipe de vídeo');
+    if (layer.mute) return flash('Esse clipe já está sem som');
+
+    const element = audioElementFor(layer.mediaId);
+    if (!element) return flash('Esse arquivo ainda está carregando');
+
+    const faixa = makeAudioLayer(element, layer.mediaId, {
+      name: `${layer.name} — áudio`,
+      start: layer.start,
+      duration: layer.duration,
+      trimStart: layer.trimStart,
+      sourceDuration: layer.sourceDuration,
+      volume: layer.volume,
+    });
+
+    commit(p => {
+      const slot = pasteSlot(p.layers, faixa, topTrack(p.layers) + 1);
+      return {
+        ...p,
+        // O vídeo fica mudo no MESMO passo do histórico: desfazer tem que
+        // devolver o som junto com a faixa, não em dois undos.
+        layers: [
+          ...p.layers.map(l => (l.id === id ? { ...l, mute: true } : l)),
+          { ...faixa, ...slot },
+        ],
+      };
+    });
+    setSelectedId(faixa.id);
+  }, [commit, audioElementFor]);
+
   // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
   // é o que você espera, e o "b" é só a letra b.
   useEffect(() => {
@@ -715,7 +787,9 @@ export default function App() {
             {tab === 'media' && (
               <MediaPanel project={project} onUse={useAsset} onRemove={removeAsset} />
             )}
-            {tab === 'props' && <PropsPanel layer={selected} onChange={updateLayer} />}
+            {tab === 'props' && (
+              <PropsPanel layer={selected} onChange={updateLayer} onDetachAudio={detachAudio} />
+            )}
             {tab === 'fx' && <EffectsPanel layer={selected} onChange={updateLayer} />}
           </Win>
         </aside>

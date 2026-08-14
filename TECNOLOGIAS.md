@@ -46,7 +46,7 @@ desenhar formulários e botões.
 **Por que isso importa na prática:** se um dia o React virar um estorvo (ou a
 gente quiser portar pra outra coisa), a parte que tem valor de verdade sai
 inteira, sem reescrever nada. E dá pra testar o motor inteiro rodando só
-`node`, sem abrir navegador nenhum — é por isso que temos 339 testes automatizados
+`node`, sem abrir navegador nenhum — é por isso que temos 342 testes automatizados
 e zero configuração de ambiente de teste tipo Jest/Vitest com DOM simulado.
 
 ---
@@ -229,7 +229,7 @@ pontos que manipulam `<video>` diretamente, que ficam isolados em funções
 "burras"), dá pra testar tudo com o test runner que já vem dentro do Node —
 sem instalar nada, sem configurar ambiente de DOM simulado.
 
-Hoje são **339 testes** cobrindo:
+Hoje são **342 testes** cobrindo:
 - o runtime de efeitos (interpolação, composição, validação de JSON)
 - o viewport (zoom ancorado no cursor, limites de pan, fit automático,
   cálculo de resolução física de render)

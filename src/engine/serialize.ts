@@ -19,7 +19,7 @@
 
 import { BASE_STATE } from './effects.ts';
 import type {
-  AnimProp, AudioLayer, Effect, ImageLayer, Layer, MediaAsset, Project,
+  AnimProp, AudioLayer, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
   TextLayer, Track, VideoLayer,
 } from './types.ts';
 
@@ -95,7 +95,16 @@ interface SerializedDecor {
 
 /** Um elemento pronto pra uma layer de mídia, resolvido a partir do id. */
 export type MediaElement = HTMLImageElement | HTMLVideoElement | HTMLAudioElement;
-export type MediaResolver = (mediaId: string) => MediaElement | null;
+/**
+ * Entrega o elemento de uma layer. Recebe o TIPO junto, não só o id.
+ *
+ * Não é detalhe: separar o áudio de um clipe produz uma layer `audio` cujo
+ * `mediaId` aponta pra um arquivo de VÍDEO. Resolvendo só pelo id, ela receberia
+ * de volta o `<video>` — e passaria a disputar o cursor com a imagem, que é
+ * justamente o que separar veio desfazer. Com o tipo, quem resolve sabe que
+ * precisa de um `<audio>` próprio sobre a mesma fonte.
+ */
+export type MediaResolver = (mediaId: string, type: LayerType) => MediaElement | null;
 
 export interface LoadResult {
   project: Project;
@@ -312,7 +321,7 @@ function readLayer(
   if (l.type !== 'image' && l.type !== 'video' && l.type !== 'audio') return null;
 
   const mediaId = str(l.mediaId, '');
-  const element = mediaId ? resolve(mediaId) : null;
+  const element = mediaId ? resolve(mediaId, l.type) : null;
   if (!element) {
     // O arquivo original sumiu do armazenamento. Reportar em vez de inventar
     // uma layer vazia que desenharia nada e confundiria mais.
