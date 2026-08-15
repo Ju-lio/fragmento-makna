@@ -310,6 +310,16 @@ export interface BusyState {
 /**
  * O preview está esperando alguma layer de vídeo ficar pronta?
  *
+ * ⚠️ **SEM USO desde que a imagem saiu do `<video>`.** Quem responde isso hoje
+ * é `framesReadyAt`, no `videoFrames.ts` — ver o `onTick` do `Stage`. Esta
+ * versão mede o elemento, que só toca som e é buscado a cada corte: ela
+ * acendia a barra em toda emenda com a imagem perfeita, e ficava apagada
+ * quando o decodificador de quadros é que estava atrasado.
+ *
+ * Fica aqui, junto com `syncVideoLayers` e `videosParkedAt` — também sem
+ * chamador —, pra sair de uma vez na limpeza deste arquivo. Não volte a
+ * chamá-la.
+ *
  * Dois casos distintos, ambos percebidos como "travou":
  *  - `seeking`: você arrastou o cursor do tempo e o decoder ainda está
  *    remontando aquele frame (num H.264, isso significa decodificar desde o

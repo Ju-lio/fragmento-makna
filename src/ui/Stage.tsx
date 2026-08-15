@@ -4,11 +4,9 @@ import { viewport, renderScale } from '../engine/viewport.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
 import { aimAt, frameFor, framesReadyAt } from '../engine/videoFrames.ts';
 import { drawFrame } from '../engine/renderer.ts';
-import {
-  previewBusyState, videoElementsOwner,
-} from '../engine/videoSync.ts';
+import { videoElementsOwner } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
-import { pickFrameSource } from '../engine/frameSource.ts';
+import { pickFrameSource, PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
 import { StageBar } from './StageBar.tsx';
 import { Gizmo } from './Gizmo.tsx';
 import type { LayerPatch, Project } from '../engine/types.ts';
@@ -35,6 +33,8 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const projectRef = useRef(project);
   const resRef = useRef({ w: 0, h: 0 });   // last physical resolution actually applied
+  /** Instante desenhado sem o quadro de vídeo. `null` = nada a cobrar. */
+  const pendenteRef = useRef<number | null>(null);
   const [busy, setBusy] = useState<string | null>(null);   // null = nada a mostrar
 
   projectRef.current = project;
@@ -74,6 +74,10 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
 
     let capturing = false;
     const captureFrame = (sig: string, index: number, degraded: boolean) => {
+      // Ninguém lê o cache no preview agora — encher só gastaria memória, e
+      // guardaria quadros do motor que ainda está mudando. Ver
+      // `PREVIEW_CACHE_ENABLED`.
+      if (!PREVIEW_CACHE_ENABLED) return;
       if (capturing) return;
       if (frameCache.has(sig, index, { allowDegraded: degraded })) return;
 
@@ -173,7 +177,25 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       aimAt(project, t);
 
-      if (!framesReadyAt(project, t)) {
+      const pronto = framesReadyAt(project, t);
+
+      /**
+       * Desenhar sem o quadro deixa uma DÍVIDA: quando ele chegar, alguém tem
+       * que repintar.
+       *
+       * Sem isso o preview parado ficava preto pra sempre, e o traço do
+       * `@elah/core` mostra o mecanismo inteiro: a espera estoura, desenha-se o
+       * degradado, e o último `getCurrent` acontece 115ms ANTES do quadro
+       * pousar no cache. Ninguém pergunta de novo — o laço só repinta em quadro
+       * sujo, e nada mais suja. O decodificador tinha feito o trabalho todo pra
+       * entregar num instante em que já não havia quem recebesse.
+       *
+       * A cobrança fica na sonda de atividade, que roda em TODO rAF, inclusive
+       * nos quadros pulados. Ver o efeito abaixo.
+       */
+      pendenteRef.current = pronto ? null : t;
+
+      if (!pronto) {
         if (holdT !== t) { holdT = t; holdSince = performance.now(); }
         if (performance.now() - holdSince < HOLD_LIMIT_MS) {
           // Segurar exige AGENDAR a volta: o laço pula quadros limpos, então
@@ -213,6 +235,25 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
       // desenho no meio do trabalho.
       if (videoElementsOwner() !== null) { previewStatus.report(false); return; }
 
+      /**
+       * Cobra a dívida do laço de desenho: um quadro foi desenhado sem a
+       * imagem, e agora ela existe. Repinta uma vez e pronto.
+       *
+       * Só faz sentido PARADO: rolando, o relógio já traz um instante novo a
+       * cada quadro, e insistir no antigo seria repintar o passado. O `aimAt`
+       * vai junto porque o decodificador pode ter sido fechado no meio da
+       * espera — assim a cobrança também o reabre, em vez de esperar por um
+       * quadro que ninguém mais está produzindo.
+       */
+      const pendente = pendenteRef.current;
+      if (pendente !== null && !player.playing) {
+        aimAt(projectRef.current, pendente);
+        if (framesReadyAt(projectRef.current, pendente)) {
+          pendenteRef.current = null;
+          player.invalidate();
+        }
+      }
+
       // Frame que vem do cache não espera por nada — mesmo que o <video> por
       // trás ainda esteja buscando, não é uma espera que você percebe.
       const project = projectRef.current;
@@ -221,8 +262,17 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
         previewStatus.report(false);
         return;
       }
-      const { busy: isBusy, reason } = previewBusyState(projectRef.current, t);
-      previewStatus.report(isBusy, reason);
+      /**
+       * A espera que interessa é a do QUADRO, não a do `<video>`.
+       *
+       * Era `previewBusyState`, que olha `seeking`/`readyState` do elemento. O
+       * elemento saiu do caminho da imagem — hoje ele só toca som, e é buscado
+       * a cada corte. A barra então acendia "decodificando" em toda emenda com
+       * a imagem perfeita, e ficava apagada quando o decodificador de quadros
+       * é que estava atrasado. Media a coisa errada nos dois sentidos.
+       */
+      const esperando = !framesReadyAt(projectRef.current, t);
+      previewStatus.report(esperando, esperando ? 'decodificando' : null);
     });
     // A barra só re-renderiza nas transições — o report() acima roda 60x por
     // segundo, mas o store filtra e só avisa quando a visibilidade muda.

@@ -32,17 +32,44 @@
  *    problema deixar de existir; pedir por segundos exige epsilon e ainda erra.
  *
  * Custo medido: 24,8 kB (6,7 kB comprimido). O demuxer entra por `import()`
- * dinâmico, ou seja, só quando um vídeo é de fato aberto.
+ * dinâmico — ver `videoDemuxer.ts` — ou seja, só quando um vídeo é de fato
+ * aberto.
+ *
+ * ## Um decodificador por CLIPE
+ *
+ * A chave do registro é o `id` da LAYER, e não o `mediaId`. O porquê, e o que
+ * decorre disso (armar antes do corte, prender o lookahead ao clipe, fechar o
+ * mais antigo), está em `framePlan.ts` — aqui fica só a parte que toca o
+ * navegador.
  */
 
-import { createDefaultDemuxerFactory, createVideoFrameProvider } from '@elah/core';
-import type { Project, VideoLayer, VideoTiming } from './types.ts';
+import { createVideoFrameProvider } from '@elah/core';
+import type { DemuxerFactory } from '@elah/core';
+import {
+  framePlanAt, frameServes, highWaterAfterAim, providersToDrop, sourceFrameOf,
+  MARCA_DESCONHECIDA,
+} from './framePlan.ts';
+import { coversAt } from './timeSpan.ts';
+import type { FrameTarget, PlanLimits, VideoClip } from './framePlan.ts';
+import type { Project, VideoLayer } from './types.ts';
+
+export { sourceFrameOf, sourceTimeOf } from './framePlan.ts';
+
+/**
+ * Quanto cada decodificador pode adiantar, com que antecedência um clipe é
+ * armado, e quantos podem existir ao mesmo tempo.
+ *
+ * O teto de vivos é o número que impede a correção de virar outro defeito: sem
+ * ele, um remix de vinte fatias abriria vinte decodificadores — vinte
+ * `VideoDecoder`, vinte demuxers e vinte caches de quadro — pra mostrar quatro
+ * segundos de linha do tempo. Oito cobre o clipe na tela, os que o `PRE_ARM`
+ * está preparando e uma margem pra voltar atrás sem reabrir nada.
+ */
+const LIMITES: PlanLimits = { lookahead: 12, minLookahead: 4, preArm: 0.6 };
+const MAX_VIVOS = 8;
 
 /** O que `getCurrent` devolve: os dois desenham com `ctx.drawImage`. */
 export type DecodedFrame = VideoFrame | ImageBitmap;
-
-/** Quantos quadros manter decodificados à frente do cursor. */
-const LOOKAHEAD = 16;
 
 interface Provider {
   getCurrent(sourceFrame: number): DecodedFrame | null;
@@ -50,10 +77,88 @@ interface Provider {
   markIdle(): void;
   markActive(): void;
   dispose(): void;
+  /**
+   * Fora da interface publicada pelo `@elah/core`, mas presente em todos os
+   * provedores dele: é o que avisa que o tempo de ociosidade acabou. Opcional
+   * no tipo de propósito — sem ele o teto de vivos ainda segura a memória.
+   */
+  setIdleCallback?(cb: (() => void) | null): void;
 }
 
-const provedores = new Map<string, Provider>();
+/** Um decodificador aberto, mais o que a política precisa saber sobre ele. */
+interface Vivo {
+  provider: Provider;
+  /** De qual arquivo ele lê. Trocar a mídia da layer invalida o decodificador. */
+  mediaId: string;
+  /** Está marcado como ativo no `@elah/core`? Ver `idleUnused`. */
+  ativo: boolean;
+  /** Ordem do último uso, pra escolher quem fecha primeiro. */
+  usadoEm: number;
+  /**
+   * Maior índice que ESTE decodificador já entregou **desde o último salto pra
+   * trás**.
+   *
+   * É o que responde "o quadro exato ainda vem?" — ver `frameServes`. O
+   * `@elah/core` não publica esse número; sabemos dele porque todo quadro passa
+   * pelo nosso `frameConverter` antes de entrar no cache.
+   *
+   * O "desde o último salto" não é detalhe: ver `highWaterAfterAim`.
+   */
+  maiorEntregue: number;
+  /** Último quadro mirado, pra saber quando o cursor andou pra TRÁS. */
+  ultimoAlvo: number;
+  /**
+   * Sobe a cada salto pra trás. Uma conversão que começou antes do salto não
+   * pode levantar a marca depois dele — ela descreve o trecho que acabou de ser
+   * abandonado, e reerguer a marca reabriria o vizinho justamente no gesto que
+   * esta correção veio proteger.
+   */
+  geracao: number;
+}
+
+/** Chave: `id` da layer. Ver `framePlan.ts`. */
+const provedores = new Map<number, Vivo>();
 const urls = new Map<string, string>();
+
+/**
+ * De qual índice é cada bitmap que sai do conversor.
+ *
+ * `WeakMap` porque a vida do bitmap é do `@elah/core`: quando ele evicta e
+ * fecha, a entrada some junto, sem ninguém precisar lembrar de limpar.
+ */
+const indiceDoQuadro = new WeakMap<ImageBitmap, number>();
+
+/** Relógio de USO, não de parede: só a ordem importa. */
+let uso = 0;
+
+// --- o demuxer, sob demanda ---------------------------------------------
+
+let fabrica: DemuxerFactory | null = null;
+let carregando: Promise<void> | null = null;
+
+/**
+ * A fábrica de demuxers, ou `null` enquanto ela ainda está vindo pela rede.
+ *
+ * Devolver `null` não é falha: é o mesmo contrato de "o quadro ainda não
+ * chegou" que o resto do arquivo já tem. O preview segura a imagem por alguns
+ * quadros, o `awaitFrames` continua tentando, e o primeiro `aimAt` depois que o
+ * módulo pousa abre os decodificadores.
+ *
+ * O `import()` fica aqui — no primeiro clipe de vídeo que de fato pede quadro —
+ * e não no `registerSource`, que também roda pra imagem e som: um projeto sem
+ * vídeo nenhum não tem por que baixar um demuxer.
+ */
+function demuxerFactory(): DemuxerFactory | null {
+  if (fabrica) return fabrica;
+  carregando ??= import('./videoDemuxer.ts')
+    .then(m => { fabrica = m.demuxerFactory; })
+    .catch(err => {
+      console.warn('[videoFrames] demuxer não pôde ser carregado:', err);
+      // Zera pra que a próxima tentativa não fique presa numa promessa morta.
+      carregando = null;
+    });
+  return null;
+}
 
 /**
  * Diz de onde ler os bytes de uma mídia. Chamado onde a `blob:` URL nasce.
@@ -64,18 +169,42 @@ const urls = new Map<string, string>();
  */
 export function registerSource(mediaId: string, url: string): void {
   if (urls.get(mediaId) === url) return;
-  // Trocou de fonte: o provedor antigo aponta pra bytes que não valem mais.
-  provedores.get(mediaId)?.dispose();
-  provedores.delete(mediaId);
+  // Trocou de fonte: todo decodificador aberto sobre ela lê bytes que não
+  // valem mais — e agora são vários, um por clipe.
+  for (const [id, vivo] of [...provedores]) {
+    if (vivo.mediaId === mediaId) fechar(id);
+  }
   urls.set(mediaId, url);
 }
 
-function provedorDe(mediaId: string, fps: number): Provider | null {
-  const existente = provedores.get(mediaId);
-  if (existente) return existente;
+function fechar(id: number): void {
+  provedores.get(id)?.provider.dispose();
+  provedores.delete(id);
+}
 
-  const url = urls.get(mediaId);
+/**
+ * O decodificador deste clipe, aberto agora se ainda não existir.
+ *
+ * Devolve o `Vivo`, e não só o provedor: quem chama precisa da marca d'água e
+ * do último alvo pra saber se o cursor andou pra trás. Ver `highWaterAfterAim`.
+ */
+function provedorDe(alvo: FrameTarget, fps: number): Vivo | null {
+  const existente = provedores.get(alvo.id);
+  if (existente) {
+    // A layer trocou de mídia sem trocar de id (o `mediaId` é editável). O
+    // decodificador antigo aponta pro arquivo errado.
+    if (existente.mediaId === alvo.mediaId) {
+      existente.usadoEm = ++uso;
+      return existente;
+    }
+    fechar(alvo.id);
+  }
+
+  const url = urls.get(alvo.mediaId);
   if (!url) return null;
+
+  const factory = demuxerFactory();
+  if (!factory) return null;
 
   /**
    * O `demuxerFactory` NÃO é opcional na prática.
@@ -88,49 +217,119 @@ function provedorDe(mediaId: string, fps: number): Provider | null {
    * que o quadro CHEGOU e que quadros consecutivos eram DIFERENTES. O sintético
    * satisfaz as duas com folga. Verificar entrega não é verificar conteúdo.
    */
+  // Preenchido logo abaixo; o conversor precisa dele antes de existir provedor.
+  const vivo = {
+    mediaId: alvo.mediaId, ativo: true, usadoEm: ++uso,
+    maiorEntregue: MARCA_DESCONHECIDA, ultimoAlvo: alvo.sourceFrame, geracao: 0,
+  } as Vivo;
+
   const p = createVideoFrameProvider(url, {
     fps,
-    lookaheadFrames: LOOKAHEAD,
-    demuxerFactory: createDefaultDemuxerFactory(),
+    lookaheadFrames: LIMITES.lookahead,
+    demuxerFactory: factory,
     /**
      * SEM `flipY`. O conversor padrão do `@elah/core` inverte o Y porque o
      * renderer deles é WebGL, onde a textura tem a origem embaixo. O nosso é
      * Canvas 2D, cuja origem já é em cima — herdar a inversão põe o vídeo de
      * cabeça pra baixo, e foi o que aconteceu.
+     *
+     * É também por onde sabemos QUAL quadro é cada bitmap. O `getCurrent` do
+     * `@elah/core` pode devolver um vizinho, e a única identificação confiável
+     * é o `timestamp` do `VideoFrame` — lido antes do `await`, porque quem
+     * fecha o quadro é o `@elah/core`, assim que este conversor termina.
      */
-    frameConverter: (frame: VideoFrame) => createImageBitmap(frame),
+    frameConverter: async (frame: VideoFrame) => {
+      const indice = Math.round((frame.timestamp / 1e6) * fps);
+      // Lida ANTES do await: é a geração em que este quadro foi produzido.
+      const geracao = vivo.geracao;
+      const bitmap = await createImageBitmap(frame);
+      indiceDoQuadro.set(bitmap, indice);
+      // O índice do bitmap vale sempre; a MARCA, só se o cursor não saltou pra
+      // trás no meio da conversão. Ver `geracao`.
+      if (geracao === vivo.geracao && indice > vivo.maiorEntregue) {
+        vivo.maiorEntregue = indice;
+      }
+      return bitmap;
+    },
   }) as Provider;
-  provedores.set(mediaId, p);
-  return p;
+
+  vivo.provider = p;
+  provedores.set(alvo.id, vivo);
+
+  /**
+   * Ocioso por tempo demais: fecha sozinho.
+   *
+   * É o par do teto de vivos, e cobre o caso que o teto não cobre — poucos
+   * clipes, muito tempo parado. Sem isto, sair do vídeo e ficar meia hora
+   * editando um título mantinha decodificador e cache de quadros abertos.
+   *
+   * A checagem de identidade importa: entre o `markIdle` e o disparo, a mesma
+   * layer pode ter reaberto um decodificador novo (trocou de mídia, por
+   * exemplo), e fechar por id fecharia o novo.
+   */
+  p.setIdleCallback?.(() => {
+    if (provedores.get(alvo.id) === vivo) fechar(alvo.id);
+  });
+
+  return vivo;
 }
 
 /**
- * Instante do arquivo que corresponde a `t` na linha do tempo, preso ao que o
- * arquivo tem. O trim desloca a leitura, não a posição.
- */
-export function sourceTimeOf(layer: VideoTiming, t: number): number {
-  const bruto = (layer.trimStart || 0) + (t - layer.start);
-  // `Number.isFinite` não estreita o tipo, daí o cast.
-  const max = Number.isFinite(layer.sourceDuration) ? (layer.sourceDuration as number) : bruto;
-  return Math.max(0, Math.min(bruto, max));
-}
-
-/**
- * Índice do quadro do arquivo, na grade do projeto.
+ * Aperta o teto de quadros guardados por ESTE decodificador.
  *
- * Inteiro, e é o ponto todo: pedir por segundos põe a fronteira do quadro à
- * mercê do ponto flutuante — o quadro 61 a 30fps começa em 2,0333333…, e um
- * pedido um bilionésimo abaixo devolve o 60. Índice inteiro não tem fronteira.
+ * ## Por que precisa existir, e por que é feio
+ *
+ * O `createVideoFrameProvider` não repassa `maxFrames`: todo provedor nasce
+ * guardando até **30 quadros**. Trinta é um teto sensato pra um decodificador
+ * e é demais pra oito — a 1080p um `ImageBitmap` custa ~8 MB, então oito
+ * decodificadores cheios seriam ~2 GB. Trocar o engasgo por isso é trocar um
+ * defeito por outro.
+ *
+ * E o cache **enche mesmo** quando não devia: pra mostrar o quadro 51, o
+ * decodificador precisa começar no keyframe anterior e decodificar tudo no
+ * caminho — cinquenta quadros que ninguém vai ver entram no cache antes do
+ * primeiro que interessa. Medido no traço do `@elah/core`: `cacheSize: 30` com
+ * o alvo ainda a vinte quadros de distância.
+ *
+ * Prender o pedido ao tamanho do clipe (ver `framePlan.ts`) não resolve isso:
+ * limita o que se PEDE, não o que a subida até o keyframe deixa pelo caminho.
+ *
+ * Daí mexer num campo privado de dependência, que é feio e é assumido: o teto é
+ * a única peça do ciclo de vida que a API publicada não alcança. Falha em
+ * segurança — se a estrutura interna mudar, volta a valer o 30 do `@elah/core` —
+ * e AVISA, porque o modo de falha desta fase foi justamente uma degradação
+ * silenciosa que passou por duas verificações.
  */
-export function sourceFrameOf(layer: VideoTiming, t: number, fps: number): number {
-  return Math.round(sourceTimeOf(layer, t) * fps);
+let avisouDoTeto = false;
+
+function apertarTeto(p: Provider, quadros: number): void {
+  const cache = (p as unknown as { _cache?: { _maxFrames?: number } })._cache;
+  if (!cache || typeof cache._maxFrames !== 'number') {
+    if (!avisouDoTeto) {
+      avisouDoTeto = true;
+      console.warn(
+        '[videoFrames] o cache do @elah/core mudou de forma: cada decodificador ' +
+        'volta a guardar 30 quadros. Ver apertarTeto().',
+      );
+    }
+    return;
+  }
+  cache._maxFrames = quadros;
 }
 
-/** As layers de vídeo que aparecem neste instante. */
-function visiveisEm(project: Project, t: number): VideoLayer[] {
-  return project.layers.filter(
-    (l): l is VideoLayer => l.type === 'video' && t >= l.start && t <= l.start + l.duration,
-  );
+/**
+ * Folga de quadros guardados ATRÁS do pedido.
+ *
+ * Não é enfeite: o `getCurrent` do `@elah/core` aceita um quadro até dois atrás
+ * do pedido, e voltar alguns quadros no cursor é o gesto mais comum que existe
+ * num editor. Zerar a folga faria cada passo pra trás redecodificar desde o
+ * keyframe.
+ */
+const FOLGA_ATRAS = 6;
+
+/** Só o que o plano precisa ler das layers. */
+function clipesDe(project: Project): VideoClip[] {
+  return project.layers.filter((l): l is VideoLayer => l.type === 'video');
 }
 
 /**
@@ -138,12 +337,39 @@ function visiveisEm(project: Project, t: number): VideoLayer[] {
  *
  * Barato e idempotente: pode (e deve) ser chamado a cada quadro. É o que
  * transforma "decodifica quando pedirem" em "já estava pronto".
+ *
+ * Arma e SOLTA na mesma passada. Separar as duas metades em duas chamadas foi
+ * o que fez o `idleUnused` existir escrito e nunca ser chamado: quem arma é o
+ * laço do preview, quem exporta é outro caminho, e a metade que solta ficou
+ * sem dono. Aqui não há como esquecer.
  */
 export function aimAt(project: Project, t: number): void {
   const fps = project.fps;
-  for (const layer of visiveisEm(project, t)) {
-    provedorDe(layer.mediaId, fps)?.setPlayhead(sourceFrameOf(layer, t, fps));
+  const plano = framePlanAt(clipesDe(project), t, fps, LIMITES);
+
+  for (const alvo of plano) {
+    const vivo = provedorDe(alvo, fps);
+    if (!vivo) continue;
+
+    /**
+     * Voltar invalida o que sabíamos sobre a entrega — ver `highWaterAfterAim`.
+     * A geração sobe junto porque as conversões que já estavam em voo descrevem
+     * o trecho abandonado, e deixá-las reerguer a marca reabriria o vizinho.
+     */
+    if (alvo.sourceFrame < vivo.ultimoAlvo) vivo.geracao++;
+    vivo.maiorEntregue = highWaterAfterAim(
+      vivo.ultimoAlvo, alvo.sourceFrame, vivo.maiorEntregue,
+    );
+    vivo.ultimoAlvo = alvo.sourceFrame;
+
+    // O teto acompanha o clipe: uma fatia de 0,2s não guarda o mesmo que um
+    // clipe inteiro. Reaplicado a cada quadro porque arrastar a borda do clipe
+    // muda o tamanho dele — e é barato, é uma atribuição.
+    apertarTeto(vivo.provider, alvo.lookahead + FOLGA_ATRAS);
+    vivo.provider.setPlayhead(alvo.sourceFrame, { lookaheadFrames: alvo.lookahead });
   }
+
+  soltar(project, plano);
 }
 
 /**
@@ -153,11 +379,46 @@ export function aimAt(project: Project, t: number): void {
  * `drawFrame` é função pura de (projeto, tempo, quadros) — não pode aguardar
  * nada. Devolver o quadro vizinho quando o certo não chegou seria repetir, com
  * outro mecanismo, o defeito do `<video>`.
+ *
+ * Só CONSULTA: quem abre decodificador é o `aimAt`. Abrir um aqui adiantaria
+ * nada (o quadro não estaria pronto neste instante mesmo) e escondia a conta —
+ * um desenho avulso, como o "salvar PNG", passaria a abrir arquivos.
  */
 export function frameFor(project: Project, t: number) {
   const fps = project.fps;
-  return (layer: VideoLayer): DecodedFrame | null =>
-    provedorDe(layer.mediaId, fps)?.getCurrent(sourceFrameOf(layer, t, fps)) ?? null;
+  return (layer: VideoLayer): DecodedFrame | null => {
+    const vivo = provedores.get(layer.id);
+    if (!vivo || vivo.mediaId !== layer.mediaId) return null;
+
+    const pedido = sourceFrameOf(layer, t, fps);
+    const quadro = vivo.provider.getCurrent(pedido);
+    if (!quadro) return null;
+
+    /**
+     * Conferir QUAL quadro veio, e não só que veio um. Ver `frameServes`: o
+     * `getCurrent` do `@elah/core` entrega um vizinho de até dois atrás quando
+     * o exato ainda não está no cache, e foi assim que o export gravou quadro
+     * repetido no arquivo final.
+     */
+    const entregue = indiceDoQuadro.get(quadro as ImageBitmap);
+    if (entregue === undefined && !avisouDoIndice) {
+      avisouDoIndice = true;
+      console.warn(
+        '[videoFrames] quadro sem índice conhecido: o conversor do @elah/core ' +
+        'deixou de passar por aqui, e o quadro vizinho volta a ser aceito.',
+      );
+    }
+    return frameServes(pedido, entregue, vivo.maiorEntregue) ? quadro : null;
+  };
+}
+
+let avisouDoIndice = false;
+
+/** As layers de vídeo que aparecem neste instante. Ver `timeSpan.ts`. */
+function visiveisEm(project: Project, t: number): VideoLayer[] {
+  return project.layers.filter(
+    (l): l is VideoLayer => l.type === 'video' && coversAt(l, t),
+  );
 }
 
 /** Todo quadro necessário pra desenhar `t` já está em mãos? */
@@ -187,12 +448,39 @@ export async function awaitFrames(project: Project, t: number, limiteMs = 3000):
   return false;
 }
 
-/** Solta o decodificador de quem não está sendo usado agora. */
+/**
+ * Solta o decodificador de quem não está sendo usado agora.
+ *
+ * Exportado pra ser testável e pra quem quiser soltar sem armar; o caminho
+ * normal é o `aimAt`, que já faz as duas coisas.
+ */
 export function idleUnused(project: Project, t: number): void {
-  const emUso = new Set(visiveisEm(project, t).map(l => l.mediaId));
-  for (const [id, p] of provedores) {
-    if (emUso.has(id)) p.markActive();
-    else p.markIdle();
+  soltar(project, framePlanAt(clipesDe(project), t, project.fps, LIMITES));
+}
+
+function soltar(project: Project, plano: readonly FrameTarget[]): void {
+  const emUso = new Set(plano.map(a => a.id));
+
+  /**
+   * `markIdle` só na TRANSIÇÃO, nunca a cada quadro.
+   *
+   * O `markIdle` do `@elah/core` reinicia o cronômetro de ociosidade a cada
+   * chamada. Chamado 60 vezes por segundo, ele adia o próprio disparo pra
+   * sempre: o decodificador ficaria marcado como ocioso e não fecharia nunca —
+   * um vazamento que se pareceria exatamente com "o idleUnused está ligado".
+   */
+  for (const [id, vivo] of provedores) {
+    const querido = emUso.has(id);
+    if (querido === vivo.ativo) continue;
+    if (querido) vivo.provider.markActive();
+    else vivo.provider.markIdle();
+    vivo.ativo = querido;
+  }
+
+  const existentes = new Set(clipesDe(project).map(c => c.id));
+  const vivos = [...provedores].map(([id, v]) => ({ id, usedAt: v.usadoEm }));
+  for (const id of providersToDrop(vivos, { keep: emUso, existing: existentes, max: MAX_VIVOS })) {
+    fechar(id);
   }
 }
 
@@ -207,7 +495,7 @@ export const frameProvider = {
 
 /** Solta tudo — troca de projeto. */
 export function releaseFrames(): void {
-  for (const p of provedores.values()) p.dispose();
+  for (const vivo of provedores.values()) vivo.provider.dispose();
   provedores.clear();
   urls.clear();
 }
