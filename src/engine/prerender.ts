@@ -138,8 +138,12 @@ export async function stageVideosAt(project: Project, t: number): Promise<void> 
      * perde. Um decodificador não tem nenhum dos dois problemas.
      */
     if (await canDecode(layer.mediaId)) {
-      await ensureFrame(layer.mediaId, want);
-      return;
+      if (await ensureFrame(layer.mediaId, want)) return;
+      // Disse que decodifica e mesmo assim não entregou o quadro. Não pode
+      // parar aqui: sem posicionar o elemento, o desenho cai nele e pinta o
+      // que quer que ele estivesse mostrando — foi assim que um export inteiro
+      // saiu congelado numa imagem só. Uma reserva que não é exercitada não é
+      // reserva, é decoração.
     }
 
     // Rede de segurança: arquivo que este navegador não decodifica ainda pode

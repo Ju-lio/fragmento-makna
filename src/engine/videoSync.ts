@@ -284,17 +284,6 @@ export function syncVideoLayers(project: Project, t: number): void {
 
   // Uma layer por elemento: ver `videoOwners`.
   for (const layer of videoOwners(project, t)) {
-    /**
-     * Parado, quem decodifica não precisa do elemento pra nada.
-     *
-     * A imagem sai do decodificador, e o som só existe durante a reprodução —
-     * então posicionar o `<video>` aqui é trabalho jogado fora. Pior que
-     * inútil: o seek do elemento acorda o decodificador do navegador pro mesmo
-     * arquivo, competindo com o nosso justamente durante o scrub, que é quando
-     * a resposta precisa ser rápida.
-     */
-    if (!player.playing && decodes(layer.mediaId)) continue;
-
     const video = layer.video;
     const plan = videoSyncPlan(layer, t, {
       playing: player.playing,

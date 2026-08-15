@@ -59,6 +59,18 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
      * imperceptível num preview, e o preço de não engessar a reprodução na
      * grade do cache.
      */
+    /**
+     * Até quando vale segurar a imagem esperando o quadro decodificado.
+     *
+     * Segurar é pra absorver alguns milissegundos de decodificação. Passando
+     * disso, alguma coisa deu errado — e a resposta certa nunca é a tela
+     * congelada sem explicação: desenha-se com o `<video>`, que sai pior e
+     * entra no cache como degradado, mas o editor continua respondendo.
+     */
+    const HOLD_LIMIT_MS = 400;
+    let holdT = -1;
+    let holdSince = 0;
+
     let capturing = false;
     const captureFrame = (sig: string, index: number, degraded: boolean) => {
       if (capturing) return;
@@ -167,7 +179,13 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       if (!framesReadyAt(project, t)) {
         void requestFramesAt(project, t).then(() => player.invalidate());
-        return;
+
+        if (holdT !== t) { holdT = t; holdSince = performance.now(); }
+        if (performance.now() - holdSince < HOLD_LIMIT_MS) return;
+        // Estourou a espera: segue e desenha com o que houver. O `drawFrame`
+        // marca o quadro como degradado sozinho ao cair no elemento.
+      } else {
+        holdT = -1;
       }
 
       /**
