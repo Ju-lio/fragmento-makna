@@ -251,9 +251,17 @@ export default function App() {
      */
     const unsubTick = player.onTick(t => {
       syncSoundLayers(projectRef.current.layers, t, player.playing, {
-        // Com a imagem saindo do cache, ninguém mais conduz os <video> — e é
-        // deles que sai o som do clipe.
-        driveVideo: player.fromCache,
+        /**
+         * SEMPRE conduz os `<video>`, não só quando a imagem vem do cache.
+         *
+         * Antes o `videoSync` os conduzia durante a reprodução ao vivo, porque
+         * eles eram a fonte da IMAGEM. Não são mais — quem entrega pixel é o
+         * decodificador de quadros. O único motivo de o elemento existir agora
+         * é o SOM, então quem cuida do som é quem tem que conduzi-lo.
+         *
+         * Sem isto ninguém dá `play()` no elemento e o clipe toca mudo.
+         */
+        driveVideo: true,
       });
     });
 

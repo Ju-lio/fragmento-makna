@@ -92,6 +92,13 @@ function provedorDe(mediaId: string, fps: number): Provider | null {
     fps,
     lookaheadFrames: LOOKAHEAD,
     demuxerFactory: createDefaultDemuxerFactory(),
+    /**
+     * SEM `flipY`. O conversor padrão do `@elah/core` inverte o Y porque o
+     * renderer deles é WebGL, onde a textura tem a origem embaixo. O nosso é
+     * Canvas 2D, cuja origem já é em cima — herdar a inversão põe o vídeo de
+     * cabeça pra baixo, e foi o que aconteceu.
+     */
+    frameConverter: (frame: VideoFrame) => createImageBitmap(frame),
   }) as Provider;
   provedores.set(mediaId, p);
   return p;
