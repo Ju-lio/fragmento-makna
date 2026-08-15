@@ -1250,7 +1250,19 @@ coisas vêm daí de graça:
 **Não carrega os bytes da mídia**, pelo mesmo motivo que o armazenamento não
 carrega: base64 incha 33% e um vídeo de 50 MB vira uma string que trava a aba.
 Ele guarda a *edição*, como um `.fcpxml` — o acervo descreve os arquivos por id,
-nome, tipo e duração, e reabrir sem eles reporta quais faltam.
+nome, tipo e duração.
+
+Por isso **abrir um `.frag` pede o material que falta antes de montar o
+projeto**, e a ordem é o conserto inteiro. A desserialização descarta a layer
+cuja mídia não resolve; abrindo primeiro e religando depois, os clipes já teriam
+sido jogados fora, e você reencontraria o arquivo pra continuar sem a edição —
+o formato perdendo o trabalho exatamente no seu caso principal, que é levar o
+projeto pra outro lugar. Resolvendo antes, todas as layers resolvem e nada se
+perde. O arquivo localizado é guardado sob o **mesmo `mediaId`**, que é o que
+faz as layers reencontrarem o material sem saber que ele veio de outro lugar.
+
+Seguir sem localizar continua possível, mas como **escolha** ("abrir mesmo
+assim", avisando que os clipes serão descartados), não como perda silenciosa.
 
 Migrar continua sendo trabalho de **código**, não de adivinhação. `format` diz o
 dialeto e as migrações vivem em `serialize.ts`, testadas. Uma IA ajuda a
