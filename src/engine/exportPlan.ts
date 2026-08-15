@@ -27,6 +27,24 @@ export const CODEC_CANDIDATES = [
   { codec: 'vp09.00.10.08', muxer: 'vp9' as const, label: 'VP9' },
 ];
 
+/**
+ * Codecs de áudio tentados, em ordem. Mesma lógica da lista de vídeo.
+ *
+ * AAC primeiro porque é o que o MP4 leva por padrão e qualquer player abre. Só
+ * que ele é **proprietário, e o encoder não vem em toda build** — no Chromium
+ * do Linux, com frequência não vem. Pior: `configure()` de um codec ausente não
+ * lança. Ele derruba o encoder em silêncio pelo callback de erro, e quem
+ * reclama é o `encode()` seguinte, com "the encoder must be configured first" —
+ * uma mensagem que não diz nada sobre codec e aparece depois de a mixagem
+ * inteira já ter rodado.
+ *
+ * Opus é a reserva: livre, presente em todo lugar, e o MP4 aceita.
+ */
+export const AUDIO_CODEC_CANDIDATES = [
+  { codec: 'mp4a.40.2', muxer: 'aac' as const, label: 'AAC-LC' },
+  { codec: 'opus', muxer: 'opus' as const, label: 'Opus' },
+];
+
 export interface Dimensions { width: number; height: number }
 
 /**

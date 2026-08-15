@@ -1,20 +1,22 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
-import { previewMode } from '../engine/previewMode.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
+import { aimAt, frameFor, framesReadyAt } from '../engine/videoFrames.ts';
 import { drawFrame } from '../engine/renderer.ts';
-import {
-  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner,
-} from '../engine/videoSync.ts';
+import { videoElementsOwner } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
-import { pickFrameSource } from '../engine/frameSource.ts';
+import { pickFrameSource, PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
 import { StageBar } from './StageBar.tsx';
-import type { Project } from '../engine/types.ts';
+import { Gizmo } from './Gizmo.tsx';
+import type { LayerPatch, Project } from '../engine/types.ts';
 
 interface StageProps {
   project: Project;
   onResize: (width: number, height: number) => void;
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+  onChange: (id: number, patch: LayerPatch, coalesce?: boolean) => void;
 }
 
 /**
@@ -25,12 +27,14 @@ interface StageProps {
  * straight to the canvas. Playing back, scrubbing and panning all re-render
  * exactly nothing.
  */
-export function Stage({ project, onResize }: StageProps) {
+export function Stage({ project, onResize, selectedId, onSelect, onChange }: StageProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const projectRef = useRef(project);
   const resRef = useRef({ w: 0, h: 0 });   // last physical resolution actually applied
+  /** Instante desenhado sem o quadro de vídeo. `null` = nada a cobrar. */
+  const pendenteRef = useRef<number | null>(null);
   const [busy, setBusy] = useState<string | null>(null);   // null = nada a mostrar
 
   projectRef.current = project;
@@ -55,8 +59,25 @@ export function Stage({ project, onResize }: StageProps) {
      * imperceptível num preview, e o preço de não engessar a reprodução na
      * grade do cache.
      */
+    /**
+     * Até quando vale segurar a imagem esperando o quadro decodificado.
+     *
+     * Segurar é pra absorver alguns milissegundos. Passando disso, alguma coisa
+     * deu errado — e a resposta certa nunca é tela congelada sem explicação:
+     * desenha-se com o que houver, o `drawFrame` marca como degradado, e a
+     * barra de atividade explica. Foi assim que um export inteiro saiu numa
+     * imagem só: a espera não tinha fim.
+     */
+    const HOLD_LIMIT_MS = 400;
+    let holdT = -1;
+    let holdSince = 0;
+
     let capturing = false;
     const captureFrame = (sig: string, index: number, degraded: boolean) => {
+      // Ninguém lê o cache no preview agora — encher só gastaria memória, e
+      // guardaria quadros do motor que ainda está mudando. Ver
+      // `PREVIEW_CACHE_ENABLED`.
+      if (!PREVIEW_CACHE_ENABLED) return;
       if (capturing) return;
       if (frameCache.has(sig, index, { allowDegraded: degraded })) return;
 
@@ -102,7 +123,20 @@ export function Stage({ project, onResize }: StageProps) {
        * Fixando a grade, cache e render viram a mesma coisa e ficam
        * intercambiáveis.
        */
-      const fastPreview = previewMode.fast || player.playing;
+      /**
+       * Qualidade reduzida só enquanto ROLA, nunca com o vídeo parado.
+       *
+       * Vale pro que se desenha (o desfoque é pulado) e pro que se aceita do
+       * cache (um quadro capturado ao vivo, com o `<video>` na posição
+       * aproximada, é `degraded`). Parado, os dois voltam a ser exatos — é aí
+       * que você inspeciona um quadro, e mostrar aproximação nessa hora é o
+       * mesmo que mentir sobre o que está editado.
+       *
+       * Antes isto também obedecia ao interruptor manual (`⚡ FAST`), que
+       * ficava ligado inclusive pausado. Ver `autoPrerender.ts` pra por que
+       * esse botão deixou de mexer em qualidade.
+       */
+      const fastPreview = player.playing;
 
       const { index, t, useCache } = pickFrameSource({
         rawT,
@@ -133,19 +167,58 @@ export function Stage({ project, onResize }: StageProps) {
        */
       if (player.playing && player.fromCache) return;
 
-      // Nudge the <video> elements onto the clock, then paint whatever
-      // frame they are currently holding.
-      syncVideoLayers(project, t);
-      const { degraded } = drawFrame(ctx, project, t, { fastPreview });
+      /**
+       * Diz ao decodificador onde estamos, pra ele correr à frente, e desenha
+       * só quando o quadro daquele instante estiver em mãos.
+       *
+       * O `<video>` saiu do caminho da imagem — segue como fonte do SOM,
+       * conduzido pelo `syncSoundLayers`. O que se vê é o quadro pedido por
+       * NÚMERO, ou o quadro anterior segurado de propósito. Nunca o vizinho.
+       */
+      aimAt(project, t);
+
+      const pronto = framesReadyAt(project, t);
 
       /**
-       * Reproduzindo ao vivo, o `<video>` corre no relógio dele e só é
-       * corrigido quando desvia mais de 80ms. O quadro capturado aí serve
-       * pra reexibir, mas não é fiel ao instante da grade — então entra como
-       * degradado, e o pré-render vai regerá-lo com o seek exato.
+       * Desenhar sem o quadro deixa uma DÍVIDA: quando ele chegar, alguém tem
+       * que repintar.
+       *
+       * Sem isso o preview parado ficava preto pra sempre, e o traço do
+       * `@elah/core` mostra o mecanismo inteiro: a espera estoura, desenha-se o
+       * degradado, e o último `getCurrent` acontece 115ms ANTES do quadro
+       * pousar no cache. Ninguém pergunta de novo — o laço só repinta em quadro
+       * sujo, e nada mais suja. O decodificador tinha feito o trabalho todo pra
+       * entregar num instante em que já não havia quem recebesse.
+       *
+       * A cobrança fica na sonda de atividade, que roda em TODO rAF, inclusive
+       * nos quadros pulados. Ver o efeito abaixo.
        */
-      const videoApprox = player.playing && hasActiveVideo(project, t);
-      captureFrame(sig, index, degraded || videoApprox);
+      pendenteRef.current = pronto ? null : t;
+
+      if (!pronto) {
+        if (holdT !== t) { holdT = t; holdSince = performance.now(); }
+        if (performance.now() - holdSince < HOLD_LIMIT_MS) {
+          // Segurar exige AGENDAR a volta: o laço pula quadros limpos, então
+          // sair daqui sem marcar sujo deixa a tela na imagem anterior pra
+          // sempre — foi o que a primeira verificação pegou.
+          setTimeout(() => player.invalidate(), 16);
+          return;
+        }
+        // Estourou a espera: desenha, e o drawFrame marca como degradado.
+      } else {
+        holdT = -1;
+      }
+
+      const { degraded } = drawFrame(ctx, project, t, { fastPreview, frameFor: frameFor(project, t) });
+
+      /**
+       * A captura agora é fiel: o quadro veio decodificado pelo número daquele
+       * instante, o mesmo que o export vai usar. Antes era preciso marcar toda
+       * captura de reprodução como degradada, porque o `<video>` corria solto —
+       * esse regime deixou de existir. O que ainda degrada um quadro é o
+       * desfoque pulado ou um quadro ausente, e o `drawFrame` relata os dois.
+       */
+      captureFrame(sig, index, degraded);
     });
     player.invalidate();
     return unsub;
@@ -162,16 +235,44 @@ export function Stage({ project, onResize }: StageProps) {
       // desenho no meio do trabalho.
       if (videoElementsOwner() !== null) { previewStatus.report(false); return; }
 
+      /**
+       * Cobra a dívida do laço de desenho: um quadro foi desenhado sem a
+       * imagem, e agora ela existe. Repinta uma vez e pronto.
+       *
+       * Só faz sentido PARADO: rolando, o relógio já traz um instante novo a
+       * cada quadro, e insistir no antigo seria repintar o passado. O `aimAt`
+       * vai junto porque o decodificador pode ter sido fechado no meio da
+       * espera — assim a cobrança também o reabre, em vez de esperar por um
+       * quadro que ninguém mais está produzindo.
+       */
+      const pendente = pendenteRef.current;
+      if (pendente !== null && !player.playing) {
+        aimAt(projectRef.current, pendente);
+        if (framesReadyAt(projectRef.current, pendente)) {
+          pendenteRef.current = null;
+          player.invalidate();
+        }
+      }
+
       // Frame que vem do cache não espera por nada — mesmo que o <video> por
       // trás ainda esteja buscando, não é uma espera que você percebe.
       const project = projectRef.current;
-      const allowDegraded = previewMode.fast || player.playing;
+      const allowDegraded = player.playing;
       if (frameCache.get(signatureOf(project), frameIndexAt(t, project.fps), { allowDegraded })) {
         previewStatus.report(false);
         return;
       }
-      const { busy: isBusy, reason } = previewBusyState(projectRef.current, t);
-      previewStatus.report(isBusy, reason);
+      /**
+       * A espera que interessa é a do QUADRO, não a do `<video>`.
+       *
+       * Era `previewBusyState`, que olha `seeking`/`readyState` do elemento. O
+       * elemento saiu do caminho da imagem — hoje ele só toca som, e é buscado
+       * a cada corte. A barra então acendia "decodificando" em toda emenda com
+       * a imagem perfeita, e ficava apagada quando o decodificador de quadros
+       * é que estava atrasado. Media a coisa errada nos dois sentidos.
+       */
+      const esperando = !framesReadyAt(projectRef.current, t);
+      previewStatus.report(esperando, esperando ? 'decodificando' : null);
     });
     // A barra só re-renderiza nas transições — o report() acima roda 60x por
     // segundo, mas o store filtra e só avisa quando a visibilidade muda.
@@ -182,14 +283,10 @@ export function Stage({ project, onResize }: StageProps) {
   // Any project edit must trigger exactly one repaint.
   useEffect(() => { player.invalidate(); });
 
-  // Flipping the fast-preview toggle, or starting/stopping playback, must
-  // repaint immediately — otherwise you'd see the old quality until the next
-  // unrelated change happened to invalidate the frame.
-  useEffect(() => {
-    const unsubMode = previewMode.subscribe(() => player.invalidate());
-    const unsubState = player.onState(() => player.invalidate());
-    return () => { unsubMode(); unsubState(); };
-  }, []);
+  // Começar ou parar a reprodução muda a qualidade do quadro, então tem que
+  // repintar na hora — senão você continuaria vendo o quadro simplificado da
+  // reprodução até alguma outra mudança por acaso invalidar a tela.
+  useEffect(() => player.onState(() => player.invalidate()), []);
 
   // --- physical resolution --------------------------------------------
   // The canvas's CSS size (how big it LOOKS) stays pinned to the composition's
@@ -334,6 +431,17 @@ export function Stage({ project, onResize }: StageProps) {
             ref={canvasRef}
             style={{ width: project.width, height: project.height }}
             className="stage-canvas"
+          />
+          {/*
+            Dentro do holder, junto do canvas: o holder já carrega a transform
+            do viewport, então o gizmo escreve em pixels lógicos e o navegador
+            põe no lugar — sem nenhuma conta de zoom no posicionamento.
+          */}
+          <Gizmo
+            project={project}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onChange={onChange}
           />
         </div>
       </div>

@@ -28,15 +28,23 @@ A regra que sustenta tudo: **o engine não conhece o React.**
 src/
   engine/            <- TS puro, zero dependência de framework
     types.ts           modelo de domínio (Layer, Project, Effect) — só tipos
+    timeSpan.ts        de quem é o instante t — a fronteira entre dois clipes
     easings.ts         curvas de aceleração
     effects.ts         runtime: sampleTrack, effectProgress, resolveState
     renderer.ts        drawFrame(ctx, project, t) — função pura
     player.ts          relógio + loop rAF (fora do React de propósito)
+    playbackClock.ts   o avanço do playhead em quadros inteiros (puro)
     presets.ts         biblioteca inicial + doc do schema
     project.ts         modelo de dados
     fonts.ts           carga explícita da fonte do canvas
     viewport.ts        zoom, fit e pan do preview
-    videoSync.ts       alinha os <video> ao relógio
+    timelineView.ts    zoom e rolagem da timeline
+    gizmo.ts           posicionar, escalar e girar no palco
+    videoFrames.ts     de onde vem o pixel de vídeo: um decodificador por clipe
+    framePlan.ts       quem precisa decodificar agora, e quem já pode soltar (puro)
+    videoDemuxer.ts    o demuxer, isolado num módulo só pra entrar por import()
+    videoSync.ts       alinha os <video> ao relógio — hoje só pelo SOM
+    mediaOwner.ts      quem conduz cada elemento quando vários clipes o dividem
     frameCache.ts      cache de frames compostos + assinatura
     frameSource.ts     de onde tirar cada quadro (cache ou ao vivo)
     prerender.ts       preenche um trecho quadro a quadro
@@ -44,13 +52,20 @@ src/
     exportPlan.ts      as decisões do export que não dependem do browser
     progress.ts        observável de progresso (pré-render, export)
     audioMix.ts        o que toca, quando, e de onde do arquivo
-    audioSync.ts       trilhas alinhadas ao relógio do player
+    soundEngine.ts     toca o som e dá as horas: um AudioBufferSource por clipe
+    soundSchedule.ts   quando reagendar, e o que cada fonte recebe (puro)
+    audioSync.ts       o caminho antigo, por elementos — fora de uso
     audioRender.ts     mixagem offline pro export
+    waveform.ts        envelope de picos e recorte pra desenho (puro)
+    waveformStore.ts   decodifica uma vez por arquivo e guarda o envelope
     trackDrag.ts       para onde vai um clipe arrastado na timeline
+    magnet.ts          o ímã: encostar um clipe exatamente onde o outro acaba
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
+    fragFile.ts        o arquivo .frag: o projeto fora do navegador
+    snapshots.ts       a política do histórico de versões (puro)
     mediaStore.ts      blobs e projeto em IndexedDB
-    previewMode.ts     o interruptor ⚡ FAST
+    autoPrerender.ts   o interruptor ⚙ AUTO PRÉ-RENDER
     previewStatus.ts   sinal da barra de atividade
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
@@ -150,11 +165,194 @@ layers existentes, pra nunca tampar um título sem querer. Novidades:
 - **Arrastar o clipe** move no tempo e troca de faixa no mesmo gesto — ver
   "Arrastar layers entre faixas" abaixo
 - `engine/videoSync.ts` mantém os elementos `<video>` alinhados ao relógio do
-  player: **tocando**, corrige por velocidade e nunca por seek (ver "Corrigir
-  deriva por velocidade"); **pausado/arrastando**, escreve a posição exata. A
-  decisão em si (`videoSyncPlan`) é função pura, testável sem DOM nenhum
+  player — hoje **só pelo som**, porque a imagem saiu do elemento (ver "De onde
+  vem o quadro de vídeo"): **tocando**, corrige por velocidade e nunca por seek
+  (ver "Corrigir deriva por velocidade"); **pausado/arrastando**, escreve a
+  posição exata. A decisão em si (`videoSyncPlan`) é função pura, testável sem
+  DOM nenhum
 - Ao excluir uma layer de vídeo, o `<video>` é pausado e solto
   (`URL.revokeObjectURL` + `load()`), pra não vazar decoder
+
+### A fronteira entre dois clipes é de quem entra
+
+Sintoma: num projeto com cortes **reorganizados**, o quadro exato de cada emenda
+podia mostrar o clipe errado — e o preview engasgava em toda emenda.
+
+A causa era uma pergunta escrita em quatro lugares com duas respostas
+diferentes. "Este clipe aparece em `t`?" era `t < start + duration` no som e
+`t <= start + duration` na imagem. Com um clipe só, a diferença não existe. Com
+dois clipes encostados — que é o que um corte produz — ela é tudo:
+
+```
+A = [0s, 3s)   B = [3s, 6s)     a 30fps, o quadro 90 cai em t = 3,0
+```
+
+Pela regra da imagem, o quadro 90 era dos **dois**. Daí saíam três coisas:
+
+- `framesReadyAt` exigia o quadro de A *e* o de B pra desenhar a emenda. O
+  preview ficava esperando um quadro que não ia desenhar — engasgo em todo corte.
+- Quem fica por cima é o último de `drawOrder`, e entre clipes da mesma faixa
+  isso é a ordem do **array**. Num remix a ordem do array não é a ordem da linha
+  do tempo, então o clipe por cima na fronteira podia ser o que está *saindo*.
+  É por isso que o defeito só aparecia em projeto reorganizado.
+- Um clipe de 3s a 30fps cobria 91 quadros. Um clipe de 3s tem 90.
+
+A regra agora mora em `engine/timeSpan.ts`, sozinha: o trecho é **meio-aberto**,
+`[start, start + duration)`. A fronteira é de quem entra, nunca de quem sai —
+que é a convenção que o som já usava e a que qualquer NLE usa.
+
+O corolário não era opcional. Um intervalo `[from, to)` contém os quadros
+`frameIndexAt(from) .. frameIndexAt(to) - 1`, e o export contava o quadro de
+`to`: todo arquivo saía com **um quadro a mais** (3,033s pra um projeto de 3s).
+Isso nunca apareceu como quadro preto no fim porque o clipe também contava a
+fronteira a mais, e os dois erros se cancelavam exatamente. Corrigir só um deles
+é que produziria o quadro preto — por isso `lastFrameIndex` (em `frameCache.ts`)
+e `coversAt` andam juntos, e o teste que prova isso compara os dois lados.
+
+## De onde vem o quadro de vídeo
+
+Um `<video>` é um **tocador**, não um leitor de quadros: você pede uma posição e
+ele chega lá quando chegar, mostrando o quadro anterior no meio do caminho.
+Parar em cima de um corte e ver o quadro de antes dele vinha exatamente disso, e
+não tinha conserto por ajuste de tolerância — é o que o elemento *é*.
+
+A pergunta mudou de "leve o elemento até t" para **"me dê o quadro N"**. Quem
+responde é o `createVideoFrameProvider` do `@elah/core` (Apache-2.0, 24,8 kB),
+por trás de `engine/videoFrames.ts`. O `<video>` continua no projeto — como
+fonte de **som**, e só.
+
+### Um decodificador por CLIPE, não por arquivo
+
+O sintoma era um remix: várias fatias curtas do mesmo arquivo, em ordem trocada.
+A reprodução saía **NHAM ---- NHAM** — tocava um pedaço, congelava, tocava
+outro. O export não sofria, o que apontava o dedo pro lugar errado: ele espera
+até 3s por quadro e engolia o custo calado.
+
+A causa: havia um decodificador por `mediaId`. Duas fatias vizinhas do mesmo
+vídeo pedem quadros de pontos distantes do arquivo, então **cada corte era um
+salto de índice** — e salto maior que o lookahead é, pro `@elah/core`, uma
+descontinuidade, que se paga reiniciando o decodificador. Um reset por corte.
+(Pior: duas fatias do mesmo arquivo visíveis ao mesmo tempo, em faixas
+diferentes, escreviam o playhead do mesmo decodificador, uma desfazendo a mira
+da outra a cada quadro.)
+
+A chave do registro passou a ser o **id da layer**. Cada fatia caminha pra
+frente dentro do próprio trecho, e a descontinuidade deixa de existir em vez de
+ser tolerada. Só que trocar um decodificador por vinte cobra o preço em outro
+lugar, então a correção vem em quatro partes — as três últimas não são
+opcionais:
+
+- **Armar antes do corte** (`preArm`, 0,6s de linha do tempo). Um decodificador
+  criado no instante em que o clipe aparece ainda tem que abrir o arquivo,
+  procurar o keyframe anterior e decodificar até lá — que é o buraco que se vê
+  no corte. Medido no traço do `@elah/core`: uma fatia que começa 54 quadros
+  depois do keyframe levou 619ms pra ficar pronta, com 573ms de adiantamento.
+- **Prender o lookahead ao clipe.** Pedir 12 quadros à frente numa fatia de
+  0,2s (6 quadros) é decodificar o dobro do que ela mostra. Com um piso, porque
+  lookahead 0 no último quadro faria *andar um quadro* virar descontinuidade —
+  a correção reintroduzindo o defeito que veio corrigir.
+- **Teto de quadros por decodificador.** O `@elah/core` guarda 30 quadros por
+  provedor e não expõe o número; a 1920×1080 são ~8 MB por quadro, ou seja ~2 GB
+  com oito decodificadores abertos. E o cache enche mesmo quando não devia: a
+  subida até o keyframe deposita dezenas de quadros que ninguém vai ver. O teto
+  é apertado por clipe (`apertarTeto`, o único ponto do ciclo de vida que a API
+  publicada não alcança — falha em segurança e avisa no console).
+- **Fechar quem não serve mais**: órfão (layer excluída) fecha na hora; acima do
+  teto de oito decodificadores vivos, fecha o mais antigo; ocioso fecha sozinho.
+  O que está no plano do instante nunca fecha. E `markIdle` só na *transição*:
+  chamado a cada quadro, ele adia o próprio cronômetro pra sempre — vazamento
+  com cara de ciclo de vida ligado.
+
+As decisões (quem decodifica, mirando onde, quem fecha primeiro) são puras e
+moram em `engine/framePlan.ts` — o remix inteiro é testável no `node --test`,
+sem abrir uma aba.
+
+### O vizinho não serve
+
+O `getCurrent` do `@elah/core` entrega um quadro **até dois atrás** do pedido
+quando o exato ainda não está no cache. Não é bug dele: um arquivo a 29,97 num
+projeto a 30 tem índices que não existem, e sem tolerância esse material nunca
+ficaria pronto.
+
+O preço apareceu no arquivo exportado, que é onde dói: um trecho saiu
+`413, 414, 414, 416, 417, 417` onde o projeto pedia `414…419` — quadro repetido
+e quadro perdido, gravados. O exportador perguntava "veio algum quadro?" em vez
+de "veio o quadro?".
+
+A regra agora é: **o vizinho só serve quando o exato não vem mais.** O
+decodificador entrega em ordem, então ele já ter passado do índice pedido é a
+prova de que aquele índice não existe no arquivo; antes disso, esperar é o
+certo. Saber qual quadro é cada bitmap sai do nosso próprio `frameConverter`,
+que anota o índice antes de o `@elah/core` fechar o `VideoFrame`.
+
+#### E a prova vence quando você volta
+
+"O decodificador já passou do índice" é uma afirmação sobre um trecho corrido
+**pra frente**. A marca d'água que a guardava só subia, nunca descia — e aí o
+gesto mais comum de um editor a invalidava em silêncio:
+
+```
+reproduz até o quadro 300   → marca = 300
+arrasta o cursor pro 100    → marca continua 300
+                            → "300 > 100" é verdade para TODO índice abaixo
+                            → o vizinho passa a ser aceito para sempre
+```
+
+Ou seja: o defeito que trocar o `<video>` pelo decodificador veio matar —
+mostrar o quadro de antes — voltava sozinho, e voltava logo depois de *voltar e
+tocar de novo*. `highWaterAfterAim` zera a marca quando o alvo anda pra trás.
+Sem prova nenhuma, exige-se o quadro exato; se o índice realmente não existir no
+arquivo, o decodificador passa por ele em alguns quadros e a prova se refaz
+sozinha, agora medida a partir de onde você voltou.
+
+O detalhe que faltava fechar: uma conversão de quadro que **já estava em voo**
+quando o cursor voltou descreve o trecho abandonado, e ao terminar reergueria a
+marca. Cada salto pra trás incrementa uma `geracao`, e o conversor só levanta a
+marca se a sua geração ainda for a atual.
+
+### Desenhar sem o quadro deixa uma dívida
+
+Estourada a espera do preview (400ms), desenha-se o que houver e o quadro é
+marcado como degradado. Só que o laço de desenho só repinta em quadro sujo — e
+nada mais sujava. O traço mostra o mecanismo inteiro: o último `getCurrent`
+acontece **115ms antes** de o quadro pousar no cache. Parado em cima de um
+clipe, o palco ficava **preto pra sempre**, com o decodificador tendo feito o
+trabalho todo pra entregar num instante em que já não havia quem recebesse.
+
+A cobrança ficou na sonda de atividade, que roda em todo rAF inclusive nos
+quadros pulados: havendo instante desenhado sem imagem, ela repinta assim que a
+imagem existir. Só parado — rolando, o relógio já traz um instante novo.
+
+### O demuxer entra por `import()`
+
+`createDefaultDemuxerFactory` faz `import * as mediabunny` no topo do módulo:
+importá-lo junto com a engine levou o pacote principal de **330 kB para 987 kB**,
+pagos no primeiro carregamento por todo mundo — inclusive por quem abre o editor
+pra mexer num título. Isolado em `engine/videoDemuxer.ts`, alcançado só por
+`import()`, o principal voltou a **331 kB** (104 kB comprimido) e o demuxer (655
+kB) só desce quando um vídeo de fato pede quadro. Nada pode importar esse
+módulo estaticamente, ou o efeito se desfaz em silêncio.
+
+### Como isso é verificado
+
+Verificação que checa "o quadro chegou" não vale nada aqui — foi assim que um
+gerador **sintético** (padrão de teste do `@elah/core`, quando falta o
+`demuxerFactory`) passou por duas checagens: ele entrega sempre, e cada quadro é
+diferente do anterior. O material de teste tem o **número do quadro desenhado
+dentro da imagem**, e a conferência é ler o número.
+
+Um remix de 20 fatias de 0,1–0,3s (117 quadros de linha do tempo), tocado do
+zero com o canvas gravado quadro a quadro:
+
+| | quadros pintados | mediana | p90 | buracos > 150ms |
+|---|---|---|---|---|
+| antes | 12–49 | 33ms | 117–1153ms | 3–4 (até 1,8s) |
+| depois | 113–117 | 33ms | 44–48ms | **0** |
+
+E a leitura da gravação confirma o conteúdo: as 20 fatias na ordem certa, cada
+quadro com o número que o trim daquele clipe manda, cada corte no instante
+previsto. Parando em cima de um corte, quadro a quadro pela seta, o palco mostra
+o primeiro quadro do clipe que entra — não o último do que sai.
 
 ## Faixas com vários clipes
 
@@ -167,6 +365,35 @@ toda ficar simples: como nunca há dois clipes ativos no mesmo instante da mesma
 faixa, a ordem *dentro* de uma faixa não importa pro desenho. A alternativa
 (aninhar `tracks: { clips: [] }[]`) teria mexido em serialização, assinatura de
 cache, trim, arrasto e todos os painéis, pra chegar no mesmo resultado.
+
+### Encostar não é invadir — e ponto flutuante discordava
+
+Sintoma: `Ctrl+D` repetido num clipe e, da terceira ou quarta cópia em diante, a
+duplicata ia parar na faixa de cima "sem necessidade". Com o clipe já trimado —
+duração fracionária — acontecia já na primeira.
+
+Nunca foi escolha de colocação. `start` passa por `round` (grade de
+milissegundos) em toda edição; a **duração não passava**, e o fim do clipe é
+`start + duration`, uma soma de ponto flutuante:
+
+```
+0.2 + 0.1 = 0.30000000000000004
+```
+
+O clipe anterior terminava em `0.30000000000000004`, o novo começava em `0.3`,
+e `overlaps` — estrito nas duas pontas, justamente pra deixar clipes se
+encostarem — via uma invasão de 4×10⁻¹⁷ segundos. `pasteSlot` fazia o que devia
+fazer diante de uma colisão: subia uma faixa.
+
+A correção tem duas metades, e as duas são a mesma ideia: **a linha do tempo é
+uma grade de milissegundos**. As durações passam a nascer na grade
+(`makeVideoLayer`, `makeAudioLayer`), e `overlaps` compara as pontas na grade
+(`endOf`). Não é tolerância afrouxada pro problema sumir — é a resolução do
+modelo, que `round` já assumia em todo o resto. Duas posições dentro do mesmo
+milissegundo são a mesma posição.
+
+É o mesmo defeito da fronteira entre clipes, chegando pelo outro lado: onde um
+clipe acaba e o outro começa é um ponto que precisa ser *um* ponto.
 
 A ordem de desenho passou a ser calculada, não a ordem do array — e memorizada
 por referência do projeto, como `signatureOf`. Ordenar dentro do `drawFrame`
@@ -274,14 +501,216 @@ adicionar uma trilha inteira, não joga o trecho pré-renderizado fora. Um cache
 de quadros que se invalida ao você mexer no volume seria absurdo, e é exatamente
 o que aconteceria se a assinatura varresse `project.layers` cru.
 
-### A correção de deriva é o oposto da do vídeo
+### Vídeo e áudio têm espaços de faixa separados
 
-O vídeo corrige por `playbackRate` porque um seek fazia a imagem voltar um
-quadro. Em áudio isso seria pior: mudar a velocidade muda o **tom**, e meio
-semitom de desafinação é muito mais audível do que um quadro repetido é visível.
+Era um espaço só, e o modelo ficava ambíguo: a faixa 2 podia ter um clipe de
+vídeo **e** um de áudio, sem nada os distinguindo. Funcionava porque a ordem de
+desenho já ignora áudio, mas a numeração não queria dizer a mesma coisa nos dois
+casos — no vídeo é profundidade, no áudio não é nada — e a timeline não tinha
+como agrupar o som embaixo.
 
-Então som corrige por seek, com tolerância folgada (150ms contra 80ms do vídeo).
-Cada correção é um clique curto; corrigir demais é pior que derivar um pouco.
+Com dois espaços, "faixa 0" significa uma coisa só dentro de cada tipo, e as
+duas perguntas que o editor faz o tempo todo (quem colide comigo, qual é a de
+cima) ficam bem definidas. `compactTracks` renumera cada tipo por conta própria,
+`freeWindow` e `pasteSlot` só enxergam o próprio espaço.
+
+**O arrasto não precisou mudar** — e isso é consequência de uma escolha, não
+sorte. Como cada gesto acontece dentro do espaço de faixa do próprio tipo,
+atravessar pro outro grupo simplesmente não é representável: os dois grupos são
+contíguos na tela, então converter faixa em linha virou um deslocamento.
+
+Duas coisas quase passaram batido, as duas encontradas rodando:
+
+- **A direção é oposta nos dois grupos.** No vídeo as linhas são invertidas
+  (faixa 0 desenha no fundo, aparece embaixo), no áudio são naturais. Isso era
+  uma constante dentro do `clipDragPlan` e virou parâmetro. O sintoma era
+  silencioso: arrastar áudio pra baixo pedia a faixa -2, o `clamp` prendia em 0,
+  e o clipe não saía do lugar sem nada indicar por quê.
+- **O traço que separa os grupos não pode ter margem.** O cálculo do arrasto
+  mede o espaçamento entre as duas primeiras linhas e assume que vale pra todas
+  — uma margem só na fronteira tornaria isso mentira. O traço vive dentro do vão
+  de 4px que já existia. (Medido depois: 28px entre todas as linhas.)
+
+A migração de projetos salvos é a própria compactação: no formato 5 uma faixa de
+áudio podia ser a 3 só porque existiam três de vídeo, e renumerar cada tipo
+traduz isso sem mover clipe nenhum no tempo.
+
+### Trocar de clipe é um CORTE, não deriva
+
+O bug que mais custou pra enxergar, e o mais bonito: um **remix** — várias
+fatias do mesmo arquivo, em ordem trocada, na timeline. A imagem mostrava o
+remix certinho (vinha do cache de quadros) e o export saía perfeito, mas o som
+do preview lia o arquivo **em linha reta**: `1 2 3 4 5 6 7 8 9…` onde deveria
+tocar `1 2 3 4 | 5 6 7 | 5 6 7`.
+
+A causa está em duas coisas verdadeiras que juntas dão errado. Fatias do mesmo
+arquivo dividem **um** elemento (ver acima), e quem corrige a posição desse
+elemento só sabia comparar "onde o cursor está" com "onde deveria estar". Quando
+a fatia A termina e a B começa lendo de outro ponto, essa diferença chega como
+um número — indistinguível de deriva. E deriva se corrige por **velocidade**,
+que jamais resolve uma descontinuidade: o elemento seguia lendo adiante,
+levemente acelerado, para sempre.
+
+O conserto é nomear a diferença. `ownerChanged` lembra qual layer conduzia cada
+elemento; trocar de dono é um corte, e corte se resolve **pulando** — sempre,
+por menor que seja o salto. Vem antes até do "já tem seek em voo", porque esse
+seek mirava o clipe anterior.
+
+Medido no navegador com três fatias de 1s lendo de 0s, 4s e 0s do arquivo: o
+cursor sai de 0,19→0,80, **pula pra 4,0**, corre até 4,79, e **volta pra 0,07**.
+Antes lia 0→2,9 direto.
+
+Fica um resíduo: logo depois do pulo o cursor está ~200ms atrás, porque o seek
+leva tempo pra pousar enquanto o relógio anda. Ele fecha sozinho pela correção
+de velocidade. Baixar o limiar de resync da imagem melhorou pouco (254 → 212ms)
+e reintroduziria o risco de seek no meio da reprodução, então ficou como está.
+
+### A onda, e por que o clipe de áudio não é só outra cor
+
+Cortar no ritmo é impossível olhando um retângulo colorido: o que se procura é a
+batida, o silêncio entre as frases, o ponto onde a voz entra. Isso está no
+envelope do sinal.
+
+O clipe de áudio ganhou tratamento próprio, não outro matiz. O clipe visual é um
+bloco chanfrado com relevo pra fora; o de áudio é o oposto — um **visor
+afundado**, fundo mais escuro que a faixa, moldura clara, com a onda desenhada
+dentro. Dá pra reconhecer o tipo pela silhueta, de canto de olho, sem ler o nome
+nem comparar cor com o vizinho. (Primeira tentativa igualou o fundo do clipe ao
+da faixa: a borda sumia e o clipe ficava sem limite visível.)
+
+**Duas etapas, porque têm custos opostos.** `computePeaks` varre os samples uma
+vez por arquivo e guarda um envelope de resolução fixa (120 baldes por segundo);
+`barsFor` recorta a janela do clipe e reamostra pro número de barras que cabem
+na largura atual. Guardar o envelope em vez do PCM é o que torna isso viável na
+memória — 400x menor, e a diferença não aparece em 24 pixels de altura.
+
+Vale **e** pico por balde, nunca a média: a média tende a zero em qualquer sinal
+simétrico e desenharia uma linha reta pra música e pra silêncio igualmente. E a
+reamostragem é pelo extremo, não "um balde a cada N" — senão a onda cintilaria a
+cada passo de zoom, porque a barra desenhada passaria a ser um balde diferente e
+arbitrário. Medido: ampliar de 735 para 2994 pixels de largura deixou o perfil
+idêntico.
+
+### A onda é normalizada, e isso foi uma decisão
+
+Desenhar em valor absoluto parece o certo e falha justo onde importa. O primeiro
+teste no navegador saiu com o perfil `[2,1,2,1,2]` — praticamente uma linha
+reta — porque o arquivo tinha pico em -18 dB, que em 16 pixels de altura dá
+menos de um pixel. E -18 dB é o normal de fala e de material não masterizado.
+
+Então a onda é dividida pelo pico **do arquivo**, com piso em -26 dB pra um
+arquivo quase mudo não ser amplificado até virar ruído desenhado como conteúdo.
+Silêncio interno continua silêncio (a divisão é pelo arquivo, não por trecho),
+então o que se ganha é contraste, não uma mentira. O mesmo arquivo passou a
+`[12,1,12,1,12]`.
+
+O envelope não é persistido em IndexedDB de propósito: recalcular na abertura
+custa alguns décimos por arquivo e não bloqueia nada, enquanto um cache em disco
+precisaria de invalidação própria. É otimização, e otimização depois.
+
+### Separar o áudio do vídeo
+
+Um clipe de vídeo carrega o próprio som. Separar põe esse som numa faixa
+própria e **cala** o vídeo — cala, não remove: é o que permite desfazer voltando
+o `mute`, e o que mantém o `mediaId` de pé nos dois lados, então o export
+continua decodificando o arquivo uma vez e servindo os dois clipes.
+
+A parte que exigiu mexer na fundação: a faixa destacada precisa de um `<audio>`
+**próprio**. Dividir o `<video>` com a imagem seria pedir pro editor calar uma
+das duas — exatamente o que separar veio desfazer. Os dois elementos leem a
+mesma `blob:`, então não há byte a mais nem download extra.
+
+Isso obrigou a mudar a chave da eleição de dono, de arquivo pra **elemento**
+(`ownersByElement`): as duas layers têm o mesmo `mediaId` e elementos
+diferentes, e agrupar por arquivo faria uma silenciar a outra — o bug do clipe
+cortado chegando pelo lado oposto. A pergunta certa nunca foi "qual arquivo é
+este", e sim "quem está mexendo neste cursor".
+
+O `MediaResolver` também passou a receber o tipo da layer junto com o id, senão
+reabrir o projeto devolveria o `<video>` pra uma layer de áudio e a disputa
+voltaria pela porta dos fundos.
+
+Verificado exportando: fonte a -21,1 dB de média, arquivo exportado a -21,1 dB —
+o som sai uma vez só, sem o vídeo mudo somar de novo por cima.
+
+### Um elemento por arquivo, não por clipe
+
+> **História.** Esta seção e as duas seguintes descrevem o tocador por
+> elementos `<audio>`/`<video>`, que **não está mais no caminho do som** — ver
+> "O tocador: uma fonte agendada por clipe". Ficam registradas porque a disputa
+> pelo elemento continua valendo pra imagem (`videoOwners`), e porque a razão de
+> o modelo ter caído está aqui dentro: a última frase desta seção já apontava
+> pro `OfflineAudioContext` do export como o jeito certo de tocar clipes
+> sobrepostos. Era o jeito certo de tocar clipes, ponto.
+
+O sintoma: depois de cortar uma música com Ctrl+B, a **primeira** metade tocava
+muda. Cortar de novo, e a penúltima metade também. Nada na timeline parecia
+errado.
+
+A causa está no `splitLayer`: ele copia a layer com spread, e `audio` é uma
+referência a um elemento do DOM — as duas metades ficam apontando pro **mesmo**
+`<audio>`. O acervo faz o mesmo ao reaproveitar um arquivo, e a restauração de
+um projeto salvo também (um elemento por `mediaId`, não por layer). O
+`syncSoundLayers` então percorria as duas e deixava as duas escreverem no
+elemento: a metade ativa mandava `play()`, a inativa mandava `pause()`, e a que
+vinha depois no array ganhava. Como a segunda metade é sempre a de trás, ela
+calava a primeira durante todo o trecho dela.
+
+A correção (`ownersByMedia`) elege **uma layer por arquivo** a cada instante,
+antes de qualquer escrita: quem está em uso ganha; entre dois em uso, o último
+da lista, que é o que está por cima. Sem ninguém em uso sobra o primeiro, cujo
+plano é justamente parar o elemento — senão ele rolaria pra sempre depois do
+último clipe.
+
+A mesma disputa existia na **imagem**, com sintoma diferente: o clipe congelava
+logo depois de um corte, porque a metade inativa pausava o `<video>` que a ativa
+tinha soltado. E no pré-render, dois clipes sobrepostos do mesmo arquivo mandavam
+o elemento pra dois instantes e esperavam os dois seeks — resolvia com o quadro
+de um dos dois, sem dizer qual. Por isso o eleitor é genérico e vive em
+`mediaOwner.ts`: só o critério de "em uso" muda entre `soundOwners` (estar
+soando) e `videoOwners` (estar no ar). Três cópias divergiriam, e o modo de
+divergir é ficar mudo ou piscando.
+
+Fica um limite honesto: dois clipes do mesmo arquivo **sobrepostos** tocam só
+um. Um elemento tem um cursor só; não é escolha, é o que ele é. É exatamente
+por isso que o export não usa elementos, e sim um `OfflineAudioContext` com uma
+fonte própria por clipe.
+
+### Deriva: por velocidade, como no vídeo
+
+Aqui a explicação anterior estava errada, e o erro custou os estalos.
+
+O argumento era: o vídeo corrige por `playbackRate`, mas em áudio isso mudaria o
+**tom**, e meio semitom de desafinação é mais audível que um quadro repetido é
+visível. Logo, som corrigiria por seek, com tolerância folgada de 150ms.
+
+A premissa não vale há anos: `preservesPitch` é o padrão dos navegadores, então
+`playbackRate` muda o **andamento** sem mexer no tom. E os dois lados da conta
+estavam ruins:
+
+- Um seek num elemento que está tocando é um corte no som **toda vez**. Pior, a
+  correção nascia atrasada da própria latência do seek — o que a fazia se
+  repetir. Eram os estalos.
+- 150ms de som atrasado passa longe do limiar em que se percebe o desencontro
+  com a imagem: ~45ms (ITU-R BT.1359). A tolerância folgada não era prudência,
+  era o desencontro sendo tolerado por construção — inclusive o atraso de
+  partida do `play()`, que é justo dessa ordem e nunca chegava a ser corrigido.
+
+Hoje o som corrige como o vídeo: `playbackRate` com teto de ±4% (inaudível com o
+tom preservado), acima de 45ms de deriva. `preservesPitch = true` fica explícito
+nos dois lados — é o que separa "4% mais rápido" de "dois semitons acima", e um
+padrão que se assume calado é um padrão que muda sem ninguém perceber.
+
+Seek continua existindo, mas só acima de 400ms, onde não é mais deriva e sim
+evento: o loop voltou ao início, você arrastou o cursor durante a reprodução, o
+decoder engasgou. Aí o corte no som é o mal menor.
+
+**Isto foi depois superado, e vale saber em que sentido.** Corrigir o som pra
+alcançar o relógio do rAF era disciplinar o relógio bom pelo ruim, e a conta
+acima só escolhia o *mecanismo* menos ruim de fazer isso. Hoje o som é o
+relógio-mestre: a trilha condutora não é corrigida por nada, e as demais seguem
+ela. O que está descrito aqui continua valendo para as trilhas que **não** estão
+conduzindo — ver "O som virou o relógio-mestre".
 
 Uma armadilha que só apareceu testando: tocando **do cache**, `handlePlay`
 pausava os `<video>` — eles não pintavam nada, então deixá-los rodando só
@@ -319,6 +748,282 @@ arquivo soaria diferente do preview.
 O PCM sai em `f32-planar` (canais em sequência, não intercalados). Trocar os
 dois formatos produz um arquivo que toca, com os canais embaralhados — o tipo de
 erro que só se percebe ouvindo.
+
+**O som cobre a grade de quadros, não `from..to`.** O vídeo não começa em
+`from`: começa no quadro da grade mais próximo, e o último quadro dura mais
+1/fps depois de `to`. Mixar no intervalo cru punha as duas trilhas em origens
+diferentes — até meio quadro de desencontro sempre que o IN foi marcado no
+cursor, que quase nunca cai na grade porque `player.t` vem do rAF — e deixava o
+último quadro sem som.
+
+**A barra de progresso nasce antes da mixagem.** `exportStatus.begin()` e
+`activeToken` ficavam depois dela, e a mixagem é justamente a fase que decodifica
+os arquivos inteiros: pelo trecho mais demorado do export a aba ficava parada,
+sem barra e com o PARAR inerte. Quem exportava uma música de três minutos passava
+esse tempo sem saber se tinha travado. O laço de áudio também ganhou o mesmo
+freio de fila do laço de vídeo — sem ele, três minutos viravam ~2100 blocos de
+PCM empilhados de uma vez, síncronos, sem nada devolver a vez ao navegador.
+
+**Faixa que não decodifica agora avisa.** O `failed` do `renderAudio` era
+calculado e descartado: uma trilha que este navegador não abre sumia do arquivo
+em silêncio, e você descobria assistindo o resultado.
+
+### AAC não existe em toda build — e falhar nele não parece falhar nele
+
+O sintoma era `AudioEncoder.encode: Encoder must be configured first`, depois de
+a mixagem inteira já ter rodado. A mensagem não menciona codec nenhum, e o
+`configure()` logo acima não tinha lançado nada.
+
+A causa: **AAC é proprietário e o encoder não vem em toda build de Chromium** —
+no Linux, com frequência não vem. Medido neste navegador:
+`AudioEncoder.isConfigSupported('mp4a.40.2')` → `false`, `'opus'` → `true`. E
+`configure()` de um codec ausente **não lança**: ele derruba o encoder em
+silêncio pelo callback de erro, e quem reclama é o `encode()` seguinte — com uma
+mensagem sobre configuração, não sobre suporte.
+
+A correção é a que o vídeo já usava: uma lista de candidatos e uma pergunta
+antes (`isConfigSupported`), não um `configure()` na esperança.
+`AUDIO_CODEC_CANDIDATES` tenta AAC e cai pra **Opus**, que é livre, está em todo
+lugar e o MP4 aceita. O codec escolhido é decidido **antes do muxer**, porque é
+ele que nomeia a trilha na construção — declarar uma trilha e não ter encoder
+pra preenchê-la deixa o arquivo com uma faixa vazia.
+
+Sem nenhum dos dois, o export segue sem som e diz isso (`audioSkipped`), em vez
+de morrer levando o vídeo junto. E o rótulo do resultado leva os dois codecs
+("H.264 High + Opus"): o arquivo continua abrindo em todo lugar, mas é bom você
+saber que caiu pra reserva.
+
+## Zoom e rolagem na timeline
+
+A régua espremia o projeto inteiro na largura da janela, sempre. Num projeto de
+60s um clipe de 2s virava **93 pixels** — largo demais pra mirar a alça de trim,
+estreito demais pra ler o nome. Era a parede entre o editor e "montar um Reels
+de 60s".
+
+O que fez isso ficar barato foi o modelo de coordenadas. A alternativa óbvia —
+reposicionar cada clipe em pixels quando o zoom muda — obrigaria a recalcular a
+timeline inteira a cada passo. Em vez disso a timeline ganhou um elemento de
+conteúdo de `duration × pxPerSecond` pixels, e **clipes, marcas e cursor
+continuam posicionados em porcentagem dele**, exatamente como antes. Dar zoom é
+mudar uma largura; a porcentagem de cada clipe nunca muda. É o mesmo truque do
+palco, onde o zoom é uma `transform` só.
+
+### A régua não mede a duração do projeto
+
+Aqui esteve escrito que nenhuma conta de scrub, trim ou arrasto precisou mudar,
+porque todas mediam o elemento com `getBoundingClientRect` e ele cresce junto.
+Medir o elemento estava certo; **dividir pela duração do projeto, não.**
+
+A régua não vale `player.duration` segundos. `rulerDuration` acrescenta uma
+sobra de 1 a 5s depois do último clipe, pra existir onde soltar um clipe no fim.
+Então o elemento vale `rulerSpan` segundos, e as três contas faziam
+`(dx / largura) × duration` — o gesto saía encolhido pelo fator entre as duas
+durações. Num projeto de 2s o cursor andava 67% do que o mouse andou; num de 1s,
+metade. O sintoma era o cursor e as alças "não obedecerem ao mouse": você
+arrastava muito, o clipe encurtava pouco.
+
+A correção tira a duração da conta em vez de trocar por qual. `pxPerSecond` é o
+número que gerou a largura do conteúdo, então é ele que converte de volta:
+
+```
+scrub   →  timelineView.timeAt(x - rulerLeft)
+trim    →  dx / timelineView.pxPerSecond
+arrasto →  dx / timelineView.pxPerSecond
+```
+
+Sem divisão por duração nenhuma, escolher a duração errada deixa de ser
+possível. A lição é a do próprio parágrafo apagado: "o elemento cresce junto" só
+vale se a escala com que você o lê for a mesma com que ele foi desenhado.
+
+A rolagem é a nativa do navegador (`overflow-x`), não uma reimplementação:
+`scrollLeft` é escrita direta no DOM, então rolar custa **zero re-render**. O
+zoom, esse sim, re-renderiza — mas é ação discreta (um clique, um passo de roda),
+e é ele que redistribui as marcas da régua.
+
+Três detalhes que só apareceram rodando o app de verdade:
+
+- **A roda vertical não rolava nada.** O navegador só rola um contêiner
+  horizontal sozinho com `deltaX` — trackpad de dois dedos ou Shift+roda. Um
+  mouse comum ficava sem saída, então a roda passou a ser tratada aqui.
+- **A barra de rolagem é de sobreposição** e some quando você não está rolando —
+  some justamente no estado em que ela seria a única coisa dizendo "tem mais
+  projeto pra esse lado". Nem `scrollbar-color` nem `::-webkit-scrollbar`
+  reservam espaço no Chromium testado. A afordância virou o rótulo do trecho
+  visível (`18.6–27.7s`), que de quebra diz *onde* você está — coisa que a barra
+  nunca disse.
+- **O rótulo da última marca vazava** pra fora do conteúdo e criava ~28px de
+  rolagem fantasma: a timeline "cabendo inteira" e mesmo assim rolando um
+  pouco. Perto do fim o rótulo agora vira pra dentro.
+
+O passo das marcas sai do **zoom**, não da duração — é quanto espaço um rótulo
+tem na tela que decide se ele cabe. Sai de uma escada fixa (`0.1, 0.25, 0.5, 1,
+2, 5, 10, 15, 30, 60, 120, 300`): passos de 0,3s ou 7s são tão legíveis quanto
+um relógio quebrado.
+
+Durante a reprodução a vista segue o cursor **por página**, não continuamente:
+seguir pixel a pixel deixa a timeline inteira deslizando debaixo do olho, e aí
+não dá pra ler nem mirar nada enquanto toca. Quando o cursor sai, ele reaparece
+na outra ponta com uma página inteira pela frente. Só tocando — enquanto você
+arrasta o cursor, quem manda na vista é você.
+
+| Ação | Atalho |
+|---|---|
+| Zoom no cursor | `Ctrl` + roda sobre a timeline |
+| Zoom in / out | botões `−` / `+` |
+| Mostrar o projeto inteiro | botão `TUDO` |
+| Rolar | roda, ou arrastar a barra |
+
+## Copiar, recortar, colar
+
+A área de transferência é **própria**, não a do sistema. Uma layer não é texto:
+ela carrega efeitos e uma referência ao elemento de mídia. Passar pelo clipboard
+do sistema significaria serializar e reanexar a mídia na volta, e colar num
+projeto que não tem aquele arquivo daria uma layer quebrada.
+
+Colar cai no **cursor**, não onde o original estava — colar é um jeito de dizer
+"quero isto aqui". A parte que precisa de regra é a faixa: ela não aceita
+sobreposição, então o lugar pedido pode simplesmente não caber. `pasteSlot`
+procura de baixo pra cima a partir da faixa de origem (pra que colar perto
+mantenha a camada) e abre uma faixa nova no topo se nenhuma servir. Recusar
+seria a pior resposta possível — a pessoa acabou de mandar colar.
+
+Os efeitos são clonados **na cópia e na colagem**: colar duas vezes não pode
+produzir duas layers que dividem a mesma lista de efeitos.
+
+| Ação | Atalho |
+|---|---|
+| Copiar / recortar / colar | `Ctrl` `C` / `X` / `V` |
+| Duplicar | `Ctrl` `D` |
+| Cortar no cursor | `Ctrl` `B` |
+| Apagar | `Delete` |
+
+## Gizmo no palco
+
+Ninguém posiciona um título digitando coordenada. Arrastar move, as quinas
+escalam, a alça de cima gira (com `Shift` prendendo de 15 em 15).
+
+**A decisão que dispensou toda conta de zoom:** o gizmo mora *dentro* da
+`.stage-holder`, junto do canvas. O holder já carrega a `transform` do viewport,
+então basta escrever tudo em pixels **lógicos da composição** — os mesmos do
+`drawFrame` — e o navegador põe no lugar. A única coisa que precisa desfazer o
+zoom são as alças em si, porque uma alça de 11px viraria 2px a 25%, e isso é uma
+variável CSS (`--unzoom`).
+
+A matemática toda vive em `gizmo.ts`, pura e testável sem DOM: a caixa da layer,
+a conversão pro referencial dela, o acerto, o fator de escala e o delta de
+rotação. Três detalhes que valem registro:
+
+- **A caixa tem que sair da mesma conta do desenho.** `layerBox` repete a
+  entrelinha do `drawText` e o `Math.min` do `drawSource` de propósito — duas
+  contas em lugares diferentes é exatamente o que faria a moldura não coincidir
+  com o que está na tela.
+- **Escalar mede distância ao centro, não projeção num eixo.** Numa layer
+  girada, "pra fora" não é nem horizontal nem vertical. E é uniforme porque o
+  modelo tem um tamanho só (`size` no texto, `fit` na mídia): inventar largura e
+  altura separadas aqui criaria um estado que o renderer não sabe desenhar.
+- **Girar precisou de um campo novo.** `rotate` só existia como prop de efeito;
+  o gizmo não teria onde escrever. Virou campo de base da layer, somado ao dos
+  efeitos — `rotate` é aditiva, então "deitado 15°" mais "balança ±3°" dá o que
+  se espera.
+
+### Escalar segue o eixo que a mão andou
+
+A escala é uniforme (o modelo tem um tamanho só), então a quina **não pode**
+seguir o cursor nos dois eixos: encolher a largura encolhe a altura junto, e a
+quina sobe mesmo que a mão só tenha ido pra esquerda. Ela segue **um** eixo — o
+que você de fato moveu.
+
+Duas versões anteriores, e por que não bastavam. **Distância ao centro:** puxar
+200px na horizontal mal muda a hipotenusa, e a quina andava 106px — o cursor
+descolava e o arrasto parecia travado. **Projeção no raio:** minimiza a
+distância entre quina e ponteiro, o que é ótimo no papel e ainda deixava 71px de
+erro no eixo que a pessoa está olhando. Com o eixo dominante, medido: **1px** de
+erro em arrasto horizontal, vertical e diagonal.
+
+A conta roda no referencial da layer, não da tela — numa layer deitada, "o eixo
+em que a mão andou" é o eixo dela.
+
+### O bug que só apareceu rodando
+
+Mover o título pra direita e depois tentar escalá-lo não fazia nada. A alça
+existia, respondia a `elementFromPoint`, e o handler até calculava o fator
+certo — mas com a layer deslocada a quina caía em x=1107 numa janela de palco
+que termina em 1075, e o `overflow: hidden` do viewport a recortava.
+
+A causa real era o fit: ele deixava 24px fixos de folga, então o canvas
+praticamente encostava nas bordas e **qualquer** conteúdo posicionado meio pra
+fora da composição ficava inalcançável. A margem virou fração do contêiner
+(`FIT_MARGIN`), o que dá área clicável em volta do canvas — e o que sobrar disso
+se alcança com zoom, que já tem atalho.
+
+## Legibilidade do texto: contorno e sombra
+
+Título claro sobre imagem clara simplesmente some, e é o caso mais comum de
+todos — legenda por cima de footage. Duas saídas clássicas, que servem a
+situações diferentes: o contorno segura sobre fundo agitado, a sombra é mais
+discreta sobre fundo liso.
+
+Ficam **fora do vocabulário de efeitos** de propósito: `prop` é fechado e mapeia
+pra CSS/canvas, e isto é aparência fixa da layer, não algo que anima. Nascem
+zerados — texto que já se lê não precisa deles, e ligá-los por padrão mudaria a
+cara de todo projeto existente. O botão `LEGÍVEL` vem antes dos números porque a
+resposta certa é quase sempre a mesma (contorno escuro grosso, proporcional ao
+corpo), e ninguém quer descobrir isso ajustando dois campos.
+
+O desenho é em três passadas, e a ordem é o que faz o resultado ficar legível:
+a **sombra** primeiro, projetada sobre a silhueta mais externa (o contorno, se
+houver) pra que ela siga a forma final em vez de escapar por baixo; depois o
+**contorno**, sem sombra — senão cada passada projetaria a sua e as duas
+engrossariam num borrão; por fim o **preenchimento**. O contorno vai com
+`lineWidth` dobrado, porque `strokeText` centra o traço na borda do glifo e
+metade cai dentro da letra, e com `lineJoin: 'round'`, senão os vértices agudos
+de uma fonte pesada disparam farpas mais longas que a espessura pedida.
+
+### A armadilha: sombra de canvas não é afetada pela transformação
+
+`lineWidth` está em coordenadas do usuário, então o contorno acompanha o zoom
+sozinho. `shadowBlur` e `shadowOffsetY`, **não** — estão em pixels de tela, e o
+preview desenha numa fração da resolução do export (ver "resolução física ≠
+exibida"). A mesma sombra sairia várias vezes maior no preview do que no
+arquivo, quebrando a promessa "Preview = Export" no lugar mais difícil de
+notar: você ajusta a sombra vendo uma coisa e entrega outra.
+
+Por isso `drawText` recebe um `shadowScale` — a escala do canvas vezes a da
+própria layer — e multiplica os dois valores. Medido no navegador, comparando a
+mesma composição em canvas de 934×526 e de 330×186 (2,8× de diferença), pela
+fração da tela que a sombra ocupa:
+
+| | desvio entre as duas resoluções |
+|---|---|
+| sem escalar (controle) | **64,2%** — e a sombra cresce quando a resolução cai, como previsto |
+| escalando | **10,9%** — resíduo de limiar num gradiente suave |
+
+## Duração: derivada, não digitada
+
+Era um campo que você preenchia, com dois defeitos que se somavam. Clipe que
+passasse do número ficava **fora do export sem nada avisar** — você montava 12s,
+o campo dizia 8, o arquivo saía cortado. E o número não era serializado, então
+reabrir um projeto de 60s o devolvia com 8 e encolhia a régua inteira.
+
+Agora `projectDuration` devolve onde termina o último clipe, e um efeito só no
+`App` mantém o relógio em dia. Um efeito, e não uma chamada em cada lugar que
+mexe em layer: edição, undo, importação, arrasto e restauração do disco passam
+todos por ele, e o que esquecesse produziria de volta exatamente o bug.
+
+**A parte não óbvia: derivar sozinho trava o projeto.** O arrasto prende o clipe
+dentro da duração, e a duração passou a vir dos clipes — circular, e o projeto
+nunca mais poderia crescer. (Foi o que o primeiro teste no navegador mostrou:
+arrastar o último clipe pra frente não mexia em nada.)
+
+A saída foi separar duas medidas que estavam conflatadas:
+
+- **duração** = o conteúdo. Quem **executa** usa esta: export, loop, limite do
+  scrub.
+- **régua** = conteúdo + uma pista de sobra. Quem **desenha** usa esta: clipes,
+  marcas, cursor, zoom.
+
+A pista é proporcional (15%, entre 1s e 5s). Fixa em 5s ela sufocava projeto
+curto — num de 8s seriam 38% da régua em vazio — e sumia em projeto longo.
 
 ## Navegar quadro a quadro
 
@@ -375,6 +1080,41 @@ funcionar:
   a cauda sairia da timeline.
 - **Entre faixas**, discreto: `Math.round(dy / altura da faixa)`. O clipe encaixa
   visivelmente numa faixa em vez de flutuar entre duas.
+
+### Magnetismo: encostar não dava pra fazer a olho
+
+Um clipe arrastado até o fim do vizinho pousa em 1,997 ou 2,003. A diferença é
+**um pixel** na tela, e ninguém mira melhor que isso. O buraco de 3ms não
+aparece na timeline — aparece no export, como um piscar preto no meio do corte.
+
+O ímã (`magnet.ts`) resolve, e três decisões o sustentam:
+
+- **O raio é em pixels, não em segundos.** Oito. Em segundos, ele pareceria
+  fraco com zoom fechado (0,1s pode ser meio pixel) e agarraria tudo com zoom
+  aberto. Em pixels tem sempre a mesma força na **mão**, que é onde é percebido
+  — e por isso parece certo em qualquer zoom sem ninguém recalibrar nada.
+- **As duas bordas atraem.** Encostar é levar o *fim* do clipe ao começo do
+  outro; alinhar dois começos é o *início*. Testar só o início faria o ímã
+  falhar justamente no gesto mais comum da edição.
+- **O resultado é arredondado ao milissegundo**, e isso não é cosmético. É o que
+  faz o fim cair exatamente no início do vizinho e, portanto, o que faz
+  `overlaps` responder "encostou" em vez de "invadiu" — ver "Encostar não é
+  invadir". Um ímã que produzisse `2.0000000000000004` brigaria com a detecção
+  de colisão e o clipe seria **recusado no ponto em que o usuário mirou**.
+
+Atrai as bordas de todos os clipes — não só as do mesmo tipo, porque encostar um
+título no corte do vídeo de baixo é tão comum quanto emendar dois clipes da
+mesma faixa —, mais o playhead e o zero. Vale no arrasto e no **trim**, que é
+onde ele mais paga.
+
+**Alt desliga**, e é lido a cada movimento, não no início do gesto: você arrasta
+grudando, percebe que precisa de um lugar exato entre duas bordas, e solta o ímã
+sem largar o clipe.
+
+A guia tracejada existe porque um clipe que salta sozinho, sem marca nenhuma na
+tela, parece defeito. Fica **abaixo** do playhead no empilhamento: quando os
+dois coincidem — e encostar no cursor é um gesto comum —, quem tem que aparecer
+é o cursor.
 
 **Nada é aplicado durante o arrasto.** O clipe segue o ponteiro por `transform`
 escrito direto no DOM e a faixa de destino acende — o gesto inteiro custa zero
@@ -465,6 +1205,95 @@ o `src` revogado voltaria preto. O que sobra é descartado ao **reabrir** (aí n
 existe mais histórico que alcance a layer) e em ✧ NOVO. Sem essa limpeza, o
 editor decodificaria vídeos que ninguém usa a cada abertura.
 
+### O projeto ilegível era apagado 600ms depois de abrir
+
+O pior defeito que este editor teve, e ele era silencioso.
+
+Se o restore falhava — formato do futuro, migração com defeito, qualquer exceção
+ao ler uma layer —, o editor caía no projeto de exemplo e avisava. Até aí,
+certo. Mas o autosave era liberado do mesmo jeito, e 600ms depois o **exemplo era
+gravado por cima do trabalho guardado**. Os bytes sumiam, e não havia nem como
+tentar de novo.
+
+A trava do autosave durante a restauração existia exatamente pra impedir isso,
+mas cobria só o caminho feliz. O caminho que importa é o outro: o motivo de um
+restore falhar costuma ser um defeito *nosso*, e quem paga é a edição de quem
+estava usando.
+
+Hoje um restore que falha **trava a gravação**. O editor abre, mostra o que
+conseguir, e não escreve nada. Sai por decisão explícita — ✧ NOVO descarta, que
+é o único gesto que significa "pode escrever por cima". E o aviso fica na barra,
+permanente e pulsando, não como toast: é o único estado do editor em que
+continuar trabalhando custa o trabalho, e um aviso que some deixaria você editar
+uma hora achando que está salvando.
+
+### O arquivo `.frag`
+
+O autosave mora no IndexedDB da aba: some se você limpar os dados do site, não
+atravessa pra outra máquina, não entra num backup. O `.frag` é o contrário — é
+um arquivo, e você decide onde ele fica.
+
+**Não é um segundo formato.** É exatamente o que a serialização já produz, com
+um cabeçalho a mais (`app`, `appFormat`, `savedAt`), então não existe "converter
+pra exportar" e portanto não existe divergir: um `.frag` pode ser colado direto
+no IndexedDB e vice-versa. Dois formatos que se parecem são dois formatos que um
+dia discordam.
+
+É indentado, e as chaves saem na ordem em que a serialização as constrói. Três
+coisas vêm daí de graça:
+
+- dá pra **ler** e entender o projeto sem abrir o editor;
+- dá pra **colar num chat** e pedir pra uma IA explicar ou consertar;
+- dá pra **versionar em git**, e o `git diff` entre dois `.frag` mostra o que
+  mudou na edição.
+
+**Não carrega os bytes da mídia**, pelo mesmo motivo que o armazenamento não
+carrega: base64 incha 33% e um vídeo de 50 MB vira uma string que trava a aba.
+Ele guarda a *edição*, como um `.fcpxml` — o acervo descreve os arquivos por id,
+nome, tipo e duração.
+
+Por isso **abrir um `.frag` pede o material que falta antes de montar o
+projeto**, e a ordem é o conserto inteiro. A desserialização descarta a layer
+cuja mídia não resolve; abrindo primeiro e religando depois, os clipes já teriam
+sido jogados fora, e você reencontraria o arquivo pra continuar sem a edição —
+o formato perdendo o trabalho exatamente no seu caso principal, que é levar o
+projeto pra outro lugar. Resolvendo antes, todas as layers resolvem e nada se
+perde. O arquivo localizado é guardado sob o **mesmo `mediaId`**, que é o que
+faz as layers reencontrarem o material sem saber que ele veio de outro lugar.
+
+Seguir sem localizar continua possível, mas como **escolha** ("abrir mesmo
+assim", avisando que os clipes serão descartados), não como perda silenciosa.
+
+Migrar continua sendo trabalho de **código**, não de adivinhação. `format` diz o
+dialeto e as migrações vivem em `serialize.ts`, testadas. Uma IA ajuda a
+escrever a migração quando o formato muda; ela não deve *ser* a migração, senão
+duas aberturas do mesmo arquivo podem dar projetos diferentes.
+
+### Histórico de versões
+
+O autosave era uma cópia só. Hoje guarda as últimas 20, uma a cada **dois
+minutos** de trabalho — espaçadas de propósito: o autosave dispara a cada 600ms
+de pausa, e guardar todas encheria o histórico com o mesmo minuto, empurrando
+pra fora justamente as versões antigas. Espaçando, 20 versões cobrem ~40 minutos.
+
+Isto cobre o que o undo não cobre. O undo vive na memória da aba e morre com
+ela, e não protege do caso que assusta de verdade: você não desfez nada errado —
+o **editor** fez.
+
+**Voltar pra uma versão guarda o estado atual antes de trocar.** Sem isso, o
+próprio recurso de recuperação seria uma forma nova de perder trabalho.
+
+Duas armadilhas que o código evita de propósito:
+
+- **Abrir um `.frag` não poda a mídia órfã.** Reabrir do disco poda, porque ali
+  não existe mais histórico que alcance as layers; um arquivo é outra coisa —
+  ele pode ser antigo e não citar a mídia que você acabou de importar, e podar
+  por ele apagaria os arquivos de alguém que só queria olhar uma versão anterior.
+- **✧ NOVO apaga o histórico junto**, e o aviso diz isso com o número de
+  versões. Ele apaga toda a mídia, então versões antigas voltariam sem vídeo e
+  sem áudio — manter uma lista que não abre direito seria promessa falsa
+  justamente onde a pessoa vai procurar socorro.
+
 ## Performance do preview
 
 O sintoma: dar play travava, mesmo num projeto simples, principalmente em
@@ -491,8 +1320,10 @@ A correção, em `viewport.ts` + `renderer.ts` + `Stage.tsx`:
   que nenhuma layer precise saber disso. Preview e export continuam usando a
   mesma função com o mesmo resultado proporcional.
 - **Fast preview**: desfoque é ignorado durante reprodução ativa e volta assim
-  que você pausa. O botão **⚡ FAST** força esse modo o tempo todo, e também
-  desliga a preparação automática do play (veja abaixo).
+  que você pausa — e só isso, sem interruptor manual. Com o vídeo parado o
+  quadro é sempre exato, porque é aí que você inspeciona o que editou. Quando
+  reproduzir sair mais caro que isso, a saída é preparar o trecho antes
+  (**⚙ AUTO PRÉ-RENDER**, veja abaixo), não desenhar pior.
 
 A qualidade de reamostragem (`imageSmoothingQuality`) é sempre `high`. Chegou
 a ser reduzida durante a reprodução, mas o ganho nunca foi medido e a
@@ -524,6 +1355,35 @@ barra precisa decidir se aparece; pendurar isso no `onFrame` faria o
 indicador nunca surgir.
 
 ## Cache automático: navegar é de graça
+
+> **Desligado no momento** (`PREVIEW_CACHE_ENABLED`, em `engine/frameSource.ts`),
+> enquanto o motor de vídeo é estabilizado. O preview desenha sempre ao vivo,
+> do decodificador. Ligar de volta é trocar um `false` por `true`; nada foi
+> removido, e as regras abaixo continuam valendo e testadas.
+>
+> Duas razões. A primeira é de método: enquanto o preview puder mostrar pixel
+> vindo do cache, olhar a tela não diz nada sobre o decodificador — quadro
+> guardado esconde defeito, e quadro guardado errado se parece com defeito.
+> A segunda é um bug de verdade, e está descrito logo abaixo.
+
+### `degraded` quer dizer duas coisas, e uma delas não devia ser servida
+
+`drawFrame` marca um quadro como `degraded` por dois motivos que não têm
+relação:
+
+- o **desfoque foi pulado** — aproximação cosmética, ótima durante a reprodução;
+- **`drawVideo` devolveu `false`** porque o quadro do vídeo não chegou — e aí o
+  que foi guardado é uma composição **sem o clipe dentro**.
+
+Os dois viram a mesma etiqueta, e `allowDegraded` é `player.playing`. Ou seja: o
+quadro sem vídeo é aceito de volta justamente **reproduzindo**. Como a hora em
+que o quadro costuma não estar pronto é a troca de clipe, o sintoma era uma
+piscada leve sempre na emenda — com o pré-render ligado, sempre no mesmo lugar.
+
+O conserto é separar "aproximado" de "incompleto" em duas etiquetas e nunca
+servir a segunda: um quadro sem o vídeo não é uma versão simplificada do quadro,
+é outro quadro. Fica pra depois do motor de vídeo estar de pé — duas correções
+de fundação ao mesmo tempo já custaram uma sessão inteira aqui.
 
 A regra que guia tudo: **navegar não é editar.** Clicar no começo, no meio ou
 no fim de um trecho não muda nenhum pixel — muda só qual pixel você está
@@ -559,13 +1419,18 @@ que passe por cima dele — mas o contrário promove.
 
 ## Play liso: preparar antes em vez de engasgar durante
 
-A regra: **esperar é aceitável, reproduzir tremendo não é.**
+Duas reproduções diferentes, escolhidas por **⚙ AUTO PRÉ-RENDER**:
 
-Ao dar play, se o trecho ainda não estiver inteiro no cache em qualidade
-cheia, o editor prepara primeiro (com barra de progresso, cancelável) e só
-então reproduz — a partir daí, direto do cache, sem decoder no caminho.
+- **Desligado (o padrão)**: toca na hora, ao vivo. O cache vai se enchendo
+  sozinho com o que passar na tela, então voltar num trecho que você acabou de
+  assistir já é de graça.
+- **Ligado**: se o trecho ainda não estiver inteiro no cache em qualidade
+  cheia, o editor prepara primeiro (com barra de progresso, cancelável) e só
+  então reproduz — a partir daí, direto do cache, sem decoder no caminho.
 
-`⚡ FAST` é a saída pro oposto: reproduz na hora, aceitando qualidade menor.
+O padrão inverteu depois de uso real. Esperar um pré-render era o preço cobrado
+de **toda** edição, inclusive das dezenas em que a pergunta é só "o clipe entra
+na hora certa?" — caro demais pra ser o comportamento padrão de apertar play.
 
 ### Tudo se alinha na taxa de quadros do projeto
 
@@ -597,6 +1462,184 @@ de volta pra disputar o elemento.
 A trava (`claimVideoElements` / `releaseVideoElements`) fica dentro do
 `videoSync.ts`, **não em quem chama** — assim um chamador novo não
 reintroduz o problema por esquecimento.
+
+## O preview mostra o que o arquivo vai ter
+
+O sintoma que abriu esta fase, e que nenhuma das explicações anteriores cobria:
+**cada play saía diferente do anterior sem ninguém ter editado nada.** Som
+parando antes, clipe cortando antes, e nunca no mesmo lugar. Não dava pra
+montar um corte no ritmo porque não dava pra confiar que aquilo se repetiria.
+
+Não era tolerância mal calibrada. Eram três coisas, e a primeira é a raiz.
+
+### O relógio andava em tempo de parede
+
+`player.t` acumulava o `dt` do `requestAnimationFrame` (`t += dt`), e o
+arredondamento pra grade de quadros só acontecia lá na frente, na hora de
+indexar o cache. Ou seja: o preview amostrava **onde o rAF calhasse de cair**,
+não a grade. O exportador, esse sim, percorre índices exatos (`first..last`).
+
+Os dois nunca olharam pros mesmos instantes, e o desencontro mudava a cada
+reprodução porque depende do escalonamento do navegador:
+
+- Um engasgo de decoder de 100ms fazia `t` saltar 100ms de uma vez. A 30fps são
+  três quadros que aquela reprodução simplesmente não teve.
+- A fronteira de um corte é um instante exato. Com o rAF entregando 4,98 e
+  depois 5,01, o quadro de t=5,000 — que o export produz — nunca ia pra tela.
+  Era o "cortou antes" que não se conseguia reproduzir duas vezes igual.
+- O `dt` é limitado em 0,25s (contra o salto de voltar pra uma aba parada). Um
+  travamento maior descartava linha do tempo em silêncio, e o relógio ficava
+  atrás do mundo real — enquanto o `<audio>` seguia no relógio do hardware.
+
+Hoje o tempo decorrido é acumulado e convertido em **quadros inteiros**: `t` é
+sempre `quadro / fps`, jamais um valor entre dois quadros. A conta vive em
+`playbackClock.ts`, pura e testável, pelo mesmo motivo de `videoSyncPlan` viver
+fora do `videoSync` — errar um quadro aqui não se enxerga olhando a tela.
+
+Sob carga a reprodução **pula** quadros, que é o que qualquer editor faz e é
+honesto. O que ela não faz mais é inventar um instante intermediário. A
+propriedade, que os testes fixam:
+
+> **Todo instante que o preview mostra é um instante que o export renderiza.**
+> A reprodução pode mostrar menos quadros; nunca um quadro diferente.
+
+`seek` snapa pela mesma razão — o playhead só pousa em quadro que existe. Isso
+conserta de quebra um erro que o próprio exportador já documentava: marcar IN no
+cursor pegava um instante fora da grade, e o som saía até meio quadro deslocado
+da imagem.
+
+Medido no navegador, dando play duas vezes seguidas: **61 quadros distintos em
+2s a 30fps** (exatamente 2×30+1, nenhum pulado), **zero instantes fora da
+grade**, e as duas corridas produziram o **conjunto idêntico** de quadros.
+
+### O scrub pintava o quadro anterior, e nada corrigia depois
+
+O `seekVideoTo` do pré-render já documentava o perigo com todas as letras: o
+evento `seeked` às vezes dispara **antes** do `readyState` subir, e desenhar
+nessa janela pinta o frame anterior. O pré-render se protegia esperando
+`loadeddata`. O preview não tinha proteção nenhuma.
+
+O estrago era silencioso e permanente. Parado, aquele `seeked` era o **único**
+repaint agendado — se ele caísse na janela ruim, a tela ficava com o quadro
+errado e nada mais repintava. Você parava em cima de um corte e via o frame de
+antes dele, sem nenhum sinal de que era mentira. Para quem corta com precisão,
+era o pior caso possível.
+
+Duas correções, e a segunda é a que fecha o buraco de verdade:
+
+- Repintar nos **dois** eventos (`seeked` e `loadeddata`), não só no primeiro.
+- Parado, **só compor com o `<video>` que já pousou** (`videosParkedAt`).
+  Enquanto não pousou, segura o quadro anterior — a mesma saída que o furo de
+  cache já usava, e a barra de atividade explica a pausa.
+
+O teste é `seeking` + `readyState`, e **não** comparar `currentTime` com o
+instante pedido. Essa comparação parece mais rigorosa e é uma armadilha: o
+navegador pousa no quadro decodificável mais próximo, não no valor exato, então
+pedir 5,000 num arquivo a 29,97fps deixa o `currentTime` em 4,9967 pra sempre.
+Como condição de repintar, nunca se satisfaria e a tela congelaria de vez.
+
+Arquivo que falhou de vez é a exceção: não vem quadro nenhum, nunca, e esperar
+por ele deixaria o palco em branco pra sempre — inclusive os títulos, que não
+têm nada a ver com o vídeo quebrado. Elemento com `error` é composto sem espera.
+
+### O som é o relógio-mestre
+
+Havia dois relógios na reprodução. O do rAF, que o navegador atrasa a cada
+coleta de lixo, engasgo de decoder ou aba em segundo plano. E o do som, que
+corre no relógio do **hardware** e é o mais estável da plataforma.
+
+O editor corrigia o segundo pra alcançar o primeiro — disciplinava o relógio bom
+pelo ruim. O preço aparecia como som cortado em lugar diferente a cada
+reprodução. Invertido, o problema deixa de existir em vez de ser tolerado: a
+linha do tempo anda **o tanto que o som de fato andou**, e a imagem segue o som.
+
+Dois detalhes fazem a inversão funcionar:
+
+- **`player.ts` não conhece áudio, e não deve.** Ele recebe uma função
+  (`setTimeSource`) que devolve a posição na linha do tempo. Quem sabe responder
+  isso é o `soundEngine`, e é lá que a regra vive.
+- **Usa-se o delta entre duas leituras, nunca a posição absoluta.** A posição
+  absoluta obrigaria a acertar o instante em que o som chega ao alto-falante e
+  daria um salto toda vez que a fonte do tempo mudasse. O delta só diz "saiu
+  tanto de som desde o último quadro", que é exatamente o que a linha do tempo
+  precisa andar.
+
+### Mas o relógio não pode ser um `<video>`
+
+A primeira versão lia o `currentTime` do elemento que estava tocando. Funciona
+num clipe só e desmorona num **remix** — várias fatias do mesmo arquivo em ordem
+trocada, que é justamente o que este editor existe pra fazer.
+
+Medido com um remix de seis fatias de 0,8s, amostrando a cada rAF:
+
+```
+remix mudo (relógio de rAF) .......... 99,2%   0 travas
+clipe inteiro com som (sem cortes) ... 98,7%
+remix com som (6 cortes) ............. 88,8%   2 travas (0,10s e 0,13s)
+```
+
+A perda não estava no encanamento: tick a tick, **zero** deltas descartados,
+quase nada de rAF. Era o próprio elemento andando 88,8% do tempo de parede.
+Cada corte é um `seek`, e um seek custa reprodução que o elemento nunca
+recupera. O controle sem cortes fecha o caso.
+
+E não adiantaria só tirá-lo do posto de relógio: o seek continuaria lá, e com
+ele o engasgo audível na emenda. **Um elemento de mídia buscado a cada corte não
+serve nem como fonte de som nem como fonte de tempo.**
+
+### O tocador: uma fonte agendada por clipe
+
+Cada clipe vira um `AudioBufferSourceNode` com `start(quando, offset, duração)`
+— o mesmo modelo que o export já usava em `renderAudio`. Não existe seek: o
+corte é um agendamento em amostra exata. O relógio passa a ser o `currentTime`
+do `AudioContext`.
+
+O ganho não é só de precisão. Preview e arquivo final passam a montar o som com
+a **mesma conta** (`mixPlan`), o que é bem mais forte que os dois soarem
+parecido.
+
+Três decisões que carregam o `soundSchedule.ts`:
+
+- **A âncora conta de quando o som fica audível**, somando `outputLatency`.
+  Ancorar no `currentTime` puro deixaria a imagem adiantada pela latência do
+  dispositivo em **todo** projeto — um desencontro constante que ninguém
+  consegue atribuir a nada olhando o editor.
+- **A agenda é uma fotografia, e a assinatura é a do projeto INTEIRO.** Um
+  `<audio>` reagia a cada tick; uma fonte já agendada não reage a nada, então
+  editar durante a reprodução precisa reagendar. A versão óbvia — assinar o
+  plano a partir do playhead — está errada de um jeito silencioso: `at`,
+  `offset` e `duration` dependem de `t`, a assinatura nunca se repete e a agenda
+  é refeita a cada quadro. Deu 171 reagendamentos em 6s, cada um um corte no
+  som, sem nenhum teste acusando (todos comparavam duas assinaturas no mesmo
+  `t`).
+- **O limiar de salto é 0,15s, não zero.** O playhead pousa na grade de quadros
+  e fica até 1/fps atrás da posição real — a 30fps, 33ms. Reagendar contra esse
+  resíduo seria recortar a trilha dezenas de vezes por segundo.
+
+Depois da troca: **99,2%**, o mesmo teto do projeto mudo, zero travas, e apenas
+dois reagendamentos em 6s — o início e a volta do laço, que são exatamente as
+duas descontinuidades que existem.
+
+Verificado pelo conteúdo, não pela entrega: o material de teste tem um bipe por
+segundo, cada um numa frequência (400 + 100n Hz), que é o análogo sonoro do
+número desenhado no quadro. Gravando a saída do tocador e lendo por DFT, saem
+800, 500, 1100, 600, 1300 e 400 Hz, espaçados de 0,80s ±0,01 — exatamente o
+remix `[4, 1, 7, 2, 9, 0]`. É pra isso que o tocador expõe uma **saída única**
+(`output()`): sem um nó onde ligar o gravador, o som do preview não é
+observável de lugar nenhum.
+
+### O que continua não sendo exato, e por quê
+
+Reprodução ao vivo a partir de elementos `<video>` **não tem como ser
+exata**: o elemento roda no relógio do pipeline de mídia, e a imagem que ele
+carrega num instante qualquer é a que ele carrega. Por isso o quadro capturado
+durante a reprodução ao vivo continua entrando no cache como `degraded`, e o
+pré-render o regera com o seek exato.
+
+O que mudou é que agora isso é o **único** resíduo, e ele está confinado à
+reprodução ao vivo. Parado — que é onde se corta — o quadro é exato. Com
+**⚙ AUTO PRÉ-RENDER** ligado, a reprodução também é, porque sai da mesma
+composição quadro a quadro que o export.
 
 ## Corrigir deriva por velocidade, nunca por seek
 
@@ -638,6 +1681,12 @@ existindo, mas só em três situações em que ele é o mal menor:
 
 A correção é limitada a ±12%: acima disso a aceleração fica visível, que é
 trocar um defeito por outro.
+
+Desde que o editor tem som, esse mesmo `playbackRate` carrega a **fala** do
+clipe junto. Por isso `preservesPitch = true` é explícito no
+`attachVideoElement`: sem ele, 12% de velocidade seriam ~2 semitons de
+desafinação. O caminho do áudio usa o mesmo mecanismo, com teto bem mais
+apertado — ver "Deriva: por velocidade, como no vídeo".
 
 Detalhe adjacente, do mesmo sintoma: `player.play()` guardava
 `performance.now()` como origem do relógio, mas o tick lê o timestamp do rAF —
@@ -698,40 +1747,36 @@ e resolução de render adaptativa, resolução de projeto, marcação de trecho
 layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **undo/redo**, **autosave** (o projeto reabre sozinho, com a mídia),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
-quadro** (setas), **áudio** (importar, volume, mudo, mixado no export) e
+quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, e atalhos de Delete/duplicar. Base inteira em TypeScript `strict`,
-com 260 testes.
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **magnetismo** (ímã de 8px no
+arrasto e no trim, Alt desliga), **projeto em arquivo** (`.frag`) e **histórico
+de versões**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
+**quadro de vídeo por número** (um decodificador por clipe, armado antes do
+corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
+o remix reproduz a 99,2% do tempo real), e atalhos de
+Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 498
+testes.
 
 ### O caminho até "usável"
 
 O critério: **montar um vídeo de 60s pra Reels — cortes, música, títulos — e
 exportar, sem bater numa parede.**
 
-**Falta pra chegar lá:**
+**Falta pra chegar lá:** nada — o critério foi cumprido. O que vem abaixo é o
+que separa de um clone, não pré-requisito.
 
-- **Zoom e scroll na timeline.** Hoje a régua espreme o projeto inteiro na
-  largura; num projeto de 60s um clipe de 2s vira 3% da tela. É a parede mais
-  próxima.
-- **Gizmo no canvas** — arrastar pra posicionar, alças pra escalar e girar.
-  Ninguém posiciona um título digitando coordenada.
-- **Legibilidade de texto** — contorno e sombra. Texto claro sobre imagem clara
-  simplesmente some.
-- **Duração do projeto derivada do conteúdo.** Hoje é um campo que você digita, e
-  clipes podem ficar pra fora dele.
-- **Copiar/colar** (Delete e Ctrl+D já existem).
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,
-snap magnético, presets de texto, pool de mídia, presets de export.
+presets de texto, pool de mídia, presets de export.
 
 **O diferencial:** abrir o vocabulário de efeitos CSS — `contrast`, `saturate`,
 `hue-rotate`, `drop-shadow`, `sepia`, `invert`. O `ctx.filter` já aceita a
 sintaxe de CSS filter e o renderer já a usa, então é o item mais barato da lista
 e o único que ninguém mais tem.
 
-**No radar:** snap magnético entre clipes ao arrastar, e o arrasto empurrar o
-vizinho em vez de recusar — os dois deixam o gesto mais parecido com o CapCut,
-mas nenhum é pré-requisito de nada.
+**No radar:** o arrasto empurrar o vizinho em vez de recusar — deixa o gesto
+mais parecido com o CapCut, mas não é pré-requisito de nada.
 
 **No radar, ainda sem data:** atalhos de edição estilo CapCut (cortar no
 playhead, deletar, duplicar), responsividade mobile/touch — esse último é o

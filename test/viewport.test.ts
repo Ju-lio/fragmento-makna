@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { viewport, MIN_ZOOM, MAX_ZOOM, renderScale } from '../src/engine/viewport.ts';
+import { viewport, MIN_ZOOM, MAX_ZOOM, renderScale , FIT_MARGIN } from '../src/engine/viewport.ts';
 
 const near = (a: number, b: number, msg: string, tol = 1e-6) =>
   assert.ok(Math.abs(a - b) < tol, `${msg} (${a} vs ${b})`);
@@ -30,9 +30,9 @@ function setup({ content = [1920, 1080], container = [960, 540] }: SetupOptions 
 test('fit scales the composition down to the container', () => {
   const v = setup({ content: [1920, 1080], container: [960, 540] });
   v.fit();
-  // Both are 16:9, but the fixed 24px padding eats proportionally more of the
+  // Both are 16:9; a margem é fração do contêiner, e sobra de propósito — ver
   // shorter axis, so height ends up limiting.
-  near(v.zoom, (540 - 24) / 1080, 'fit picks the limiting axis');
+  near(v.zoom, (540 * FIT_MARGIN) / 1080, 'fit picks the limiting axis');
   assert.ok(v.zoom * 1920 <= 960 && v.zoom * 1080 <= 540, 'result really fits');
   assert.ok(v.fitMode, 'stays in fit mode');
 });
@@ -105,7 +105,7 @@ test('changing resolution refits while in fit mode', () => {
   v.setContent(1080, 1920);   // switch to vertical
   assert.ok(v.fitMode, 'still fitting');
   assert.ok(v.zoom < wide, 'a taller composition must scale down further');
-  near(v.zoom, (540 - 24) / 1920, 'height is now the limiting axis');
+  near(v.zoom, (540 * FIT_MARGIN) / 1920, 'height is now the limiting axis');
 });
 
 test('an explicit zoom leaves fit mode, and fit restores it', () => {

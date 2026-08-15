@@ -16,6 +16,9 @@ export const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1] as number;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+/** Quanto do contêiner o canvas ocupa no fit. O resto é margem — ver `fitZoom`. */
+export const FIT_MARGIN = 0.88;
+
 /**
  * How many physical pixels the canvas backing store should actually have,
  * relative to the composition's native resolution — the fix for "video only
@@ -64,13 +67,21 @@ class Viewport {
 
   private _emit(): void { for (const cb of this._subs) cb(this); }
 
-  /** Zoom that makes the whole composition fit, with a little breathing room. */
+  /**
+   * Zoom que faz a composição inteira caber, com margem em volta.
+   *
+   * A margem é uma FRAÇÃO, não os 24px fixos de antes, e a diferença tem
+   * consequência prática: o gizmo desenha as alças nas quinas da layer, e uma
+   * layer posicionada meio pra fora da composição tinha as alças caindo além da
+   * borda do palco — onde o `overflow: hidden` do viewport as recorta e elas
+   * simplesmente param de responder. Com margem proporcional sobra área
+   * clicável em volta do canvas, e o resto se alcança com zoom.
+   */
   fitZoom(): number {
     if (!this.containerW || !this.containerH) return 1;
-    const pad = 24;
     const z = Math.min(
-      (this.containerW - pad) / this.contentW,
-      (this.containerH - pad) / this.contentH,
+      (this.containerW * FIT_MARGIN) / this.contentW,
+      (this.containerH * FIT_MARGIN) / this.contentH,
     );
     return clamp(z, MIN_ZOOM, MAX_ZOOM);
   }

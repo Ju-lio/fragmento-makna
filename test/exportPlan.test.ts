@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   evenDimensions, frameTimestamp, keyFrameInterval, chooseBitrate,
-  frameCount, exportFileName, CODEC_CANDIDATES,
+  frameCount, exportFileName, CODEC_CANDIDATES, AUDIO_CODEC_CANDIDATES,
 } from '../src/engine/exportPlan.ts';
 
 // --- dimensões ----------------------------------------------------------
@@ -140,5 +140,25 @@ test('todo candidato traz o nome que o muxer entende', () => {
     assert.ok(c.codec.length > 0, 'string do WebCodecs');
     assert.ok(['avc', 'vp9'].includes(c.muxer), `muxer inválido: ${c.muxer}`);
     assert.ok(c.label.length > 0, 'rótulo pra mostrar na interface');
+  }
+});
+
+// --- codecs de áudio ----------------------------------------------------
+
+test('o áudio também tem reserva, e o AAC vem primeiro', () => {
+  // AAC é o que o MP4 leva por padrão, mas é proprietário: o ENCODER não vem em
+  // toda build de Chromium. Sem reserva, exportar num Linux dava
+  // "the encoder must be configured first" depois da mixagem inteira.
+  assert.equal(AUDIO_CODEC_CANDIDATES[0]?.muxer, 'aac');
+  assert.equal(AUDIO_CODEC_CANDIDATES.at(-1)?.muxer, 'opus', 'Opus é livre e está em todo lugar');
+});
+
+test('todo candidato de áudio traz o nome que o muxer entende', () => {
+  // O vocabulário do WebCodecs ("mp4a.40.2") e o do muxer ("aac") não
+  // coincidem, e trocar um pelo outro gera arquivo que não abre.
+  for (const c of AUDIO_CODEC_CANDIDATES) {
+    assert.ok(['aac', 'opus'].includes(c.muxer), `${c.codec} -> ${c.muxer}`);
+    assert.ok(c.codec.length > 0);
+    assert.ok(c.label.length > 0, 'o rótulo aparece na interface');
   }
 });

@@ -1,4 +1,6 @@
 import { player } from './player.ts';
+import { clockLayer } from './audioSync.ts';
+import { ownersByElement, ownerChanged } from './mediaOwner.ts';
 import type { Project, VideoLayer, VideoProbe, VideoTiming } from './types.ts';
 
 /** O que `videoSyncPlan` decide para um único elemento, num único quadro. */
@@ -16,6 +18,10 @@ export interface VideoElementState {
   currentTime: number;
   paused?: boolean;
   seeking?: boolean;
+  /** Este elemento acabou de trocar de clipe? Ver `ownerChanged`. */
+  switched?: boolean;
+  /** Esta layer é a que dita o relógio da reprodução? Ver `clockLayer`. */
+  master?: boolean;
 }
 
 /** Só layers de vídeo com elemento carregado — o que a sincronia de fato mexe. */
@@ -25,6 +31,18 @@ function videoLayers(project: Project): LoadedVideoLayer[] {
   return project.layers.filter(
     (l): l is LoadedVideoLayer => l.type === 'video' && Boolean(l.video),
   );
+}
+
+/**
+ * Uma layer por arquivo — a que conduz o `<video>` neste instante.
+ *
+ * Ver `ownersByElement`: cortar um clipe deixa as duas metades apontando pro
+ * mesmo elemento, e deixar as duas escreverem fazia a metade inativa pausar o
+ * que a ativa tinha soltado. Na imagem isso aparecia como o clipe piscando ou
+ * congelando logo depois de um corte.
+ */
+export function videoOwners(project: Project, t: number): LoadedVideoLayer[] {
+  return ownersByElement(videoLayers(project), l => l.video, layer => isLayerActive(layer, t));
 }
 
 /**
@@ -41,8 +59,19 @@ function videoLayers(project: Project): LoadedVideoLayer[] {
  *    otherwise a scrub would leave the previous frame on screen.
  */
 
-/** Desvio a partir do qual vale começar a corrigir. Abaixo disso, não se vê. */
-const DRIFT_TOLERANCE = 0.08;
+/**
+ * Desvio a partir do qual vale começar a corrigir.
+ *
+ * Eram 80ms, herdados de quando corrigir significava **seek**: ali a zona morta
+ * larga era o que impedia uma tempestade de cortes na imagem. Com a correção
+ * por `playbackRate`, que é contínua e invisível, essa zona morta deixou de
+ * comprar alguma coisa e passou a custar: medindo a reprodução, o elemento
+ * ficava parado em -36..-47ms de atraso, dentro da faixa e portanto **nunca
+ * corrigido**. Isso não incomodava enquanto o som saía do mesmo elemento que a
+ * imagem (os dois erravam juntos); com o áudio numa faixa própria, virou
+ * desencontro audível entre o que se vê e o que se ouve.
+ */
+const DRIFT_TOLERANCE = 0.025;
 
 /**
  * Desvio a partir do qual a velocidade não alcança mais e só um seek resolve.
@@ -108,10 +137,63 @@ export function attachVideoElement(video: HTMLVideoElement): HTMLVideoElement {
    */
   video.playsInline = true;
   video.preload = 'auto';
-  video.addEventListener('seeked', () => {
-    if (!player.playing) player.invalidate();
-  });
+  // A correção de deriva daqui mexe no `playbackRate`, e o clipe tem fala
+  // dentro. Sem isto, ±12% de velocidade seriam ~2 semitons de desafinação.
+  video.preservesPitch = true;
+
+  /**
+   * Repintar quando o quadro EXISTIR, não quando o seek disser que acabou.
+   *
+   * `seeked` sozinho não basta, e o `seekVideoTo` do pré-render já documentava
+   * isso: em alguns casos ele dispara antes do `readyState` subir, e desenhar
+   * nessa janela pinta **o quadro anterior**. O pré-render se protegia
+   * esperando `loadeddata`; aqui não havia proteção nenhuma.
+   *
+   * O estrago era silencioso e permanente: parado, este era o único repaint
+   * agendado. Se ele caísse na janela ruim, a tela ficava com o quadro errado
+   * e **nada mais repintava** — você parava em cima de um corte e via o frame
+   * de antes dele, sem nenhum sinal de que era mentira. Era o pior caso
+   * possível pra quem corta com precisão.
+   */
+  const repaint = () => { if (!player.playing) player.invalidate(); };
+  video.addEventListener('seeked', repaint);
+  // Os DOIS eventos, e não só `seeked`: quando ele chega cedo, é o `loadeddata`
+  // que marca o quadro existindo de verdade. Cobre também a primeira carga do
+  // arquivo, em que não houve seek nenhum pra disparar o repaint.
+  video.addEventListener('loadeddata', repaint);
   return video;
+}
+
+/**
+ * Todo `<video>` que aparece em `t` já pousou no quadro pedido?
+ *
+ * É a pergunta que separa uma composição fiel de uma composição plausível.
+ * Enquanto a resposta for não, o que está dentro do elemento é o quadro
+ * ANTERIOR, e compor com ele produz uma imagem que o export nunca vai gerar.
+ *
+ * O teste é `seeking` + `readyState`, e **não** comparar `currentTime` com o
+ * instante pedido — essa comparação parece mais rigorosa e é uma armadilha. O
+ * navegador pousa no quadro decodificável mais próximo, não no valor exato:
+ * pedir 5,000 num arquivo a 29,97fps deixa o `currentTime` em 4,9967 pra
+ * sempre. Como condição de repintar, isso nunca ficaria satisfeito e a tela
+ * congelaria de vez. É pelo mesmo motivo que o `seekVideoTo` do pré-render usa
+ * essa comparação só como atalho de saída, e espera o EVENTO no caso geral.
+ *
+ * `readyState >= 2` (HAVE_CURRENT_DATA) é a régua do pré-render, não uma mais
+ * frouxa: o preview não pode aceitar como pronto um quadro que o export
+ * esperaria.
+ */
+export function videosParkedAt(project: Project, t: number): boolean {
+  for (const layer of videoOwners(project, t)) {
+    if (!isLayerActive(layer, t)) continue;
+    const v: VideoProbe = layer.video;
+    // Arquivo quebrado: não vem quadro nenhum, nunca. Esperar por ele deixaria
+    // o palco em branco pra sempre — inclusive os títulos por cima, que não têm
+    // nada a ver com o vídeo que falhou. Melhor compor sem ele e seguir.
+    if (v.error) continue;
+    if (v.seeking || v.readyState < 2) return false;
+  }
+  return true;
 }
 
 /**
@@ -136,7 +218,7 @@ export function attachVideoElement(video: HTMLVideoElement): HTMLVideoElement {
 export function videoSyncPlan(
   layer: VideoTiming,
   t: number,
-  { playing, currentTime, paused = true, seeking = false }: VideoElementState,
+  { playing, currentTime, paused = true, seeking = false, switched = false, master = false }: VideoElementState,
 ): VideoPlan {
   if (!isLayerActive(layer, t)) return { seekTo: null, play: false, rate: 1 };
 
@@ -147,6 +229,17 @@ export function videoSyncPlan(
   // Parado: pousa exatamente no quadro, ignorando o que não dá pra ver.
   if (!playing) return { seekTo: drift > SEEK_EPSILON ? want : null, play: false, rate: 1 };
 
+  /**
+   * Trocou de clipe: isto é um CORTE, e corte se resolve pulando.
+   *
+   * Vem ANTES do `seeking` de propósito — um seek em voo mirava o clipe
+   * anterior, e insistir nele deixaria o elemento no lugar errado. E vem antes
+   * da deriva porque um remix pode saltar poucos milissegundos no arquivo: como
+   * "deriva" isso viraria ajuste de velocidade, que nunca resolve uma
+   * descontinuidade.
+   */
+  if (switched) return { seekTo: drift > SEEK_EPSILON ? want : null, play: true, rate: 1 };
+
   // Já tem correção em voo. Empilhar outra só afunda mais o decoder — e é
   // assim que uma correção isolada vira tempestade de seeks.
   if (seeking) return { seekTo: null, play: true, rate: 1 };
@@ -155,6 +248,16 @@ export function videoSyncPlan(
   // movimento na tela pra ele interromper. É o único momento da reprodução em
   // que vale posicionar exato — e é justamente o que evita começar torto.
   if (paused) return { seekTo: drift > SEEK_EPSILON ? want : null, play: true, rate: 1 };
+
+  /**
+   * É a trilha deste clipe que dita o relógio: não se corrige contra si mesma.
+   *
+   * Acontece quando o som que está tocando é o do próprio vídeo. `t` é derivado
+   * do `currentTime` DESTE elemento, então "corrigir" aqui seria perseguir o
+   * arredondamento da grade de quadros e frear a reprodução inteira. Mesma
+   * razão detalhada em `soundSyncPlan`.
+   */
+  if (master) return { seekTo: null, play: true, rate: 1 };
 
   // Rolando e perdido de vez: velocidade não alcança mais. Ver RESYNC_THRESHOLD.
   if (drift > RESYNC_THRESHOLD) return { seekTo: want, play: true, rate: 1 };
@@ -171,13 +274,20 @@ export function syncVideoLayers(project: Project, t: number): void {
   // Outro dono está posicionando os elementos: não disputa.
   if (owner !== null) return;
 
-  for (const layer of videoLayers(project)) {
+  // Quem dita o relógio pode ser o som DESTE vídeo — ver o caso `master` no
+  // plano. Eleito uma vez, fora do laço: a resposta é a mesma pra todos.
+  const master = player.playing ? clockLayer(project.layers, t) : null;
+
+  // Uma layer por elemento: ver `videoOwners`.
+  for (const layer of videoOwners(project, t)) {
     const video = layer.video;
     const plan = videoSyncPlan(layer, t, {
       playing: player.playing,
       currentTime: video.currentTime,
       paused: video.paused,
       seeking: video.seeking,
+      switched: ownerChanged(video, layer.id),
+      master: master !== null && master.type === 'video' && master.id === layer.id,
     });
 
     if (plan.seekTo !== null) video.currentTime = plan.seekTo;
@@ -199,6 +309,16 @@ export interface BusyState {
 
 /**
  * O preview está esperando alguma layer de vídeo ficar pronta?
+ *
+ * ⚠️ **SEM USO desde que a imagem saiu do `<video>`.** Quem responde isso hoje
+ * é `framesReadyAt`, no `videoFrames.ts` — ver o `onTick` do `Stage`. Esta
+ * versão mede o elemento, que só toca som e é buscado a cada corte: ela
+ * acendia a barra em toda emenda com a imagem perfeita, e ficava apagada
+ * quando o decodificador de quadros é que estava atrasado.
+ *
+ * Fica aqui, junto com `syncVideoLayers` e `videosParkedAt` — também sem
+ * chamador —, pra sair de uma vez na limpeza deste arquivo. Não volte a
+ * chamá-la.
  *
  * Dois casos distintos, ambos percebidos como "travou":
  *  - `seeking`: você arrastou o cursor do tempo e o decoder ainda está

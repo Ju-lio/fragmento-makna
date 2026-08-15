@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import {
   videoSyncPlan, sourceTimeAt, isLayerActive, previewBusyState, hasActiveVideo,
   syncVideoLayers, claimVideoElements, releaseVideoElements, videoElementsOwner,
+  videoOwners, videosParkedAt,
 } from '../src/engine/videoSync.ts';
 import type { VideoTiming } from '../src/engine/types.ts';
 import { fakeVideo, project, textLayer, videoLayer } from './fixtures.ts';
+
+const rodando = { playing: true, currentTime: 0, paused: false, seeking: false };
 
 /** A 10s source, placed at t=2, showing seconds 1..5 of the file (trimStart=1). */
 const clip = (): VideoTiming => ({ start: 2, duration: 4, trimStart: 1, sourceDuration: 10 });
@@ -203,4 +206,156 @@ test('só o dono que reivindicou consegue liberar', () => {
 
   releaseVideoElements(dono);
   assert.equal(videoElementsOwner(), null);
+});
+
+// --- um elemento, vários clipes -----------------------------------------
+
+/**
+ * Cortar um clipe com Ctrl+B deixa as duas metades apontando pro MESMO
+ * `<video>` — `splitLayer` copia a layer com spread e a referência vai junto.
+ * Deixar as duas conduzirem fazia a inativa pausar o elemento que a ativa
+ * tinha acabado de soltar, e o clipe congelava logo depois do corte.
+ */
+const cortado = () => {
+  const video = fakeVideo();
+  return project([
+    videoLayer({ id: 1, start: 0, duration: 4, trimStart: 0, video, mediaId: 'v' }),
+    videoLayer({ id: 2, start: 4, duration: 4, trimStart: 4, video, mediaId: 'v' }),
+  ]);
+};
+
+test('duas metades do mesmo arquivo elegem UM condutor do elemento', () => {
+  assert.equal(videoOwners(cortado(), 2).length, 1);
+});
+
+test('quem está no ar conduz, mesmo vindo antes na lista', () => {
+  assert.equal(videoOwners(cortado(), 2)[0]?.id, 1, 'no primeiro trecho, a primeira');
+  assert.equal(videoOwners(cortado(), 6)[0]?.id, 2, 'no segundo trecho, a segunda');
+});
+
+test('passado o último clipe ainda sobra um condutor', () => {
+  // De propósito: o plano dele é pausar o elemento, que senão continuaria
+  // rolando depois do fim.
+  const donos = videoOwners(cortado(), 20);
+  assert.equal(donos.length, 1);
+  assert.equal(videoSyncPlan(donos[0]!, 20, { playing: true, currentTime: 0 }).play, false);
+});
+
+test('vídeos de arquivos diferentes não disputam nada', () => {
+  const p = project([
+    videoLayer({ id: 1, start: 0, duration: 4, video: fakeVideo(), mediaId: 'um' }),
+    videoLayer({ id: 2, start: 10, duration: 4, video: fakeVideo(), mediaId: 'dois' }),
+  ]);
+  assert.deepEqual(videoOwners(p, 2).map(l => l.id).sort(), [1, 2]);
+});
+
+test('layer de vídeo sem elemento carregado fica de fora', () => {
+  const p = project([
+    videoLayer({ id: 1, video: undefined as unknown as HTMLVideoElement, mediaId: 'v' }),
+  ]);
+  assert.deepEqual(videoOwners(p, 1), []);
+});
+
+test('o condutor eleito é quem de fato move o elemento', () => {
+  // A ponta aplicada: em t=6 quem manda é a segunda metade, que lê o arquivo
+  // a partir de 4s — logo o elemento tem que pousar em 6, não em 2.
+  const p = cortado();
+  syncVideoLayers(p, 6);
+  assert.equal((p.layers[0] as { video: HTMLVideoElement }).video.currentTime, 6);
+});
+
+test('a zona morta da imagem não pode garantir atraso permanente', () => {
+  // Eram 80ms, herdados de quando corrigir significava seek. Com a correção
+  // por velocidade — contínua e invisível — a zona morta larga não comprava
+  // nada e custava: medindo, o elemento ficava parado em -36..-47ms de atraso,
+  // dentro da faixa e portanto nunca corrigido. Só passou a incomodar quando o
+  // som ganhou faixa própria: antes imagem e som erravam juntos.
+  const plan = videoSyncPlan(clip(), 3, { ...rodando, currentTime: 1.96 });
+  assert.notEqual(plan.rate, 1, '40ms de atraso já merecem correção');
+  assert.equal(plan.seekTo, null, 'e sem corte na imagem');
+});
+
+test('trocar de clipe PULA a imagem, mesmo com salto pequeno', () => {
+  // Um remix salta poucos milissegundos no arquivo entre uma fatia e a
+  // seguinte. Como "deriva" isso virava correção de velocidade, que nunca
+  // resolve uma descontinuidade.
+  const plan = videoSyncPlan(clip(), 3, { ...rodando, currentTime: 1.9, switched: true });
+  assert.equal(plan.seekTo, 2, 'pousa no ponto do clipe novo');
+  assert.equal(plan.rate, 1);
+});
+
+test('a troca de clipe vence um seek em voo, também na imagem', () => {
+  const plan = videoSyncPlan(clip(), 3, {
+    ...rodando, currentTime: 0.5, seeking: true, switched: true,
+  });
+  assert.equal(plan.seekTo, 2);
+});
+
+// --- o quadro pousou? ---------------------------------------------------
+
+test('vídeo buscando não conta como pousado', () => {
+  /**
+   * A pergunta que separa uma composição fiel de uma plausível. Enquanto o
+   * elemento está buscando, o que está DENTRO dele é o quadro anterior — compor
+   * com ele produz uma imagem que o export nunca vai gerar. Parar em cima de um
+   * corte e ver o frame de antes dele vinha exatamente daqui.
+   */
+  const l = videoLayer({ video: fakeVideo({ seeking: true }) });
+  assert.equal(videosParkedAt(project([l]), 1), false);
+});
+
+test('vídeo sem dado pro quadro atual não conta como pousado', () => {
+  // `readyState < 2` (HAVE_CURRENT_DATA) é a régua do pré-render. O preview não
+  // pode aceitar como pronto um quadro que o export esperaria.
+  const l = videoLayer({ video: fakeVideo({ readyState: 1 }) });
+  assert.equal(videosParkedAt(project([l]), 1), false);
+});
+
+test('vídeo parado e com dado conta como pousado', () => {
+  const l = videoLayer({ video: fakeVideo({ seeking: false, readyState: 2 }) });
+  assert.equal(videosParkedAt(project([l]), 1), true);
+});
+
+test('vídeo fora do instante não atrapalha — só conta quem aparece', () => {
+  // Um clipe que nem está no ar pode estar buffering à vontade: ele não entra
+  // na composição, então esperar por ele seria travar a tela à toa.
+  const noAr = videoLayer({ id: 1, start: 0, duration: 4, video: fakeVideo({ readyState: 4 }) });
+  const fora = videoLayer({ id: 2, start: 20, duration: 4, video: fakeVideo({ seeking: true, readyState: 0 }) });
+  assert.equal(videosParkedAt(project([noAr, fora]), 1), true);
+});
+
+test('sem vídeo nenhum, sempre pousado', () => {
+  // Projeto só de texto não pode ficar esperando um decoder que não existe.
+  assert.equal(videosParkedAt(project([textLayer()]), 1), true);
+});
+
+// --- relógio-mestre -----------------------------------------------------
+
+test('o vídeo que dita o relógio não é corrigido contra si mesmo', () => {
+  // Acontece quando o som que toca é o do próprio clipe: `t` é derivado do
+  // `currentTime` DESTE elemento, então corrigir seria perseguir o
+  // arredondamento da grade e frear a reprodução inteira.
+  const l: VideoTiming = { start: 0, duration: 4, trimStart: 0, sourceDuration: 10 };
+  const atrasado = { ...rodando, currentTime: 1.05 };
+
+  assert.notEqual(videoSyncPlan(l, 1, atrasado).rate, 1, 'sem ser mestre, corrige');
+
+  const mestre = videoSyncPlan(l, 1, { ...atrasado, master: true });
+  assert.deepEqual(mestre, { seekTo: null, play: true, rate: 1 });
+});
+
+test('mesmo perdido de vez, o vídeo condutor não leva seek', () => {
+  const l: VideoTiming = { start: 0, duration: 4, trimStart: 0, sourceDuration: 10 };
+  const perdido = { ...rodando, currentTime: 9 };
+  assert.notEqual(videoSyncPlan(l, 1, perdido).seekTo, null, 'sem ser mestre, resync');
+  assert.equal(videoSyncPlan(l, 1, { ...perdido, master: true }).seekTo, null);
+});
+
+test('vídeo com erro não segura a tela — o resto do projeto continua aparecendo', () => {
+  // Arquivo quebrado não vai produzir quadro nunca. Esperar por ele deixaria o
+  // palco em branco pra sempre, inclusive os títulos, que não têm nada a ver.
+  const quebrado = videoLayer({
+    video: fakeVideo({ readyState: 0, error: { code: 4 } as MediaError }),
+  });
+  assert.equal(videosParkedAt(project([quebrado]), 1), true);
 });

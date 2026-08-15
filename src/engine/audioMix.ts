@@ -11,6 +11,7 @@
  * e eles são invisíveis olhando a forma de onda.
  */
 
+import { coversAt } from './timeSpan.ts';
 import type { Layer, SoundLayer, TimeSpan } from './types.ts';
 
 /** Um pedaço de som a tocar no arquivo de saída. */
@@ -44,6 +45,21 @@ export function effectiveGain(layer: { volume?: number; mute?: boolean }): numbe
  */
 export function sourceTimeOf(layer: { start: number; trimStart?: number }, t: number): number {
   return (layer.trimStart ?? 0) + (t - layer.start);
+}
+
+/**
+ * A inversa: onde na LINHA DO TEMPO está um elemento que lê `srcTime` do arquivo.
+ *
+ * Existe porque o som virou o relógio-mestre da reprodução (ver `soundClock` e
+ * `player.setTimeSource`): pra saber que horas são, o editor pergunta ao
+ * elemento onde ele está no arquivo e traduz de volta pra linha do tempo.
+ *
+ * Fica coladinha na `sourceTimeOf` de propósito. Uma inversa que mora longe da
+ * função que ela inverte é uma inversa que para de bater no dia em que o trim
+ * ganhar um caso novo, e o sintoma seria a imagem descolando do som.
+ */
+export function timelineTimeOf(layer: { start: number; trimStart?: number }, srcTime: number): number {
+  return layer.start + (srcTime - (layer.trimStart ?? 0));
 }
 
 /**
@@ -102,5 +118,8 @@ export function hasSound(layers: readonly Layer[], range: { from: number; to: nu
  * do clipe é audível como um estalo.
  */
 export function isSoundActive(layer: TimeSpan, t: number): boolean {
-  return t >= layer.start && t < layer.start + layer.duration;
+  // A regra é a mesma da imagem, e agora mora num lugar só — ver `timeSpan.ts`.
+  // Esta metade sempre esteve certa; era a da imagem que contava a fronteira
+  // duas vezes.
+  return coversAt(layer, t);
 }

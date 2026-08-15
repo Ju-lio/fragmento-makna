@@ -19,9 +19,19 @@
  */
 
 const DB_NAME = 'fragmento';
-const DB_VERSION = 1;
+/**
+ * 1 → 2: entrou o store `snapshots` (o histórico de versões do projeto).
+ *
+ * Subir a versão é o único jeito de criar um store, e o `onupgradeneeded` abaixo
+ * é escrito pra rodar em qualquer ponto de partida: cada store é criado só se
+ * ainda não existir, então quem vem da 1 ganha o novo e mantém os dois antigos
+ * intactos. Nada é reescrito, nada é migrado — o projeto guardado continua
+ * exatamente onde estava.
+ */
+const DB_VERSION = 2;
 const MEDIA_STORE = 'media';
 const PROJECT_STORE = 'project';
+const SNAPSHOT_STORE = 'snapshots';
 
 /** Só existe um projeto por enquanto; a chave é fixa. */
 const CURRENT_PROJECT = 'current';
@@ -36,16 +46,60 @@ export interface StoredMedia {
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
+/** Outra aba está segurando a versão antiga do banco. Ver `openDb`. */
+export class DatabaseBlockedError extends Error {}
+
 function openDb(): Promise<IDBDatabase> {
-  dbPromise ??= new Promise((resolve, reject) => {
+  dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    /**
+     * Outra aba segura a versão anterior — e sem isto o editor TRAVA CALADO.
+     *
+     * Quando existe uma conexão aberta numa versão mais velha, o `open` de uma
+     * versão nova dispara **só** `blocked`: nunca `success`, nunca `error`.
+     * Sem tratar esse evento a promessa não resolve nunca, e tudo que espera
+     * por ela — abrir o projeto, carregar a mídia, salvar — fica pendurado sem
+     * mensagem nenhuma. O sintoma é o editor "carregando" pra sempre, e não há
+     * o que a pessoa faça, porque nada indica que a culpa é da outra aba.
+     *
+     * Falhar com uma frase acionável é muito melhor que esperar em silêncio.
+     */
+    req.onblocked = () => {
+      dbPromise = null;   // deixa a próxima tentativa começar do zero
+      reject(new DatabaseBlockedError(
+        'O Fragmento está aberto em outra aba com uma versão anterior. '
+        + 'Feche as outras abas e recarregue esta.',
+      ));
+    };
+
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(MEDIA_STORE)) db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(PROJECT_STORE)) db.createObjectStore(PROJECT_STORE);
+      // Chave = instante da gravação, então listar já vem em ordem cronológica.
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) db.createObjectStore(SNAPSHOT_STORE);
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB indisponível'));
+    req.onsuccess = () => {
+      const db = req.result;
+      /**
+       * Sai da frente quando OUTRA aba quiser atualizar o banco.
+       *
+       * É a metade que impede o `onblocked` acima de acontecer da próxima vez:
+       * segurando a conexão, esta aba trava a aba nova. Fechando, a atualização
+       * segue — e esta aba passa a falhar nas próximas transações, o que é
+       * correto: ela está rodando código velho contra um banco novo.
+       */
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error ?? new Error('IndexedDB indisponível'));
+    };
   });
   return dbPromise;
 }
@@ -91,6 +145,17 @@ export function urlFor(id: string, blob: Blob): string {
   return url;
 }
 
+/**
+ * A URL já criada pra esta mídia, ou `null`.
+ *
+ * Existe pra quem precisa de um SEGUNDO elemento sobre a mesma fonte sem ter os
+ * bytes na mão — separar o áudio de um clipe é isso: um `<audio>` novo lendo a
+ * mesma blob que o `<video>` já está lendo. Nada é baixado nem duplicado.
+ */
+export function existingUrl(id: string): string | null {
+  return urls.get(id) ?? null;
+}
+
 /** Libera todas as URLs desta sessão. Chamado ao trocar de projeto. */
 export function releaseAll(): void {
   for (const url of urls.values()) URL.revokeObjectURL(url);
@@ -122,4 +187,34 @@ export async function loadProject(): Promise<unknown> {
 
 export async function clearProject(): Promise<void> {
   await tx(PROJECT_STORE, 'readwrite', s => s.delete(CURRENT_PROJECT));
+}
+
+// --- histórico de versões -------------------------------------------------
+
+/**
+ * As versões guardadas, da mais antiga pra mais nova.
+ *
+ * Só as CHAVES — os projetos em si podem ser dezenas, e a lista é lida a cada
+ * autosave só pra decidir se cabe uma nova (ver `snapshotPlan`). Trazer o
+ * conteúdo junto seria ler megabytes pra responder uma pergunta sobre datas.
+ */
+export async function listSnapshots(): Promise<number[]> {
+  const chaves = await tx<IDBValidKey[]>(SNAPSHOT_STORE, 'readonly', s => s.getAllKeys());
+  return chaves.filter((k): k is number => typeof k === 'number').sort((a, b) => a - b);
+}
+
+export async function putSnapshot(at: number, data: unknown): Promise<void> {
+  await tx(SNAPSHOT_STORE, 'readwrite', s => s.put(data, at));
+}
+
+export async function getSnapshot(at: number): Promise<unknown> {
+  return await tx(SNAPSHOT_STORE, 'readonly', s => s.get(at));
+}
+
+export async function deleteSnapshots(ats: readonly number[]): Promise<void> {
+  await Promise.all(ats.map(at => tx(SNAPSHOT_STORE, 'readwrite', s => s.delete(at))));
+}
+
+export async function clearSnapshots(): Promise<void> {
+  await tx(SNAPSHOT_STORE, 'readwrite', s => s.clear());
 }

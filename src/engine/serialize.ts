@@ -18,8 +18,9 @@
  */
 
 import { BASE_STATE } from './effects.ts';
+import { compactTracks } from './project.ts';
 import type {
-  AnimProp, AudioLayer, Effect, ImageLayer, Layer, MediaAsset, Project,
+  AnimProp, AudioLayer, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
   TextLayer, Track, VideoLayer,
 } from './types.ts';
 
@@ -38,7 +39,20 @@ import type {
  * existir só implicitamente nas layers. A migração deriva o acervo das layers
  * que já existem — o que preserva exatamente o material que o projeto tinha.
  */
-export const PROJECT_FORMAT = 4;
+/**
+ * 4 → 5: texto ganhou contorno e sombra (`TextDecor`), e toda layer ganhou
+ * `rotate` de base — o campo onde o gizmo escreve ao girar. Nos dois casos um
+ * projeto do formato 4 vira o padrão desligado, que é exatamente como ele já
+ * era desenhado.
+ */
+/**
+ * 5 → 6: vídeo e áudio passaram a ter espaços de faixa SEPARADOS. Num projeto
+ * do formato 5 a numeração era compartilhada, então uma faixa de áudio podia
+ * ser a 3 só porque existiam três faixas de vídeo. `compactTracks` renumera
+ * cada tipo por conta própria — o que é literalmente a tradução pro modelo
+ * novo, e não move clipe nenhum no tempo.
+ */
+export const PROJECT_FORMAT = 6;
 
 export interface SerializedProject {
   format: number;
@@ -57,6 +71,7 @@ interface SerializedBase {
   duration: number;
   x: number;
   y: number;
+  rotate: number;
   track: number;
   effects: Effect[];
 }
@@ -70,14 +85,34 @@ interface SerializedSound {
 }
 
 export type SerializedLayer =
-  | (SerializedBase & { type: 'text'; text: string; size: number; color: string; font: string })
+  | (SerializedBase & SerializedDecor & {
+    type: 'text'; text: string; size: number; color: string; font: string;
+  })
   | (SerializedBase & { type: 'image'; fit: number; mediaId: string })
   | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
   | (SerializedBase & SerializedSound & { type: 'audio' });
 
+/** Contorno e sombra do texto. Ver `TextDecor`. */
+interface SerializedDecor {
+  stroke: string;
+  strokeWidth: number;
+  shadow: string;
+  shadowBlur: number;
+  shadowOffset: number;
+}
+
 /** Um elemento pronto pra uma layer de mídia, resolvido a partir do id. */
 export type MediaElement = HTMLImageElement | HTMLVideoElement | HTMLAudioElement;
-export type MediaResolver = (mediaId: string) => MediaElement | null;
+/**
+ * Entrega o elemento de uma layer. Recebe o TIPO junto, não só o id.
+ *
+ * Não é detalhe: separar o áudio de um clipe produz uma layer `audio` cujo
+ * `mediaId` aponta pra um arquivo de VÍDEO. Resolvendo só pelo id, ela receberia
+ * de volta o `<video>` — e passaria a disputar o cursor com a imagem, que é
+ * justamente o que separar veio desfazer. Com o tipo, quem resolve sabe que
+ * precisa de um `<audio>` próprio sobre a mesma fonte.
+ */
+export type MediaResolver = (mediaId: string, type: LayerType) => MediaElement | null;
 
 export interface LoadResult {
   project: Project;
@@ -109,12 +144,17 @@ function serializeLayer(l: Layer): SerializedLayer {
     id: l.id, name: l.name,
     start: l.start, duration: l.duration,
     x: l.x, y: l.y,
+    rotate: l.rotate,
     track: l.track,
     effects: l.effects,
   };
 
   if (l.type === 'text') {
-    return { ...base, type: 'text', text: l.text, size: l.size, color: l.color, font: l.font };
+    return {
+      ...base, type: 'text', text: l.text, size: l.size, color: l.color, font: l.font,
+      stroke: l.stroke, strokeWidth: l.strokeWidth,
+      shadow: l.shadow, shadowBlur: l.shadowBlur, shadowOffset: l.shadowOffset,
+    };
   }
   if (l.type === 'image') {
     return { ...base, type: 'image', fit: l.fit, mediaId: l.mediaId };
@@ -197,14 +237,24 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
     if (layer) layers.push(layer);
   });
 
+  /**
+   * Compacta as faixas na leitura — é a migração 5 → 6 acontecendo.
+   *
+   * Num projeto do formato 5 a numeração era compartilhada entre vídeo e áudio,
+   * então uma faixa de áudio podia ser a 3 só porque existiam três de vídeo. A
+   * compactação por tipo traduz isso pro modelo novo sem mover clipe nenhum no
+   * tempo. É idempotente, então rodar em projeto já novo não custa nada.
+   */
+  const tracked = compactTracks(layers);
+
   return {
     project: {
       width: num(data.width, 1920),
       height: num(data.height, 1080),
       fps: num(data.fps, 30),
       background: str(data.background, '#151021'),
-      media: readMedia(data.media, layers),
-      layers,
+      media: readMedia(data.media, tracked),
+      layers: tracked,
     },
     missingMedia,
   };
@@ -263,6 +313,8 @@ function readLayer(
     duration: num(l.duration, 1),
     x: num(l.x, 0),
     y: num(l.y, 0),
+    // Ausente num projeto antigo: sem rotação é como ele já se desenhava.
+    rotate: num(l.rotate, 0),
     track: Math.max(0, Math.round(num(l.track, defaultTrack))),
     effects: readEffects(l.effects),
   };
@@ -274,13 +326,20 @@ function readLayer(
       size: num(l.size, 100),
       color: str(l.color, '#f7efdc'),
       font: str(l.font, 'sans-serif'),
+      // Ausentes num projeto antigo: o padrão é desligado, que é como ele já
+      // se desenhava.
+      stroke: str(l.stroke, '#171021'),
+      strokeWidth: Math.max(0, num(l.strokeWidth, 0)),
+      shadow: str(l.shadow, '#171021'),
+      shadowBlur: Math.max(0, num(l.shadowBlur, 0)),
+      shadowOffset: num(l.shadowOffset, 0),
     } satisfies TextLayer;
   }
 
   if (l.type !== 'image' && l.type !== 'video' && l.type !== 'audio') return null;
 
   const mediaId = str(l.mediaId, '');
-  const element = mediaId ? resolve(mediaId) : null;
+  const element = mediaId ? resolve(mediaId, l.type) : null;
   if (!element) {
     // O arquivo original sumiu do armazenamento. Reportar em vez de inventar
     // uma layer vazia que desenharia nada e confundiria mais.

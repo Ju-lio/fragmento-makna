@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { soundSyncPlan, soundElement } from '../src/engine/audioSync.ts';
-import { audioLayer, videoLayer } from './fixtures.ts';
+import { soundSyncPlan, soundElement, soundOwners } from '../src/engine/audioSync.ts';
+import { audioLayer, fakeAudio, imageLayer, textLayer, videoLayer } from './fixtures.ts';
 
 /** Música de 60s, colocada em t=2, mostrando a partir de 1s do arquivo. */
 const trilha = () => audioLayer({ start: 2, duration: 10, trimStart: 1, sourceDuration: 60 });
@@ -14,7 +14,7 @@ test('parado não toca nada e não posiciona nada', () => {
   // Não existe scrub sonoro: arrastar o cursor tocando pedacinhos é ruído.
   // E um seek com o player pausado gastaria decoder pra ninguém ouvir.
   const plan = soundSyncPlan(trilha(), 5, { playing: false, currentTime: 0 });
-  assert.deepEqual(plan, { seekTo: null, play: false, volume: 1 });
+  assert.deepEqual(plan, { seekTo: null, play: false, volume: 1, rate: 1 });
 });
 
 test('fora do trecho do clipe, silêncio', () => {
@@ -53,24 +53,53 @@ test('entrando agora, posiciona exato antes de soltar', () => {
 
 // --- deriva -------------------------------------------------------------
 
-test('deriva pequena é deixada em paz', () => {
-  // Cada correção é um clique audível: corrigir demais é pior que derivar.
-  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.05 });
+test('deriva minúscula é deixada em paz', () => {
+  // Mexer no andamento a cada micro-oscilação é a receita pra faixa ficar
+  // caçando o relógio pra sempre.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.01 });
   assert.equal(plan.seekTo, null);
+  assert.equal(plan.rate, 1);
   assert.equal(plan.play, true);
 });
 
-test('deriva grande corrige por SEEK, não por velocidade', () => {
-  // Mudar a velocidade mudaria o tom, e desafinação é bem mais audível que
-  // um quadro repetido é visível — o contrário do que o vídeo faz.
-  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 1 });
-  assert.equal(plan.seekTo, 3, 'salta pro instante certo');
+test('deriva perceptível corrige por VELOCIDADE, não por seek', () => {
+  // Um seek num elemento que está tocando é um corte no som toda vez. Com
+  // `preservesPitch`, ±4% de andamento não se percebe e não corta nada.
+  const atrasada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.95 });
+  assert.equal(atrasada.seekTo, null, 'sem corte no som');
+  assert.ok(atrasada.rate > 1, 'acelera pra alcançar o relógio');
+
+  const adiantada = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.05 });
+  assert.equal(adiantada.seekTo, null);
+  assert.ok(adiantada.rate < 1, 'segura pra deixar o relógio alcançar');
 });
 
-test('a tolerância do som é bem mais folgada que a do vídeo', () => {
-  // 100ms passa reto aqui; no vídeo já teria disparado correção.
-  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.1 }).seekTo, null);
-  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.2 }).seekTo, 3);
+test('a correção de andamento tem teto', () => {
+  // Acima de ~4% a faixa soa apressada: trocar um defeito por outro.
+  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.92 }).rate, 1.04);
+});
+
+test('a correção começa MUITO antes do limiar do que se ouve', () => {
+  // Uma zona morta de 45ms não garante 45ms de erro: garante que o erro passeia
+  // livre até lá antes de alguém reagir. Medindo, dava uma serra de 0 a -87ms.
+  // O limiar audível é o teto tolerável, não o ponto de agir.
+  assert.equal(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.015 }).rate, 1);
+  assert.notEqual(soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.03 }).rate, 1);
+});
+
+test('acima do limiar audível, corta e acerta de uma vez', () => {
+  // Soltar o `play()` custa latência variável, e a faixa entrava até 157ms
+  // atrasada — diferente a cada reprodução. Deixar isso pro andamento levava
+  // ~3s pra fechar, ou seja o clipe inteiro fora de sincronia. Um corte curto
+  // no primeiro instante é menos ruim que segundos de desencontro.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 2.85 });
+  assert.equal(plan.seekTo, 3, 'salta pro instante certo');
+  assert.equal(plan.rate, 1, 'e volta ao andamento normal');
+});
+
+test('perdido de vez também corrige por seek', () => {
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 1 });
+  assert.equal(plan.seekTo, 3);
 });
 
 test('com um seek em voo, não empilha outro', () => {
@@ -90,6 +119,83 @@ test('clipe esticado além do arquivo não pede tempo inexistente', () => {
   assert.equal(plan.seekTo, null);
 });
 
+// --- posse do elemento --------------------------------------------------
+
+/**
+ * O clipe cortado ao meio: `splitLayer` copia a layer com spread, então as duas
+ * metades apontam pro MESMO `<audio>`. Era o que fazia a primeira metade tocar
+ * muda — a segunda, mais adiante na lista, pausava o elemento que a primeira
+ * tinha acabado de soltar.
+ */
+const metades = () => {
+  // O MESMO elemento nas duas: é literalmente o que o spread do `splitLayer` faz.
+  const el = fakeAudio();
+  return [
+    audioLayer({ id: 1, start: 0, duration: 4, trimStart: 0, audio: el }),
+    audioLayer({ id: 2, start: 4, duration: 4, trimStart: 4, audio: el }),
+  ];
+};
+
+test('duas metades do mesmo arquivo elegem UMA dona do elemento', () => {
+  assert.equal(soundOwners(metades(), 2).length, 1);
+});
+
+test('a metade que está soando é quem conduz, mesmo vindo antes na lista', () => {
+  // O bug: quem vinha depois vencia sempre, tocando ou não.
+  assert.equal(soundOwners(metades(), 2)[0]?.id, 1, 'no primeiro trecho, a primeira');
+  assert.equal(soundOwners(metades(), 6)[0]?.id, 2, 'no segundo trecho, a segunda');
+});
+
+test('sem ninguém soando ainda sobra uma dona — a que pausa o elemento', () => {
+  // Sem isso o elemento ficaria rolando pra sempre depois do último clipe.
+  const donas = soundOwners(metades(), 20);
+  assert.equal(donas.length, 1);
+  assert.equal(soundSyncPlan(donas[0]!, 20, rodando).play, false);
+});
+
+test('arquivos diferentes não disputam nada', () => {
+  const donas = soundOwners([
+    audioLayer({ id: 1, mediaId: 'musica', start: 0, duration: 10 }),
+    videoLayer({ id: 2, mediaId: 'clipe', start: 0, duration: 10 }),
+  ], 5);
+  assert.deepEqual(donas.map(l => l.id).sort(), [1, 2]);
+});
+
+test('entre dois clipes do mesmo elemento soando juntos, vence o de cima', () => {
+  // Um elemento tem um cursor só: alguém perde. Que perca por um critério, e
+  // sempre o mesmo — o último da lista é o que está na frente.
+  const el = fakeAudio();
+  const donas = soundOwners([
+    audioLayer({ id: 1, track: 0, start: 0, duration: 10, audio: el }),
+    audioLayer({ id: 2, track: 1, start: 0, duration: 10, audio: el }),
+  ], 5);
+  assert.equal(donas.length, 1);
+  assert.equal(donas[0]?.id, 2);
+});
+
+test('layer muda não rouba o elemento de quem está tocando', () => {
+  const el = fakeAudio();
+  const donas = soundOwners([
+    audioLayer({ id: 1, start: 0, duration: 10, audio: el }),
+    audioLayer({ id: 2, start: 0, duration: 10, mute: true, audio: el }),
+  ], 5);
+  assert.equal(donas[0]?.id, 1);
+});
+
+test('áudio destacado de um vídeo NÃO cala o vídeo', () => {
+  // Mesmo `mediaId`, elementos diferentes: é o que "separar áudio" produz.
+  // Agrupar por arquivo faria uma calar a outra.
+  const donas = soundOwners([
+    videoLayer({ id: 1, mediaId: 'clipe', start: 0, duration: 10 }),
+    audioLayer({ id: 2, mediaId: 'clipe', start: 0, duration: 10 }),
+  ], 5);
+  assert.deepEqual(donas.map(l => l.id).sort(), [1, 2]);
+});
+
+test('só layers com som entram na conta', () => {
+  assert.deepEqual(soundOwners([textLayer(), imageLayer()], 1), []);
+});
+
 // --- elemento -----------------------------------------------------------
 
 test('soundElement acha o elemento certo pra cada tipo', () => {
@@ -97,4 +203,70 @@ test('soundElement acha o elemento certo pra cada tipo', () => {
   const v = videoLayer();
   assert.equal(soundElement(a), a.audio);
   assert.equal(soundElement(v), v.video, 'a trilha do vídeo sai do próprio <video>');
+});
+
+// --- troca de clipe (o remix) -------------------------------------------
+
+test('trocar de clipe PULA, mesmo que o salto seja pequeno', () => {
+  // O caso do remix: várias fatias do mesmo arquivo, em ordem trocada,
+  // dividindo um `<audio>` só. Tratado como deriva, um salto de poucos
+  // milissegundos virava ajuste de andamento — que nunca resolve uma
+  // descontinuidade, e a faixa seguia lendo o arquivo em linha reta.
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02, switched: true });
+  assert.equal(plan.seekTo, 3, 'vai pro ponto do clipe novo');
+  assert.equal(plan.rate, 1);
+});
+
+test('a troca de clipe vence um seek em voo', () => {
+  // O seek em voo mirava o clipe ANTERIOR; insistir nele deixaria o elemento
+  // no lugar errado.
+  const plan = soundSyncPlan(trilha(), 4, {
+    ...rodando, currentTime: 1, seeking: true, switched: true,
+  });
+  assert.equal(plan.seekTo, 3);
+});
+
+test('sem troca, deriva pequena segue sendo deriva', () => {
+  const plan = soundSyncPlan(trilha(), 4, { ...rodando, currentTime: 3.02, switched: false });
+  assert.equal(plan.seekTo, null, 'nada de corte no som à toa');
+});
+
+// --- relógio-mestre -----------------------------------------------------
+
+test('a trilha condutora não é corrigida — nem por andamento, nem por seek', () => {
+  /**
+   * Quem dita o relógio é a referência, e referência não se corrige pela cópia.
+   *
+   * O caso não é teórico: o playhead pousa na grade de quadros, então `t` fica
+   * sistematicamente até 1/fps atrás da posição real do elemento. A 30fps são
+   * 33ms, acima da tolerância de 20ms — a condutora seria freada contra um
+   * resíduo de arredondamento, e como a linha do tempo segue ela, a reprodução
+   * inteira sairia lenta.
+   */
+  const l = trilha();
+  const t = 5;
+  const want = 1 + (t - 2);                       // trimStart + (t - start)
+  const atrasado = { ...rodando, currentTime: want + 0.033 };
+
+  const comum = soundSyncPlan(l, t, atrasado);
+  assert.notEqual(comum.rate, 1, 'sem ser mestre, 33ms de deriva têm que corrigir');
+
+  const mestre = soundSyncPlan(l, t, { ...atrasado, master: true });
+  assert.deepEqual(mestre, { seekTo: null, play: true, volume: 1, rate: 1 });
+});
+
+test('mesmo perdida de vez, a condutora não leva seek', () => {
+  // Um seek na condutora corta o som E dá um salto no relógio de todo mundo.
+  const l = trilha();
+  const perdida = { ...rodando, currentTime: 40 };
+  assert.notEqual(soundSyncPlan(l, 5, perdida).seekTo, null, 'sem ser mestre, resync');
+  assert.equal(soundSyncPlan(l, 5, { ...perdida, master: true }).seekTo, null);
+});
+
+test('ser mestre não impede a trilha de entrar posicionada', () => {
+  // A entrada é o único momento em que o seek é de graça (ninguém está ouvindo
+  // ainda), e é ele que fixa o alinhamento absoluto. Vem antes do caso mestre.
+  const plan = soundSyncPlan(trilha(), 5, { playing: true, currentTime: 0, paused: true, master: true });
+  assert.equal(plan.seekTo, 4);
+  assert.equal(plan.play, true);
 });

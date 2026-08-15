@@ -1,14 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { trimLeft, trimRight } from '../engine/project.ts';
-import { previewMode } from '../engine/previewMode.ts';
+import { autoPrerender } from '../engine/autoPrerender.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
+import { PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
+import { frameProvider } from '../engine/videoFrames.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
+import { Waveform } from './Waveform.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
-import { topTrack, freeWindow } from '../engine/project.ts';
+import { magnetize, magnetTargets, MAGNET_PX } from '../engine/magnet.ts';
+import {
+  topTrackOf, trackKind, layersOfKind, freeWindow, rulerDuration,
+} from '../engine/project.ts';
+import type { TrackKind } from '../engine/project.ts';
 import { stepFrame } from '../engine/frameCache.ts';
 import { effectiveGain } from '../engine/audioMix.ts';
+import {
+  timelineView, tickStep, zoomAnchor, clampScroll, followPlayhead,
+} from '../engine/timelineView.ts';
 
 /** O clipe emite som audível agora? Só isso decide se a faixinha aparece. */
 const hasSound = (layer: Layer): boolean =>
@@ -43,13 +53,35 @@ export function Timeline({
   const rulerRef = useRef<HTMLDivElement>(null);
   const tracksRef = useRef<HTMLDivElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
+  /** A guia vertical do ímã. Escrita direto no DOM, como o playhead. */
+  const snapRef = useRef<HTMLDivElement>(null);
+  /** A janela que rola. O conteúdo dentro dela é maior que ela quando há zoom. */
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const rangeRef = useRef<HTMLSpanElement>(null);
   const [playing, setPlaying] = useState(player.playing);
   const [duration, setDuration] = useState(player.duration);
-  const [fast, setFast] = useState(previewMode.fast);
+  const [view, setView] = useState(() => ({
+    pxPerSecond: timelineView.pxPerSecond,
+    contentWidth: timelineView.contentWidth,
+    scrollable: timelineView.scrollable,
+  }));
+  const [autoPre, setAutoPre] = useState(autoPrerender.on);
   const [range, setRange] = useState<{ in: number | null; out: number | null }>(
     () => ({ in: player.rangeIn, out: player.rangeOut }),
   );
   const [preparing, setPreparing] = useState(prerenderStatus.running);
+
+  /**
+   * Comprimento da RÉGUA: o conteúdo mais a pista de arrasto (`TIMELINE_TAIL`).
+   *
+   * Distinto de `player.duration`, que é só o conteúdo. Tudo que a timeline
+   * DESENHA (clipes, marcas, cursor, zoom) mede por este; tudo que EXECUTA
+   * (export, loop, limite do scrub) mede pela duração. Sem a separação, ou o
+   * projeto não pode crescer, ou o export leva junto cinco segundos de nada.
+   */
+  const rulerSpan = rulerDuration(project.layers);
+  const rulerSpanRef = useRef(rulerSpan);
+  rulerSpanRef.current = rulerSpan;
 
   // Guarda o handler de play: o atalho de teclado precisa enxergar o estado
   // atual sem religar o listener a cada render.
@@ -60,27 +92,155 @@ export function Timeline({
 
   useEffect(() => {
     const unsubFrame = player.onFrame(t => {
-      const pct = (t / player.duration) * 100;
+      const pct = (t / rulerSpanRef.current) * 100;
       if (headRef.current) headRef.current.style.left = `${pct}%`;
       if (tcRef.current) tcRef.current.textContent = fmt(t);
+
+      /**
+       * Segue o cursor durante a reprodução, escrevendo `scrollLeft` direto.
+       *
+       * Só tocando: enquanto você arrasta o cursor, quem manda na vista é você
+       * — a timeline correndo atrás do ponteiro no meio de um gesto é o tipo de
+       * coisa que faz errar a mira.
+       */
+      const wrap = wrapRef.current;
+      if (!wrap || !player.playing) return;
+      const next = followPlayhead(timelineView.xOf(t), wrap.scrollLeft, wrap.clientWidth);
+      if (next !== null) {
+        wrap.scrollLeft = clampScroll(next, timelineView.contentWidth, wrap.clientWidth);
+      }
     });
     const unsubState = player.onState(p => {
       setPlaying(p.playing);
       setDuration(p.duration);
       setRange({ in: p.rangeIn, out: p.rangeOut });
     });
-    const unsubMode = previewMode.subscribe(setFast);
+    const unsubMode = autoPrerender.subscribe(setAutoPre);
     const unsubPre = prerenderStatus.subscribe(s => setPreparing(s.running));
-    return () => { unsubFrame(); unsubState(); unsubMode(); unsubPre(); };
+    // O zoom é ação discreta (um clique, um passo de roda), então um render por
+    // evento é barato — o que não pode custar render é rolar, e rolar é nativo.
+    const unsubView = timelineView.subscribe(v => setView({
+      pxPerSecond: v.pxPerSecond,
+      contentWidth: v.contentWidth,
+      scrollable: v.scrollable,
+    }));
+    return () => { unsubFrame(); unsubState(); unsubMode(); unsubPre(); unsubView(); };
+  }, []);
+
+  // A janela e a duração definem o piso do zoom ("cabe tudo"), então as duas
+  // alimentam o mesmo estado. O observer pega o resize da janela do navegador e
+  // também o dos painéis laterais mudando de tamanho.
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    timelineView.setViewport(wrap.clientWidth, rulerSpan);
+    const ro = new ResizeObserver(() => timelineView.setViewport(wrap.clientWidth, rulerSpan));
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [rulerSpan]);
+
+  /**
+   * `Ctrl` + roda dá zoom no cursor; roda sozinha rola.
+   *
+   * `passive: false` porque sem `preventDefault` o `Ctrl` + roda vira o zoom do
+   * navegador inteiro — a página cresce e a timeline fica do mesmo tamanho.
+   * Mesmo par de gestos do palco, de propósito: são a mesma pergunta feita em
+   * dois lugares, e responder diferente em cada um é o que faz decorar atalho.
+   */
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const anchorX = e.clientX - wrap.getBoundingClientRect().left;
+        const before = timelineView.pxPerSecond;
+        timelineView.setPxPerSecond(before * Math.exp(-e.deltaY * 0.0015));
+
+        const scroll = zoomAnchor(wrap.scrollLeft, anchorX, before, timelineView.pxPerSecond);
+        wrap.scrollLeft = clampScroll(scroll, timelineView.contentWidth, wrap.clientWidth);
+        return;
+      }
+
+      /**
+       * Roda vertical rola a timeline na HORIZONTAL — o único eixo que ela tem.
+       *
+       * Sozinho o navegador só rola isto com `deltaX`, ou seja: trackpad de
+       * dois dedos e Shift+roda. Um mouse de roda comum não teria como andar no
+       * projeto ampliado, porque a barra de rolagem é de sobreposição e nem
+       * sempre está lá pra ser arrastada.
+       */
+      if (!timelineView.scrollable) return;   // nada a rolar: a página que role
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!delta) return;
+      e.preventDefault();
+      wrap.scrollLeft = clampScroll(
+        wrap.scrollLeft + delta, timelineView.contentWidth, wrap.clientWidth,
+      );
+    };
+
+    wrap.addEventListener('wheel', onWheel, { passive: false });
+    return () => wrap.removeEventListener('wheel', onWheel);
   }, []);
 
   /**
-   * Play com fidelidade: se o trecho ainda não está inteiro no cache, prepara
-   * primeiro e só então reproduz. Foi a escolha explícita — esperar um pouco é
-   * aceitável, reproduzir com buraco e tremendo não é.
+   * O trecho visível, escrito direto no DOM.
    *
-   * `⚡ FAST` é a saída pra quando você quer o contrário: reproduz na hora,
-   * aceitando qualidade menor.
+   * Não é enfeite: a barra de rolagem do navegador é de sobreposição e some
+   * quando você não está rolando — some justamente no estado em que ela seria a
+   * única coisa dizendo "tem mais projeto pra esse lado". Este rótulo é a
+   * afordância que sobra, e de quebra diz ONDE você está, o que a barra nunca
+   * disse.
+   *
+   * Escrita direta, como o timecode: rolar não pode custar render.
+   */
+  const paintRange = () => {
+    const wrap = wrapRef.current;
+    const el = rangeRef.current;
+    if (!wrap || !el) return;
+    // A duração sai do `player`, não do estado do React: o listener de rolagem
+    // é registrado uma vez só e congelaria o valor que existia na montagem —
+    // um projeto que virou 60s continuaria sendo anunciado como de 8s.
+    const from = timelineView.timeAt(wrap.scrollLeft);
+    const to = Math.min(timelineView.timeAt(wrap.scrollLeft + wrap.clientWidth), rulerSpanRef.current);
+    el.textContent = `${from.toFixed(1)}–${to.toFixed(1)}s`;
+  };
+
+  // Roda depois de cada render (o zoom causa um) e a cada rolagem.
+  useEffect(paintRange);
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    wrap.addEventListener('scroll', paintRange, { passive: true });
+    return () => wrap.removeEventListener('scroll', paintRange);
+  }, []);
+
+  /** Voltar pro fit leva a vista pro começo: com tudo à vista, rolagem não existe. */
+  const fitAll = () => {
+    timelineView.fit();
+    if (wrapRef.current) wrapRef.current.scrollLeft = 0;
+  };
+
+  /** Zoom pelos botões: ancora no meio da vista, que é pra onde se está olhando. */
+  const zoomBy = (dir: 1 | -1) => {
+    const wrap = wrapRef.current;
+    const before = timelineView.pxPerSecond;
+    if (dir > 0) timelineView.zoomIn(); else timelineView.zoomOut();
+    if (!wrap) return;
+    const scroll = zoomAnchor(
+      wrap.scrollLeft, wrap.clientWidth / 2, before, timelineView.pxPerSecond,
+    );
+    wrap.scrollLeft = clampScroll(scroll, timelineView.contentWidth, wrap.clientWidth);
+  };
+
+  /**
+   * Play imediato por padrão; fiel quando você pede.
+   *
+   * Com `⚙ AUTO PRÉ-RENDER` ligado, um trecho que ainda não está inteiro no
+   * cache é preparado ANTES de soltar o play — a reprodução sai então da mesma
+   * composição quadro a quadro que o export. Desligado (o padrão), toca na hora
+   * e o cache se enche com o que passar na tela. Ver `autoPrerender.ts`.
    */
   const handlePlay = async () => {
     if (preparing) { cancelPrerender(); return; }
@@ -88,16 +248,19 @@ export function Timeline({
 
     const { from, to } = player.effectiveRange();
 
-    if (!previewMode.fast && !isRangeCached(project, { from, to })) {
+    // Com o cache fora do preview, pré-renderizar antes do play só cobraria a
+    // espera sem entregar nada — o desenho continuaria saindo ao vivo. Ver
+    // `PREVIEW_CACHE_ENABLED`.
+    if (PREVIEW_CACHE_ENABLED && autoPrerender.on && !isRangeCached(project, { from, to })) {
       player.seek(from);
       const scale = renderScale(viewport.zoom, window.devicePixelRatio || 1);
-      const { cancelled } = await ensureRangeCached(project, { from, to, scale });
+      const { cancelled } = await ensureRangeCached(project, { from, to, scale, frames: frameProvider });
       if (cancelled) return;   // você mandou parar: não sai reproduzindo sozinho
     }
 
     // Decidido UMA vez, aqui: o trecho inteiro sai do cache ou nada sai.
     // Misturar as duas origens quadro a quadro é o que faz o vídeo tremer.
-    player.fromCache = isRangeCached(project, { from, to });
+    player.fromCache = PREVIEW_CACHE_ENABLED && isRangeCached(project, { from, to });
 
     /**
      * Tocando do cache o `<video>` não pinta nada, mas continua sendo a fonte
@@ -151,11 +314,24 @@ export function Timeline({
     return () => removeEventListener('keydown', onKey);
   }, []);
 
+  /**
+   * Pixel do ponteiro -> instante, pela conversão da PRÓPRIA régua.
+   *
+   * Era `(x / r.width) * player.duration`, e isso assumia que a régua mede
+   * exatamente a duração do projeto. Ela não mede: `rulerDuration` acrescenta
+   * uma sobra de 1 a 5s depois do último clipe, pra dar onde soltar um clipe no
+   * fim. Então a régua vale `rulerSpan` segundos e a conta dividia por
+   * `duration` — o cursor andava só `duration / rulerSpan` do que o mouse
+   * andou. Num projeto de 2s isso são 67% do gesto; num de 1s, metade.
+   *
+   * `timelineView.pxPerSecond` é a conversão que gerou a largura do conteúdo,
+   * então usá-la direto tira a duração da conta e o erro deixa de ser possível.
+   */
   const scrub = (e: { clientX: number }) => {
     const ruler = rulerRef.current;
     if (!ruler) return;
     const r = ruler.getBoundingClientRect();
-    player.seek(((e.clientX - r.left) / r.width) * player.duration);
+    player.seek(timelineView.timeAt(e.clientX - r.left));
   };
 
   const startScrub = (e: React.PointerEvent) => {
@@ -179,26 +355,56 @@ export function Timeline({
     e.stopPropagation();          // don't also start a move drag
     onSelect(layer.id);
 
-    const ruler = rulerRef.current;
-    if (!ruler) return;
-    const rect = ruler.getBoundingClientRect();
     const startX = e.clientX;
     const orig = { ...layer };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     // Os limites saem dos vizinhos da mesma faixa: esticar por cima do clipe
     // seguinte quebraria a invariante que sustenta a ordem de desenho.
     const bounds = freeWindow(project.layers, layer);
+    const alvos = magnetTargets(project.layers.filter(l => l.id !== layer.id), [0, player.t]);
+    // A borda que se move: é ela que o ímã atrai, não o clipe inteiro.
+    const bordaOriginal = edge === 'left' ? orig.start : orig.start + orig.duration;
 
     const move = (ev: PointerEvent) => {
-      const delta = ((ev.clientX - startX) / rect.width) * player.duration;
+      // Pixels arrastados -> segundos, pela mesma conversão da régua. Ver
+      // `scrub`: dividir pela duração do projeto encolhia o gesto inteiro.
+      const pxPorSegundo = timelineView.pxPerSecond;
+      const bruto = (ev.clientX - startX) / pxPorSegundo;
+
+      /**
+       * `span: 0` porque aqui o que gruda é um PONTO, não um clipe: as duas
+       * bordas do ímã coincidem e a mesma função serve sem caso especial.
+       *
+       * Trimar é onde o ímã mais paga: encostar o fim de um clipe no começo do
+       * vizinho a olho deixa um buraco de poucos milissegundos que não aparece
+       * na timeline e aparece no export, como um piscar preto no corte.
+       */
+      const grudado = ev.altKey ? null : magnetize({
+        start: bordaOriginal + bruto,
+        span: 0,
+        targets: alvos,
+        radius: MAGNET_PX / pxPorSegundo,
+      });
+      const delta = grudado?.snappedTo !== undefined && grudado?.snappedTo !== null
+        ? grudado.start - bordaOriginal
+        : bruto;
+
       const patch = edge === 'left'
         ? trimLeft(orig, delta, bounds)
         : trimRight(orig, delta, bounds);
       if (patch) onChange(layer.id, patch);
+
+      const guia = snapRef.current;
+      if (guia) {
+        const grudou = grudado?.snappedTo != null;
+        guia.classList.toggle('on', grudou);
+        if (grudou) guia.style.left = `${(grudado!.snappedTo! / rulerSpan) * 100}%`;
+      }
     };
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
+      snapRef.current?.classList.remove('on');
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
@@ -224,7 +430,11 @@ export function Timeline({
     const clip = e.currentTarget as HTMLElement;
     if (!ruler || !tracks) return;
 
-    const pxPerSecond = ruler.getBoundingClientRect().width / player.duration;
+    // A conversão da régua, não `largura / duração`: a régua vale `rulerSpan`
+    // segundos, não `player.duration`. Ver `scrub` — mesmo defeito, e aqui ele
+    // fazia o clipe ficar para trás do ponteiro durante o arrasto.
+    const pxPerSecond = timelineView.pxPerSecond;
+    const kind = trackKind(layer);
 
     // A altura da faixa sai do layout já aplicado, não de uma constante: assim
     // mexer no CSS não desalinha silenciosamente o cálculo do arrasto.
@@ -236,15 +446,40 @@ export function Timeline({
       ? second.offsetTop - first.offsetTop
       : (first?.offsetHeight ?? 0);
 
-    // Todo mundo menos o próprio arrastado — senão ele colidiria consigo mesmo.
-    const others = project.layers
+    // Só o próprio tipo, e sem ele mesmo: um clipe de áudio não colide com um
+    // de vídeo na "faixa 1", porque são faixas 1 diferentes.
+    const others = layersOfKind(project.layers, kind)
       .filter(l => l.id !== layer.id)
       .map(l => ({ track: l.track, start: l.start, duration: l.duration }));
 
+    /**
+     * O que atrai: as bordas de TODOS os clipes, mais o playhead e o zero.
+     *
+     * Todos, e não só os do mesmo tipo como em `others`: colidir é uma coisa
+     * (só acontece dentro do próprio espaço de faixa), alinhar é outra —
+     * encostar um título no corte do vídeo de baixo é o uso mais comum que
+     * existe, e restringir ao tipo faria o ímã falhar justamente aí.
+     */
+    const alvos = magnetTargets(
+      project.layers.filter(l => l.id !== layer.id),
+      [0, player.t],
+    );
+
     const startX = e.clientX;
     const startY = e.clientY;
-    const rowOf = (track: number) => flipOrder(track, rows.length);
-    let plan = { start: layer.start, track: layer.track, insert: false, valid: true };
+    /**
+     * Faixa -> linha na tela. Os dois grupos são contíguos, então isto é só um
+     * deslocamento — e é por isso que `clipDragPlan` não precisou mudar: o
+     * arrasto continua acontecendo dentro do espaço de faixa do PRÓPRIO tipo, e
+     * atravessar pro outro grupo simplesmente não é representável.
+     */
+    const rowOf = (track: number) => (
+      kind === 'visual' ? flipOrder(track, visualRows) : visualRows + track
+    );
+    let plan = {
+      start: layer.start, track: layer.track, insert: false, valid: true,
+      snappedTo: null as number | null,
+    };
 
     clip.classList.add('clip-dragging');
     clip.setPointerCapture(e.pointerId);
@@ -265,11 +500,19 @@ export function Timeline({
         start: layer.start,
         track: layer.track,
         span: layer.duration,
-        duration: player.duration,
-        // A faixa vazia do topo entra na conta: é ela que permite tirar um
-        // clipe de uma faixa cheia e abrir uma nova.
-        maxTrack: topTrack(project.layers) + 1,
+        duration: rulerSpan,
+        // A faixa vazia extra entra na conta: é ela que permite tirar um clipe
+        // de uma faixa cheia e abrir uma nova, dentro do próprio tipo.
+        maxTrack: topTrackOf(project.layers, kind) + 1,
+        // Só o vídeo desenha as linhas invertidas — ver `clipDragPlan`.
+        invertedRows: kind === 'visual',
         others,
+        /**
+         * Segurar Alt desliga o ímã. Lido a cada movimento, não no início: você
+         * arrasta grudando, percebe que precisa de um lugar exato entre duas
+         * bordas, e solta o ímã sem largar o clipe.
+         */
+        magnet: ev.altKey ? undefined : { targets: alvos, radius: MAGNET_PX / pxPerSecond },
       });
 
       // O clipe acompanha o plano JÁ arredondado na vertical, então ele encaixa
@@ -293,6 +536,14 @@ export function Timeline({
         // largar é o que faz esse tipo de arrasto parecer quebrado.
         drop.classList.toggle('blocked', !plan.valid);
       }
+
+      // A guia do ímã: sem ela o clipe salta sozinho e parece defeito.
+      const guia = snapRef.current;
+      if (guia) {
+        const grudou = plan.snappedTo !== null;
+        guia.classList.toggle('on', grudou);
+        if (grudou) guia.style.left = `${(plan.snappedTo! / rulerSpan) * 100}%`;
+      }
     };
 
     const up = () => {
@@ -302,6 +553,7 @@ export function Timeline({
       clip.classList.remove('clip-dragging', 'clip-blocked');
       clip.style.transform = '';
       drop?.classList.remove('on', 'blocked', 'inserting');
+      snapRef.current?.classList.remove('on');
 
       // Destino ocupado: o clipe volta pro lugar em vez de empurrar ninguém.
       if (!plan.valid) return;
@@ -324,14 +576,34 @@ export function Timeline({
    * propósito — o cálculo do arrasto mede o espaçamento entre as duas
    * primeiras linhas e assume que ele vale pra todas.
    */
-  const rows: Array<{ track: number; clips: Layer[] }> = [];
-  for (let track = topTrack(project.layers) + 1; track >= 0; track--) {
-    rows.push({ track, clips: project.layers.filter(l => l.track === track) });
+  const rows: Array<{ kind: TrackKind; track: number; clips: Layer[] }> = [];
+
+  // Vídeo em cima, INVERTIDO — faixa maior desenha por cima, então aparece por
+  // cima. Áudio embaixo, em ordem natural: ali o número não é profundidade, é
+  // só identidade, e inverter só teria confundido.
+  for (let track = topTrackOf(project.layers, 'visual') + 1; track >= 0; track--) {
+    rows.push({
+      kind: 'visual',
+      track,
+      clips: project.layers.filter(l => trackKind(l) === 'visual' && l.track === track),
+    });
+  }
+  const visualRows = rows.length;
+  for (let track = 0; track <= topTrackOf(project.layers, 'audio') + 1; track++) {
+    rows.push({
+      kind: 'audio',
+      track,
+      clips: project.layers.filter(l => trackKind(l) === 'audio' && l.track === track),
+    });
   }
 
-  const step = duration > 20 ? 5 : duration > 10 ? 2 : 1;
+  // O passo das marcas sai do ZOOM, não da duração: é quanto espaço um rótulo
+  // tem na tela que decide se ele cabe, e num projeto ampliado de 60s marcas de
+  // 5 em 5 segundos ficariam a meia tela uma da outra.
+  const step = tickStep(view.pxPerSecond);
   const ticks: number[] = [];
-  for (let s = 0; s <= duration; s += step) ticks.push(s);
+  // Índice vezes passo, e não soma acumulada: somar 0,1 trinta vezes não dá 3.
+  for (let i = 0; i * step <= rulerSpan + 1e-6; i++) ticks.push(+(i * step).toFixed(3));
 
   return (
     <div className="timeline">
@@ -348,45 +620,89 @@ export function Timeline({
           <span>{fmt(duration)}</span>
         </div>
 
-        <button
-          className={`btn btn-sm${fast ? ' on' : ''}`}
-          onClick={() => previewMode.toggle()}
-          title="Ligado: reproduz na hora, com qualidade menor. Desligado: prepara o trecho antes e reproduz liso e fiel."
-        >
-          ⚡ FAST
-        </button>
+        {/*
+          Escondido enquanto `PREVIEW_CACHE_ENABLED` é falso: o preview desenha
+          sempre ao vivo, então este botão não mudaria nada — e um interruptor
+          que não faz o que promete é pior que interruptor nenhum. Volta junto
+          com o cache.
+        */}
+        {PREVIEW_CACHE_ENABLED && (
+          <button
+            className={`btn btn-sm${autoPre ? ' on' : ''}`}
+            onClick={() => autoPrerender.toggle()}
+            title="Ligado: prepara o trecho antes de tocar — demora, e reproduz igual ao arquivo exportado. Desligado: toca na hora."
+          >
+            ⚙ AUTO PRÉ-RENDER
+          </button>
+        )}
+
+        <div className="tl-zoom">
+          <button
+            className="btn btn-sm"
+            onClick={() => zoomBy(-1)}
+            disabled={!view.scrollable}
+            title="Menos zoom na timeline"
+          >
+            −
+          </button>
+          <button className="btn btn-sm" onClick={() => zoomBy(1)} title="Mais zoom na timeline (Ctrl + roda)">
+            +
+          </button>
+          <button
+            className={`btn btn-sm${view.scrollable ? '' : ' on'}`}
+            onClick={fitAll}
+            title="Mostrar o projeto inteiro"
+          >
+            TUDO
+          </button>
+          <span className="tl-range" ref={rangeRef} />
+        </div>
 
         <div className="transport-spacer" />
 
+        {/*
+          Leitura, não campo. A duração saiu de "número que você digita" pra
+          "onde termina o último clipe" — ver `projectDuration`. Digitá-la só
+          servia pra deixar clipe de fora do export sem avisar.
+        */}
         <label className="field-label" style={{ margin: 0 }}>Duração</label>
-        <input
-          className="inp"
-          style={{ width: 62 }}
-          type="number"
-          min="1"
-          step="0.5"
-          value={duration}
-          onChange={e => player.setDuration(parseFloat(e.target.value) || 8)}
-        />
+        <span className="tl-duration" title="Vai até o fim do último clipe">
+          {fmt(duration)}
+        </span>
       </div>
 
-      <div className="tl-wrap">
-        <div className="ruler" ref={rulerRef} onPointerDown={startScrub}>
-          {(range.in !== null || range.out !== null) && (
-            <div
-              className="range-band"
-              style={{
-                left: `${((range.in ?? 0) / duration) * 100}%`,
-                width: `${(((range.out ?? duration) - (range.in ?? 0)) / duration) * 100}%`,
-              }}
-            />
-          )}
-          {ticks.map(s => (
-            <div key={s} className="tick" style={{ left: `${(s / duration) * 100}%` }}>
-              <span className="tick-lab">{s}s</span>
-            </div>
-          ))}
-        </div>
+      {/*
+        A janela que rola, e dentro dela o conteúdo de `duration × pxPerSecond`
+        pixels. Clipes, marcas e cursor continuam posicionados em PORCENTAGEM
+        do conteúdo — então dar zoom é mudar uma largura só, e nenhuma das
+        contas de arrasto, trim ou scrub precisou mudar: todas medem o elemento
+        de verdade com `getBoundingClientRect`, que já cresce junto.
+      */}
+      <div className="tl-wrap" ref={wrapRef}>
+        <div className="tl-content" style={{ width: view.contentWidth }}>
+          <div className="ruler" ref={rulerRef} onPointerDown={startScrub}>
+            {(range.in !== null || range.out !== null) && (
+              <div
+                className="range-band"
+                style={{
+                  left: `${((range.in ?? 0) / rulerSpan) * 100}%`,
+                  width: `${(((range.out ?? duration) - (range.in ?? 0)) / rulerSpan) * 100}%`,
+                }}
+              />
+            )}
+            {ticks.map(s => (
+              <div key={s} className="tick" style={{ left: `${(s / rulerSpan) * 100}%` }}>
+                {/*
+                  Perto do fim o rótulo vira pra dentro. Solto, ele vazava pra
+                  fora do conteúdo e criava ~28px de rolagem que não existia —
+                  a timeline "cabendo inteira" e mesmo assim rolando um pouco.
+                */}
+                <span className={`tick-lab${s / rulerSpan > 0.9 ? ' tick-lab-end' : ''}`}>
+                  {step < 1 ? s.toFixed(2) : s}s
+                </span>
+              </div>
+            ))}
+          </div>
 
         {/*
           As faixas saem na ordem VISUAL, espelho da ordem de desenho: a faixa
@@ -395,8 +711,17 @@ export function Timeline({
           layer pra trás.
         */}
         <div className="tracks" ref={tracksRef}>
-          {rows.map(({ track, clips }) => (
-            <div className={`track${clips.length ? '' : ' track-empty'}`} key={track}>
+          {rows.map(({ kind, track, clips }) => (
+            <div
+              className={
+                'track'
+                + (clips.length ? '' : ' track-empty')
+                + (kind === 'audio' ? ' track-audio' : '')
+                // A primeira linha de áudio ganha o traço que separa os grupos.
+                + (kind === 'audio' && track === 0 ? ' track-audio-first' : '')
+              }
+              key={`${kind}:${track}`}
+            >
               {clips.map(layer => (
                 <div
                   key={layer.id}
@@ -408,8 +733,8 @@ export function Timeline({
                     (layer.id === selectedId ? ' clip-sel' : '')
                   }
                   style={{
-                    left: `${(layer.start / duration) * 100}%`,
-                    width: `${(layer.duration / duration) * 100}%`,
+                    left: `${(layer.start / rulerSpan) * 100}%`,
+                    width: `${(layer.duration / rulerSpan) * 100}%`,
                   }}
                   onPointerDown={e => startClipDrag(e, layer)}
                   title={`${layer.name} — arraste pra mover no tempo ou trocar de faixa`}
@@ -418,7 +743,23 @@ export function Timeline({
                     className="clip-handle clip-handle-l"
                     onPointerDown={e => startTrim(e, layer, 'left')}
                   />
-                  <span className="clip-name">{layer.name}</span>
+                  {/*
+                    A onda entra ATRÁS do nome, ocupando o corpo do clipe. É o
+                    que faz cortar no ritmo virar mira visual em vez de
+                    tentativa e erro — a batida e o silêncio entre as frases
+                    estão no envelope, não no nome do arquivo.
+                  */}
+                  {layer.type === 'audio'
+                    ? (
+                      /*
+                        Sem nome no clipe de áudio: o rótulo tapava justamente a
+                        parte da onda onde o clipe começa, que é onde se mira pra
+                        cortar. O nome continua no `title` do clipe e no painel
+                        de props — ali ele não disputa espaço com a informação.
+                      */
+                      <Waveform layer={layer} />
+                    )
+                    : <span className="clip-name">{layer.name}</span>}
                   {/*
                     O som do clipe, visível e grudado nele. Não é uma layer
                     separada de propósito: a trilha de um vídeo anda junto com
@@ -434,10 +775,12 @@ export function Timeline({
               ))}
             </div>
           ))}
-          <div className="track-drop" ref={dropRef} />
-        </div>
+            <div className="track-drop" ref={dropRef} />
+          </div>
 
-        <div className="playhead" ref={headRef} />
+          <div className="snap-guide" ref={snapRef} />
+          <div className="playhead" ref={headRef} />
+        </div>
       </div>
 
       <PrerenderBar project={project} onMessage={onMessage} />

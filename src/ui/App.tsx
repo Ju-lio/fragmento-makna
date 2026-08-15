@@ -3,7 +3,10 @@ import { player } from '../engine/player.ts';
 import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
-import { clone, compactTracks, nextId, splitLayer, topTrack } from '../engine/project.ts';
+import {
+  clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer,
+  topTrackOf, trackKind,
+} from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
@@ -11,15 +14,22 @@ import {
 } from '../engine/serialize.ts';
 import type { MediaElement } from '../engine/serialize.ts';
 import {
-  newMediaId, putMedia, allMedia, urlFor, releaseAll, pruneMedia,
-  saveProject, loadProject, clearProject,
+  newMediaId, putMedia, allMedia, urlFor, existingUrl, releaseAll, pruneMedia,
+  saveProject, loadProject, clearProject, mediaBlob,
+  listSnapshots, putSnapshot, getSnapshot, deleteSnapshots, clearSnapshots,
+  DatabaseBlockedError,
 } from '../engine/mediaStore.ts';
+import { snapshotPlan, snapshotLabel } from '../engine/snapshots.ts';
+import { toFrag, fromFrag, fragFileName, mediaNeeded, FragFileError } from '../engine/fragFile.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
-import { attachAudioElement, syncSoundLayers, stopAllSound } from '../engine/audioSync.ts';
+import { attachAudioElement, stopAllSound } from '../engine/audioSync.ts';
+import { soundEngine } from '../engine/soundEngine.ts';
+import { clearPeaks } from '../engine/waveformStore.ts';
+import { frameFor, registerSource, releaseFrames } from '../engine/videoFrames.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
@@ -35,12 +45,74 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'fx', label: 'Efeitos' },
 ];
 
+/**
+ * Guarda uma versão no histórico, se a política deixar.
+ *
+ * Silenciosa nos dois sentidos: não avisa quando guarda (seria ruído a cada dois
+ * minutos) e não reclama quando falha. Histórico é rede de segurança — se a
+ * cota do navegador acabar, o certo é o editor continuar salvando o projeto
+ * principal, não parar de funcionar por causa do backup.
+ */
+async function guardarVersao(dados: unknown): Promise<void> {
+  try {
+    const agora = Date.now();
+    const plano = snapshotPlan((await listSnapshots()).map(at => ({ at })), agora);
+    if (!plano.write) return;
+    await putSnapshot(agora, dados);
+    // Apaga DEPOIS de gravar: o contrário abriria uma janela em que o histórico
+    // tem uma versão a menos e a nova ainda não existe.
+    if (plano.drop.length) await deleteSnapshots(plano.drop);
+  } catch { /* cota cheia: o projeto principal já está salvo */ }
+}
+
+/**
+ * Um elemento carregado por mídia guardada, pronto pra desserialização.
+ *
+ * Fora do componente porque não depende de estado nenhum — e porque é usada por
+ * DOIS caminhos: reabrir o projeto do disco e importar um `.frag`. Duas cópias
+ * disto divergiriam, e o jeito de divergir é uma delas esquecer o
+ * `registerSource` e o vídeo importado abrir sem imagem.
+ *
+ * Espera o `loadedmetadata` de cada um: a desserialização é síncrona e precisa
+ * dos elementos já resolvidos. Quem falhar em carregar simplesmente não entra no
+ * mapa, e vira `missingMedia` mais à frente — nunca uma exceção que derruba a
+ * abertura inteira por causa de um arquivo.
+ */
+async function carregarElementos(): Promise<Map<string, MediaElement>> {
+  const media = await allMedia();
+  const elements = new Map<string, MediaElement>();
+
+  await Promise.all(media.map(m => new Promise<void>(done => {
+    const url = urlFor(m.id, m.blob);
+    registerSource(m.id, url);
+    if (m.type.startsWith('audio/')) {
+      const a = attachAudioElement(new Audio());
+      a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
+      a.addEventListener('error', () => done(), { once: true });
+      a.src = url;
+    } else if (m.type.startsWith('video/')) {
+      const v = attachVideoElement(document.createElement('video'));
+      v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
+      v.addEventListener('error', () => done(), { once: true });
+      v.src = url;
+    } else {
+      const img = new Image();
+      img.onload = () => { elements.set(m.id, img); done(); };
+      img.onerror = () => done();
+      img.src = url;
+    }
+  })));
+
+  return elements;
+}
+
 export default function App() {
   const [project, setProject] = useState(defaultProject);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [tab, setTab] = useState<TabId>('media');
   const [toast, setToast] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const fragRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
 
@@ -52,6 +124,29 @@ export default function App() {
    * aqui é o que traduz um de volta pro outro na hora de criar uma layer.
    */
   const elementsRef = useRef(new Map<string, MediaElement>());
+
+  /**
+   * `<audio>` extras, um por arquivo, criados sob demanda.
+   *
+   * Separado de `elementsRef` porque o elemento "natural" de um vídeo é o
+   * `<video>`, e uma faixa destacada precisa de um cursor PRÓPRIO — senão ela
+   * disputa a posição com a imagem e uma das duas cala (ver `ownersByElement`).
+   * Como os dois leem a mesma `blob:`, não há byte a mais nem download extra.
+   */
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
+
+  const audioElementFor = useCallback((mediaId: string): HTMLAudioElement | null => {
+    const found = audioElementsRef.current.get(mediaId);
+    if (found) return found;
+
+    const url = existingUrl(mediaId);
+    if (!url) return null;   // a mídia ainda não foi carregada nesta sessão
+
+    const el = attachAudioElement(new Audio());
+    el.src = url;
+    audioElementsRef.current.set(mediaId, el);
+    return el;
+  }, []);
 
   const historyRef = useRef<History<Project> | null>(null);
   historyRef.current ??= new History(project);
@@ -109,6 +204,23 @@ export default function App() {
    */
   const [restoring, setRestoring] = useState(true);
 
+  /**
+   * O projeto guardado não pôde ser lido — então NADA pode ser gravado por cima.
+   *
+   * Sem isto, um projeto ilegível era **destruído 600ms depois de abrir o
+   * editor**: o restore falhava, o editor caía no projeto de exemplo, o
+   * `finally` liberava o autosave e o exemplo era gravado por cima. Os bytes
+   * sumiam, e não havia nem como tentar de novo — o pior resultado possível,
+   * porque o motivo de o restore falhar costuma ser um defeito NOSSO (uma
+   * migração nova, um campo que mudou de forma), e quem paga é a edição de
+   * quem estava usando.
+   *
+   * Enquanto isto for verdade o editor é só leitura, e diz isso. Sai por
+   * decisão explícita: `✧ NOVO` descarta, que é o único gesto que significa
+   * "pode escrever por cima".
+   */
+  const [saveBlocked, setSaveBlocked] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -127,31 +239,16 @@ export default function App() {
 
         // Cada mídia guardada vira um elemento antes de montar as layers: a
         // desserialização é síncrona e precisa dos elementos já resolvidos.
-        const media = await allMedia();
-        const elements = new Map<string, MediaElement>();
-
-        await Promise.all(media.map(m => new Promise<void>(done => {
-          const url = urlFor(m.id, m.blob);
-          if (m.type.startsWith('audio/')) {
-            const a = attachAudioElement(new Audio());
-            a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
-            a.addEventListener('error', () => done(), { once: true });
-            a.src = url;
-          } else if (m.type.startsWith('video/')) {
-            const v = attachVideoElement(document.createElement('video'));
-            v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
-            v.addEventListener('error', () => done(), { once: true });
-            v.src = url;
-          } else {
-            const img = new Image();
-            img.onload = () => { elements.set(m.id, img); done(); };
-            img.onerror = () => done();
-            img.src = url;
-          }
-        })));
+        const elements = await carregarElementos();
         if (cancelled) return;
 
-        const { project: loaded, missingMedia } = deserializeProject(saved, id => elements.get(id) ?? null);
+        const { project: loaded, missingMedia } = deserializeProject(saved, (id, type) => (
+          // Layer de áudio quer um `<audio>`, mesmo quando o arquivo é vídeo:
+          // é o que uma faixa destacada é, depois de reabrir o projeto.
+          type === 'audio' && !(elements.get(id) instanceof HTMLAudioElement)
+            ? audioElementFor(id)
+            : elements.get(id) ?? null
+        ));
 
         // O acervo do painel usa este registro pra reencontrar os elementos.
         elementsRef.current = elements;
@@ -168,7 +265,16 @@ export default function App() {
       } catch (err) {
         // Projeto ilegível não pode impedir o editor de abrir. Fica no de
         // exemplo e avisa, em vez de mostrar tela branca.
-        flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir o projeto salvo');
+        //
+        // E TRAVA a gravação: o que está no disco é o trabalho de alguém, e
+        // não conseguir lê-lo não é motivo pra apagá-lo. Ver `saveBlocked`.
+        if (!cancelled) setSaveBlocked(true);
+        // A mensagem dos erros que a gente mesmo levanta já diz o que fazer —
+        // "feche as outras abas", "salvo numa versão mais nova". Trocá-la por
+        // um genérico esconderia justamente a parte acionável.
+        flash(err instanceof ProjectFormatError || err instanceof DatabaseBlockedError
+          ? err.message
+          : 'Não consegui abrir o projeto salvo');
       } finally {
         if (!cancelled) setRestoring(false);
       }
@@ -185,12 +291,17 @@ export default function App() {
    * transações que terminam fora de ordem.
    */
   useEffect(() => {
-    if (restoring) return;
+    if (restoring || saveBlocked) return;
     const timer = setTimeout(() => {
-      saveProject(serializeProject(project)).catch(() => { /* cota cheia ou modo privado */ });
+      const dados = serializeProject(project);
+      saveProject(dados)
+        // O histórico só depois de a gravação principal dar certo: guardar uma
+        // versão de algo que não foi salvo confundiria as duas coisas.
+        .then(() => guardarVersao(dados))
+        .catch(() => { /* cota cheia ou modo privado */ });
     }, 600);
     return () => clearTimeout(timer);
-  }, [project, restoring]);
+  }, [project, restoring, saveBlocked]);
 
   useEffect(() => {
     player.start();
@@ -199,10 +310,21 @@ export default function App() {
     // The canvas font must be fetched explicitly; repaint once it lands.
     ensureDisplayFont().then(() => player.invalidate());
 
+    /**
+     * De onde o tocador tira os bytes pra decodificar. Instalado uma vez.
+     *
+     * O módulo do som não conhece o IndexedDB — mesma injeção que o
+     * `renderAudio` do export já usava.
+     */
+    soundEngine.setBlobResolver(mediaBlob);
+
     // Nem vídeo nem som podem continuar rolando depois que o transporte para.
     const unsubState = player.onState(p => {
       if (!p.playing) {
         pauseAllVideo(projectRef.current);
+        soundEngine.stop();
+        // Os elementos não tocam mais, mas podem ter sobrado rolando de uma
+        // sessão anterior a esta mudança. Barato, e cobre o caso.
         stopAllSound(projectRef.current.layers);
       }
     });
@@ -213,14 +335,52 @@ export default function App() {
      * `onFrame` é pulado quando nada mudou na tela — que é exatamente o
      * momento em que a música tem que continuar tocando. Amarrar som a
      * repintura faria a trilha travar num trecho parado.
+     *
+     * Quase todo tick não faz nada: uma agenda já no ar toca sozinha. Ver
+     * `soundAction`.
      */
     const unsubTick = player.onTick(t => {
-      syncSoundLayers(projectRef.current.layers, t, player.playing, {
-        // Com a imagem saindo do cache, ninguém mais conduz os <video> — e é
-        // deles que sai o som do clipe.
-        driveVideo: player.fromCache,
+      soundEngine.sync(projectRef.current.layers, {
+        t, playing: player.playing, duration: player.duration,
       });
     });
+
+    /**
+     * O som passa a ditar o tempo — agora pelo `AudioContext`.
+     *
+     * Era o `currentTime` de um `<video>`, e num remix esse elemento é buscado
+     * a cada corte: medido, ele andava 88,8% do tempo de parede contra 98,7% do
+     * mesmo arquivo num clipe só. Como a linha do tempo seguia o elemento, a
+     * reprodução inteira saía 11% lenta. O `currentTime` do contexto de áudio
+     * corre no hardware e não conhece seek. Ver `soundSchedule.ts`.
+     *
+     * Instalado uma vez, aqui, e não a cada mudança de projeto: reinstalar
+     * descartaria a leitura anterior e perderia o delta a cada quadro,
+     * deixando a reprodução parada.
+     */
+    player.setTimeSource(() => soundEngine.clock());
+
+    /**
+     * Janela de inspeção pro relógio, só em desenvolvimento.
+     *
+     * Existe porque a verificação deste projeto acontece no navegador, com o
+     * app de verdade — e de fora da página não há como perguntar o que o
+     * relógio respondeu neste tick. Sem isso, medir o relógio exige
+     * instrumentar o código a cada investigação, que é justamente o passo caro
+     * que fez a bancada anterior se perder.
+     *
+     * Só leitura, e some do pacote em produção (`import.meta.env.DEV`).
+     */
+    if (import.meta.env.DEV) {
+      (globalThis as Record<string, unknown>).__FRAG__ = {
+        player,
+        layers: () => projectRef.current.layers,
+        soundClock: () => soundEngine.clock(),
+        // A saída do tocador, pra bancada gravar o que está sendo tocado e
+        // conferir o CONTEÚDO do som, não só que houve som.
+        soundOutput: () => soundEngine.output(),
+      };
+    }
 
     // ?t=1.6 opens the editor parked at that timestamp.
     const t = parseFloat(new URLSearchParams(location.search).get('t') ?? '');
@@ -228,6 +388,29 @@ export default function App() {
 
     return () => { unsubState(); unsubTick(); player.stop(); };
   }, []);
+
+  /**
+   * A duração do projeto é DERIVADA do conteúdo, não digitada.
+   *
+   * Um efeito só, aqui, cobre todo caminho que mexe em layers — edição, undo,
+   * importação, arrasto, restauração do disco. A alternativa era cada um deles
+   * lembrar de atualizar o relógio, e o que esquecesse produziria exatamente o
+   * bug que isto veio matar: clipe fora da duração, cortado do export sem aviso.
+   */
+  useEffect(() => {
+    player.setDuration(projectDuration(project.layers));
+  }, [project.layers]);
+
+  /**
+   * A grade de quadros do projeto é a do relógio. Pelo mesmo motivo da duração:
+   * um efeito só cobre projeto novo, importado e restaurado do disco.
+   *
+   * É o que faz o playhead pousar sempre num quadro que o export também
+   * renderiza — ver o cabeçalho de `player.ts`.
+   */
+  useEffect(() => {
+    player.setFps(project.fps);
+  }, [project.fps]);
 
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 1600); };
 
@@ -259,7 +442,7 @@ export default function App() {
     });
     commit(p => ({
       ...p,
-      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+      layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
     setSelectedId(layer.id);
     setTab('props');
@@ -270,7 +453,7 @@ export default function App() {
     // clipe existente esconderia o que já estava lá sem aviso.
     commit(p => ({
       ...p,
-      layers: [...p.layers, { ...layer, track: topTrack(p.layers) + 1 }],
+      layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
     setSelectedId(layer.id);
     setTab('props');
@@ -294,6 +477,8 @@ export default function App() {
     putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
 
     const url = urlFor(mediaId, file);
+    // O decodificador de quadros lê desta mesma URL — nenhum byte a mais.
+    registerSource(mediaId, url);
     attachMedia(file.type, url, mediaId, file.name, element => {
       // Entra no acervo E na linha do tempo. Importar pra depois posicionar é
       // um fluxo válido, mas o comum é querer ver na hora.
@@ -330,10 +515,24 @@ export default function App() {
   };
 
   /** Reutiliza um arquivo do acervo — sem reimportar, sem guardar outra cópia. */
-  const useAsset = (asset: MediaAsset) => {
+  const useAsset = async (asset: MediaAsset) => {
     const element = elementsRef.current.get(asset.id);
-    if (!element) return flash('Esse arquivo ainda está carregando');
-    addLayerFor(asset.id, asset.type, element, asset.name);
+    if (element) return addLayerFor(asset.id, asset.type, element, asset.name);
+
+    /**
+     * Sem elemento, "ainda está carregando" era MENTIRA na metade dos casos.
+     *
+     * O acervo vem do projeto, e o projeto pode citar um arquivo cujos bytes
+     * não estão neste navegador — é o caso normal de abrir um `.frag` vindo de
+     * outra máquina. Ali o arquivo não está carregando: ele não existe, e
+     * nunca vai carregar. Dizer "aguarde" manda a pessoa esperar pra sempre.
+     *
+     * A pergunta que separa os dois casos é se os BYTES estão guardados.
+     */
+    const bytes = await mediaBlob(asset.id).catch(() => null);
+    flash(bytes
+      ? `"${asset.name}" ainda está carregando — tente de novo em instantes`
+      : `"${asset.name}" não está neste navegador. Use ▲ ABRIR no .frag pra localizar o arquivo, ou + MÍDIA pra importar de novo.`);
   };
 
   /** Tira do acervo junto com os clipes que o usam — um só passo de histórico. */
@@ -481,7 +680,10 @@ export default function App() {
     commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
       if (layers.length === p.layers.length) return p;
-      setSelectedId(cur => (cur === id ? layers[layers.length - 1]?.id ?? null : cur));
+      // Nada é selecionado no lugar. Eleger a última da lista parecia gentileza
+      // e era chute: a próxima edição ia pra uma layer que você não escolheu, e
+      // um Delete seguido de outro apagava algo que não estava na mira.
+      setSelectedId(cur => (cur === id ? null : cur));
       return { ...p, layers: compactTracks(layers) };
     });
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
@@ -500,16 +702,119 @@ export default function App() {
     const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
     if (!layer) return flash('Selecione um clipe pra duplicar');
 
-    const copy: Layer = {
-      ...layer,
-      id: nextId(),
+    const span = {
       start: +(layer.start + layer.duration).toFixed(3),
-      effects: clone(layer.effects),
+      duration: layer.duration,
+    };
+
+    commit(p => {
+      /**
+       * "Logo depois" é a INTENÇÃO, não o destino garantido.
+       *
+       * Antes a cópia era largada ali de qualquer jeito, e se houvesse um clipe
+       * naquele trecho as duas passavam a se sobrepor na mesma faixa — o que
+       * quebra a invariante que sustenta a ordem de desenho. `pasteSlot` mantém
+       * a intenção e sobe uma faixa quando o lugar está ocupado.
+       */
+      const slot = pasteSlot(p.layers, span, layer.track, trackKind(layer));
+      const copy: Layer = {
+        ...layer,
+        id: nextId(),
+        ...slot,
+        effects: clone(layer.effects),
+      };
+      setSelectedId(copy.id);
+      return { ...p, layers: [...p.layers, copy] };
+    });
+  }, [commit]);
+
+  /**
+   * Área de transferência PRÓPRIA, não a do sistema.
+   *
+   * Uma layer não é texto: ela carrega efeitos e uma referência ao elemento de
+   * mídia. Serializar pro clipboard do sistema significaria reanexar a mídia na
+   * volta, e colar num projeto que não tem aquele arquivo daria uma layer
+   * quebrada. Guardar a referência aqui mantém tudo coerente — e clipes do
+   * mesmo arquivo dividindo um elemento é caso resolvido (ver `ownersByMedia`).
+   */
+  const clipboardRef = useRef<Layer | null>(null);
+
+  const copySelected = useCallback((cortar = false) => {
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    if (!layer) return flash('Selecione um clipe primeiro');
+
+    clipboardRef.current = { ...layer, effects: clone(layer.effects) };
+    if (cortar) deleteLayer(layer.id);
+    else flash(`"${layer.name}" copiado`);
+  }, [deleteLayer]);
+
+  /**
+   * Cola no CURSOR, e não onde o original estava: colar é um jeito de dizer
+   * "quero isto aqui", e "aqui" é onde o playhead está.
+   */
+  const pasteClipboard = useCallback(() => {
+    const source = clipboardRef.current;
+    if (!source) return flash('Nada copiado ainda');
+
+    const span = { start: +player.t.toFixed(3), duration: source.duration };
+    const slot = pasteSlot(projectRef.current.layers, span, source.track, trackKind(source));
+
+    const copy: Layer = {
+      ...source,
+      id: nextId(),
+      ...slot,
+      // Clonados na cópia E na colagem: colar duas vezes não pode produzir duas
+      // layers que dividem a mesma lista de efeitos.
+      effects: clone(source.effects),
     };
 
     commit(p => ({ ...p, layers: [...p.layers, copy] }));
     setSelectedId(copy.id);
   }, [commit]);
+
+  /**
+   * Separa o áudio de um clipe de vídeo numa faixa própria.
+   *
+   * O vídeo não perde o som — ele é **calado**, não removido. É o que permite
+   * desfazer voltando o `mute`, e o que mantém o `mediaId` de pé nos dois lados
+   * (o export decodifica o arquivo uma vez e serve os dois clipes).
+   *
+   * A faixa destacada ganha um `<audio>` PRÓPRIO sobre a mesma blob. Dividir o
+   * `<video>` com a imagem seria pedir pro editor calar uma das duas — que é
+   * exatamente o que separar veio desfazer.
+   */
+  const detachAudio = useCallback((id: number) => {
+    const layer = projectRef.current.layers.find(l => l.id === id);
+    if (!layer || layer.type !== 'video') return flash('Selecione um clipe de vídeo');
+    if (layer.mute) return flash('Esse clipe já está sem som');
+
+    const element = audioElementFor(layer.mediaId);
+    if (!element) return flash('Esse arquivo ainda está carregando');
+
+    const faixa = makeAudioLayer(element, layer.mediaId, {
+      name: `${layer.name} — áudio`,
+      start: layer.start,
+      duration: layer.duration,
+      trimStart: layer.trimStart,
+      sourceDuration: layer.sourceDuration,
+      volume: layer.volume,
+    });
+
+    commit(p => {
+      // Faixa de áudio nova, no espaço de faixa do ÁUDIO.
+        const slot = pasteSlot(p.layers, faixa, topTrackOf(p.layers, 'audio') + 1, 'audio');
+      return {
+        ...p,
+        // O vídeo fica mudo no MESMO passo do histórico: desfazer tem que
+        // devolver o som junto com a faixa, não em dois undos.
+        layers: [
+          ...p.layers.map(l => (l.id === id ? { ...l, mute: true } : l)),
+          { ...faixa, ...slot },
+        ],
+      };
+    });
+    setSelectedId(faixa.id);
+  }, [commit, audioElementFor]);
 
   // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
   // é o que você espera, e o "b" é só a letra b.
@@ -534,14 +839,32 @@ export default function App() {
       else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redo(); }
       else if (key === 'b') { e.preventDefault(); splitSelected(); }
       else if (key === 'd') { e.preventDefault(); duplicateSelected(); }
+      else if (key === 'c') { e.preventDefault(); copySelected(); }
+      else if (key === 'x') { e.preventDefault(); copySelected(true); }
+      else if (key === 'v') { e.preventDefault(); pasteClipboard(); }
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [undo, redo, splitSelected, duplicateSelected, deleteLayer]);
+  }, [undo, redo, splitSelected, duplicateSelected, deleteLayer, copySelected, pasteClipboard]);
 
   /** Recomeça do zero — e só aqui a mídia órfã é de fato apagada. */
   const newProject = async () => {
-    if (!confirm('Descartar o projeto atual e começar um novo?')) return;
+    /**
+     * O aviso diz que o histórico vai junto, porque vai — e é a única coisa
+     * aqui que não tem volta.
+     *
+     * As versões guardadas não podem sobreviver a este gesto: ele apaga TODA a
+     * mídia (`pruneMedia(new Set())`), então uma versão antiga voltaria sem os
+     * vídeos e sem os áudios. Guardar uma lista de versões que não abrem direito
+     * seria uma promessa falsa justamente no lugar em que a pessoa vai procurar
+     * socorro.
+     */
+    const temHistorico = (await listSnapshots().catch(() => [])).length;
+    const aviso = temHistorico
+      ? `Descartar o projeto atual, a mídia importada e ${temHistorico} versão(ões) guardada(s)?`
+        + '\n\nIsso não tem desfazer. Se quiser guardar, cancele e use ▼ .FRAG antes.'
+      : 'Descartar o projeto atual e começar um novo?';
+    if (!confirm(aviso)) return;
 
     player.pause();
     const fresh = defaultProject();
@@ -553,8 +876,169 @@ export default function App() {
     // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
     // que possa trazer as layers de volta.
     releaseAll();
-    await Promise.all([clearProject(), pruneMedia(new Set())]);
+    releaseFrames();
+    soundEngine.release();
+    clearPeaks();
+    // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
+    // a próxima faixa destacada nascer lendo uma fonte morta.
+    audioElementsRef.current.clear();
+    await Promise.all([clearProject(), pruneMedia(new Set()), clearSnapshots()]);
+    // Descartar é o gesto explícito que libera a gravação de novo — ver
+    // `saveBlocked`. Nada mais deve liberá-la.
+    setSaveBlocked(false);
     flash('Projeto novo');
+  };
+
+  /**
+   * Abre um projeto já serializado — de um arquivo, ou de uma versão guardada.
+   *
+   * **NÃO chama `pruneMedia`**, e a diferença é destrutiva. Reabrir do disco
+   * descarta a mídia órfã porque ali não há mais histórico que a alcance; abrir
+   * um `.frag` é outra coisa — o arquivo pode ser antigo e não citar a mídia que
+   * você acabou de importar, e podar por ele apagaria os arquivos de alguém que
+   * só queria olhar uma versão anterior.
+   */
+  const abrirSerializado = useCallback(async (dados: unknown, feito: string) => {
+    const elements = await carregarElementos();
+    const { project: loaded, missingMedia } = deserializeProject(dados, (id, type) => (
+      type === 'audio' && !(elements.get(id) instanceof HTMLAudioElement)
+        ? audioElementFor(id)
+        : elements.get(id) ?? null
+    ));
+
+    elementsRef.current = elements;
+    projectRef.current = loaded;
+    setProject(loaded);
+    history.reset(loaded);
+    setSelectedId(loaded.layers[loaded.layers.length - 1]?.id ?? null);
+    player.invalidate();
+    // Abrir um projeto que funciona é o gesto que destrava a gravação: o que
+    // está na tela agora é conhecido e bom. Ver `saveBlocked`.
+    setSaveBlocked(false);
+
+    flash(missingMedia.length
+      ? `${feito} — ${missingMedia.length} layer(s) sem a mídia original`
+      : feito);
+  }, [history, audioElementFor]);
+
+  /** Baixa o projeto como `.frag`. Ver `fragFile.ts`. */
+  const baixarFrag = () => {
+    const texto = toFrag(projectRef.current);
+    const url = URL.createObjectURL(new Blob([texto], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fragFileName();
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    flash('Projeto baixado');
+  };
+
+  /**
+   * O `.frag` pede arquivos que este navegador não tem.
+   *
+   * `null` quando não há nada pendente. Enquanto houver, o projeto NÃO é
+   * aberto — ver `onFragFile` pro porquê de a ordem importar.
+   */
+  const [religar, setReligar] = useState<{ dados: unknown; faltando: MediaAsset[] } | null>(null);
+
+  const onFragFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Zera o input antes de qualquer await: sem isso, escolher O MESMO arquivo
+    // de novo não dispara `change` e parece que o editor ignorou o clique.
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      const dados = fromFrag(await file.text());
+
+      /**
+       * Pede o material que falta ANTES de montar o projeto — e a ordem é o
+       * ponto todo.
+       *
+       * A desserialização DESCARTA a layer cuja mídia não resolve. Abrindo
+       * primeiro e religando depois, os clipes já teriam sido jogados fora:
+       * você reencontraria o arquivo e continuaria sem a edição, que é
+       * exatamente o oposto do que um projeto salvo serve pra fazer.
+       *
+       * Resolvendo antes, todas as layers resolvem normalmente e nada se perde.
+       */
+      const guardadas = new Set((await allMedia()).map(m => m.id));
+      const faltando = mediaNeeded(dados).filter(m => !guardadas.has(m.id));
+      if (faltando.length) {
+        setReligar({ dados, faltando });
+        return;
+      }
+
+      await abrirSerializado(dados, `Aberto: ${file.name}`);
+    } catch (err) {
+      // A mensagem do erro é o produto aqui — ela diz o que fazer a seguir.
+      flash(err instanceof FragFileError || err instanceof ProjectFormatError
+        ? err.message
+        : 'Não consegui abrir esse arquivo');
+    }
+  };
+
+  /**
+   * O arquivo que o usuário localizou pra uma mídia que faltava.
+   *
+   * Guarda sob o **mesmo `mediaId`** do projeto — é isso que faz as layers
+   * reencontrarem o material sem nada saber que ele veio de outro lugar. Nome e
+   * tipo vêm do arquivo novo: se você localizou um arquivo diferente, o acervo
+   * deve mostrar o que está lá de fato.
+   */
+  const localizar = async (asset: MediaAsset, file: File) => {
+    if (!religar) return;
+    try {
+      await putMedia(asset.id, file);
+    } catch {
+      return flash('Não consegui guardar essa mídia');
+    }
+
+    const restante = religar.faltando.filter(m => m.id !== asset.id);
+    if (restante.length) return setReligar({ ...religar, faltando: restante });
+
+    // Achou tudo: agora sim monta o projeto, com todas as layers resolvendo.
+    const { dados } = religar;
+    setReligar(null);
+    await abrirSerializado(dados, 'Projeto aberto com as mídias localizadas');
+  };
+
+  const abrirSemMidia = async () => {
+    if (!religar) return;
+    const { dados } = religar;
+    setReligar(null);
+    await abrirSerializado(dados, 'Aberto sem as mídias que faltavam');
+  };
+
+  // --- histórico de versões ---
+  const [versoes, setVersoes] = useState<number[] | null>(null);
+
+  const abrirVersoes = async () => {
+    try {
+      setVersoes((await listSnapshots()).slice().reverse());
+    } catch {
+      flash('Não consegui ler o histórico');
+    }
+  };
+
+  const voltarPara = async (at: number) => {
+    try {
+      const dados = await getSnapshot(at);
+      if (!dados) return flash('Essa versão não está mais guardada');
+      /**
+       * Guarda o estado ATUAL antes de trocar.
+       *
+       * Voltar pra uma versão não pode ser um caminho só de ida: se você
+       * escolheu a versão errada, o que estava na tela tem que continuar
+       * existindo em algum lugar. Sem isto, o próprio recurso de recuperação
+       * seria uma forma nova de perder trabalho.
+       */
+      await putSnapshot(Date.now(), serializeProject(projectRef.current));
+      await abrirSerializado(dados, `Voltou pra ${snapshotLabel(at, Date.now())}`);
+      setVersoes(null);
+    } catch (err) {
+      flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir essa versão');
+    }
   };
 
   const copySchema = async () => {
@@ -577,7 +1061,7 @@ export default function App() {
     cv.height = project.height;
     const ctx = cv.getContext('2d');
     if (!ctx) return flash('Canvas indisponível — não deu pra exportar');
-    drawFrame(ctx, project, player.t);
+    drawFrame(ctx, project, player.t, { frameFor: frameFor(project, player.t) });
     const a = document.createElement('a');
     a.download = `frame_${player.t.toFixed(2)}s.png`;
     a.href = cv.toDataURL('image/png');
@@ -617,14 +1101,45 @@ export default function App() {
 
         <div className="topbar-spacer" />
 
+        {/*
+          Fica na barra o tempo todo, e não como toast: um aviso que some
+          deixaria você editar uma hora achando que está salvando. Ver
+          `saveBlocked`.
+        */}
+        {saveBlocked && (
+          <span
+            className="save-blocked"
+            title="O projeto guardado não pôde ser lido, e não vai ser sobrescrito. Baixe o .frag pra não perder o que está na tela; ✧ NOVO descarta o guardado e volta a salvar."
+          >
+            ⚠ NÃO ESTÁ SALVANDO
+          </span>
+        )}
         {toast && <span className="toast">{toast}</span>}
+        <button
+          className="btn"
+          onClick={abrirVersoes}
+          title="As últimas versões salvas automaticamente — pra voltar se algo der errado"
+        >⟲ VERSÕES</button>
+        <button className="btn" onClick={baixarFrag} title="Baixar o projeto como arquivo .frag">▼ .FRAG</button>
+        <button
+          className="btn"
+          onClick={() => fragRef.current?.click()}
+          title="Abrir um projeto .frag do disco"
+        >▲ ABRIR</button>
+        <input ref={fragRef} type="file" accept=".frag,application/json" hidden onChange={onFragFile} />
         <button className="btn" onClick={newProject} title="Descartar tudo e começar um projeto novo">✧ NOVO</button>
         <button className="btn btn-gold" onClick={copySchema}>▣ SCHEMA</button>
         <button className="btn" onClick={savePng}>▼ PNG</button>
       </header>
 
       <main className="workspace">
-        <Stage project={project} onResize={resizeProject} />
+        <Stage
+          project={project}
+          onResize={resizeProject}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onChange={updateLayer}
+        />
 
         <aside className="sidebar">
           <Win
@@ -648,7 +1163,9 @@ export default function App() {
             {tab === 'media' && (
               <MediaPanel project={project} onUse={useAsset} onRemove={removeAsset} />
             )}
-            {tab === 'props' && <PropsPanel layer={selected} onChange={updateLayer} />}
+            {tab === 'props' && (
+              <PropsPanel layer={selected} onChange={updateLayer} onDetachAudio={detachAudio} />
+            )}
             {tab === 'fx' && <EffectsPanel layer={selected} onChange={updateLayer} />}
           </Win>
         </aside>
@@ -657,6 +1174,84 @@ export default function App() {
       {dropping && (
         <div className="dropzone" role="status">
           <span>Solte pra importar</span>
+        </div>
+      )}
+
+      {religar && (
+        <div className="versoes-fundo">
+          <div className="versoes">
+            <Win title="Localizar mídia" icon="⚠">
+              <p className="versoes-ajuda">
+                Este projeto usa {religar.faltando.length} arquivo(s) que não estão neste
+                navegador — um <code>.frag</code> guarda a edição, não os vídeos. Localize
+                cada um pra abrir sem perder nada.
+              </p>
+              <ul className="versoes-lista">
+                {religar.faltando.map(m => (
+                  <li key={m.id}>
+                    <span>
+                      {m.name}
+                      {m.duration > 0 && ` · ${m.duration.toFixed(1)}s`}
+                    </span>
+                    <label className="btn btn-sm">
+                      LOCALIZAR
+                      <input
+                        type="file"
+                        accept="image/*,video/*,audio/*"
+                        hidden
+                        onChange={e => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f) void localizar(m, f);
+                        }}
+                      />
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <p className="versoes-ajuda" style={{ margin: '8px 0 0' }}>
+                Abrir sem localizar <b>descarta</b> os clipes que usam esses arquivos.
+              </p>
+              <div className="versoes-acoes">
+                <button className="btn btn-sm" onClick={() => setReligar(null)}>CANCELAR</button>
+                <button className="btn btn-sm" onClick={abrirSemMidia}>ABRIR MESMO ASSIM</button>
+              </div>
+            </Win>
+          </div>
+        </div>
+      )}
+
+      {versoes !== null && (
+        <div className="versoes-fundo" onClick={() => setVersoes(null)}>
+          <div className="versoes" onClick={e => e.stopPropagation()}>
+            <Win
+              title="Versões"
+              icon="⟲"
+              right={<button className="btn btn-sm" onClick={() => setVersoes(null)}>✕</button>}
+            >
+              {versoes.length === 0 ? (
+                <p className="versoes-vazio">
+                  Nenhuma versão guardada ainda. A primeira aparece assim que o projeto
+                  for salvo; depois disso, uma a cada dois minutos de trabalho.
+                </p>
+              ) : (
+                <>
+                  <p className="versoes-ajuda">
+                    Voltar não descarta o que está na tela — ele vira uma versão nova
+                    aqui na lista.
+                  </p>
+                  <ul className="versoes-lista">
+                    {versoes.map(at => (
+                      <li key={at}>
+                        <span>{snapshotLabel(at, Date.now())}</span>
+                        <button className="btn btn-sm" onClick={() => voltarPara(at)}>VOLTAR</button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </Win>
+          </div>
         </div>
       )}
 

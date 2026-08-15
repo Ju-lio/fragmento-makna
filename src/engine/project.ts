@@ -1,7 +1,7 @@
 import { PRESETS } from './presets.ts';
 import { DISPLAY_FONT } from './renderer.ts';
 import type {
-  AudioLayer, Effect, ImageLayer, Layer, LayerPatch, Project, TextLayer,
+  AudioLayer, Effect, ImageLayer, Layer, LayerPatch, LayerType, Project, TextLayer,
   TimeSpan, VideoLayer, VisualLayer,
 } from './types.ts';
 
@@ -49,7 +49,15 @@ export function makeTextLayer(overrides: Partial<TextLayer> = {}): TextLayer {
     font: DISPLAY_FONT,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
+    // Nasce sem contorno nem sombra: um texto que já se lê não precisa deles, e
+    // ligá-los por padrão mudaria a cara de todo projeto que já existe.
+    stroke: '#171021',
+    strokeWidth: 0,
+    shadow: '#171021',
+    shadowBlur: 0,
+    shadowOffset: 0,
     effects: [preset('fade-up')],
     ...overrides,
   };
@@ -88,7 +96,8 @@ export function freeWindow(layers: readonly Layer[], target: Layer): Required<Tr
   let maxEnd = Infinity;
 
   for (const l of layers) {
-    if (l.id === target.id || l.track !== target.track) continue;
+    // Mesma faixa E mesmo tipo: a faixa 0 do áudio não é a faixa 0 do vídeo.
+    if (l.id === target.id || l.track !== target.track || trackKind(l) !== trackKind(target)) continue;
     const end = l.start + l.duration;
     if (end <= target.start) minStart = Math.max(minStart, end);
     else if (l.start >= target.start + target.duration) maxEnd = Math.min(maxEnd, l.start);
@@ -170,9 +179,83 @@ export function drawOrder(project: Project): VisualLayer[] {
   return order;
 }
 
+/**
+ * Vídeo e áudio têm espaços de faixa SEPARADOS.
+ *
+ * Era um espaço só, e isso deixava o modelo ambíguo: a faixa 2 podia ter um
+ * clipe de vídeo e um de áudio ao mesmo tempo, sem que nada os distinguisse.
+ * Funcionava porque a ordem de desenho já ignora áudio — mas a timeline não
+ * tinha como agrupar o som embaixo, e a numeração não queria dizer a mesma
+ * coisa nos dois casos (no vídeo é profundidade; no áudio, nada).
+ *
+ * Com dois espaços, "faixa 0" passa a significar uma coisa só dentro de cada
+ * tipo, e as duas perguntas que o editor faz o tempo todo — quem colide comigo,
+ * qual é a faixa de cima — ficam bem definidas.
+ */
+export type TrackKind = 'visual' | 'audio';
+
+export const trackKind = (layer: { type: LayerType }): TrackKind =>
+  (layer.type === 'audio' ? 'audio' : 'visual');
+
+/** Só as layers que dividem espaço de faixa com esta. */
+export function layersOfKind(layers: readonly Layer[], kind: TrackKind): Layer[] {
+  return layers.filter(l => trackKind(l) === kind);
+}
+
 /** A faixa mais alta em uso. -1 quando não há layer nenhuma. */
 export function topTrack(layers: readonly Layer[]): number {
   return layers.reduce((max, l) => Math.max(max, l.track), -1);
+}
+
+/** A faixa mais alta em uso DENTRO de um tipo — que é o que quase todo mundo quer. */
+export function topTrackOf(layers: readonly Layer[], kind: TrackKind): number {
+  return topTrack(layersOfKind(layers, kind));
+}
+
+/** Piso da duração. Um projeto vazio ainda precisa de régua pra soltar o primeiro clipe. */
+export const MIN_PROJECT = 1;
+
+/**
+ * Quanto dura o projeto: onde termina o último clipe.
+ *
+ * Era um campo que você digitava, e isso tinha dois defeitos que se somavam.
+ * O primeiro: clipe que passasse do número ficava **fora do export**, sem nada
+ * avisar — você montava 12s, o campo dizia 8, e o arquivo saía cortado. O
+ * segundo: o número não era serializado, então reabrir um projeto de 60s o
+ * devolvia com 8 e encolhia a régua inteira.
+ *
+ * Derivar mata os dois de uma vez, e não há informação a perder — não existe
+ * projeto cujo tamanho certo seja "menor que o próprio conteúdo".
+ */
+export function projectDuration(layers: readonly Layer[]): number {
+  const end = layers.reduce((max, l) => Math.max(max, l.start + l.duration), 0);
+  return Math.max(MIN_PROJECT, round(end));
+}
+
+/**
+ * Sobra de régua depois do fim do conteúdo — a "pista" pra onde arrastar.
+ *
+ * Sem ela a duração derivada vira uma armadilha circular: o arrasto prende o
+ * clipe dentro da duração, e a duração vem dos clipes, então o projeto nunca
+ * poderia crescer. É por isso que a régua da timeline é mais longa que o
+ * projeto, e por isso que as duas medidas são coisas separadas — quem exporta e
+ * quem dá loop usa o CONTEÚDO; só o desenho da timeline usa a pista.
+ */
+const TAIL_MIN = 1;
+const TAIL_MAX = 5;
+const TAIL_SHARE = 0.15;
+
+/**
+ * Até onde a régua da timeline vai: o conteúdo, mais a pista.
+ *
+ * A pista é proporcional, com piso e teto. Fixa em 5s ela sufocava projeto
+ * curto — num de 8s seriam 38% da régua em vazio — e sumia em projeto longo.
+ * Assim ela é sempre visível e nunca domina.
+ */
+export function rulerDuration(layers: readonly Layer[]): number {
+  const content = projectDuration(layers);
+  const tail = Math.max(TAIL_MIN, Math.min(TAIL_MAX, content * TAIL_SHARE));
+  return round(content + tail);
 }
 
 /**
@@ -184,19 +267,86 @@ export function topTrack(layers: readonly Layer[]): number {
  * o que está na tela.
  */
 export function compactTracks(layers: readonly Layer[]): Layer[] {
-  const used = [...new Set(layers.map(l => l.track))].sort((a, b) => a - b);
-  const renumber = new Map(used.map((track, i) => [track, i]));
+  // Um mapa POR TIPO: renumerar os dois juntos misturaria os espaços de volta,
+  // e uma faixa de áudio passaria a depender de quantas faixas de vídeo existem.
+  const renumber = new Map<TrackKind, Map<number, number>>();
+
+  for (const kind of ['visual', 'audio'] as const) {
+    const used = [...new Set(layersOfKind(layers, kind).map(l => l.track))].sort((a, b) => a - b);
+    renumber.set(kind, new Map(used.map((track, i) => [track, i])));
+  }
+
   return layers.map(l => {
-    const track = renumber.get(l.track) ?? l.track;
+    const track = renumber.get(trackKind(l))?.get(l.track) ?? l.track;
     return track === l.track ? l : { ...l, track };
   });
 }
 
-/** Dois clipes ocupam o mesmo pedaço da mesma faixa? */
+/**
+ * Fim de um trecho, na grade de milissegundos em que a linha do tempo vive.
+ *
+ * A grade não é enfeite: `start` já passa por `round` em toda edição (trim,
+ * corte, arrasto). O fim precisa passar também, porque `start + duration` é uma
+ * soma de ponto flutuante e ela sai da grade sozinha — `0.2 + 0.1` dá
+ * `0.30000000000000004`.
+ */
+function endOf(span: TimeSpan): number {
+  return round(span.start + span.duration);
+}
+
+/**
+ * Dois clipes ocupam o mesmo pedaço da mesma faixa?
+ *
+ * Estrito nas duas pontas: um clipe terminando exatamente onde o outro começa é
+ * o caso NORMAL (é o que um corte produz), não uma colisão.
+ *
+ * As pontas são comparadas na GRADE, e é isso que faz a estritez valer de fato.
+ * Antes, `start` era arredondado ao milissegundo e o fim não, então o fim caía
+ * um fio DEPOIS do início do vizinho e a comparação estrita achava uma
+ * sobreposição de 4×10⁻¹⁷ segundos:
+ *
+ *   Ctrl+D repetido num clipe de 0,1s — [0,2 … 0,30000000000000004) contra um
+ *   vizinho começando em 0,3. A partir da terceira cópia, cada duplicata subia
+ *   uma faixa "sem motivo". Com duração fracionária (o que um trim produz), já
+ *   na primeira.
+ *
+ * Não é tolerância afrouxada pra o problema sumir: é a resolução do modelo. A
+ * linha do tempo é uma grade de milissegundos, e duas posições dentro do mesmo
+ * milissegundo são a mesma posição.
+ */
 export function overlaps(a: TimeSpan, b: TimeSpan): boolean {
-  // Estrito nas duas pontas: um clipe terminando exatamente onde o outro
-  // começa é o caso NORMAL (é o que um corte produz), não uma colisão.
-  return a.start < b.start + b.duration && b.start < a.start + a.duration;
+  return round(a.start) < endOf(b) && round(b.start) < endOf(a);
+}
+
+/**
+ * Onde encaixar um clipe colado, no instante `at`.
+ *
+ * Colar é diferente de duplicar: duplicar sabe pra onde ir (logo depois do
+ * original), colar tem que achar lugar. A faixa não aceita sobreposição, então
+ * "colar no cursor" pode simplesmente não caber — e recusar seria a pior
+ * resposta possível, porque a pessoa acabou de mandar colar.
+ *
+ * Procura de baixo pra cima a partir da faixa preferida (a de origem, pra que
+ * colar perto mantenha a camada), e abre uma faixa nova no topo se nenhuma
+ * servir. Sempre cabe em algum lugar, e o lugar é previsível.
+ */
+export function pasteSlot(
+  layers: readonly Layer[],
+  span: TimeSpan,
+  preferredTrack: number,
+  kind: TrackKind = 'visual',
+): { start: number; track: number } {
+  // Só o próprio tipo entra na conta: um áudio nunca cai numa faixa de vídeo.
+  const mesmas = layersOfKind(layers, kind);
+  const top = topTrack(mesmas);
+  const livre = (track: number) =>
+    !mesmas.some(l => l.track === track && overlaps(l, span));
+
+  for (let track = Math.max(0, preferredTrack); track <= top; track++) {
+    if (livre(track)) return { start: span.start, track };
+  }
+  // Nenhuma serve: faixa nova, que por definição está vazia.
+  return { start: span.start, track: top + 1 };
 }
 
 // --- corte --------------------------------------------------------------
@@ -252,7 +402,9 @@ export function makeVideoLayer(
     type: 'video',
     name: 'Vídeo',
     start: 0,
-    duration: Math.min(sourceDuration, 5),
+    // Na grade, como todo resto: a duração crua vem do `<video>` com a precisão
+    // que o arquivo tiver, e é ela que tirava o FIM do clipe da grade.
+    duration: round(Math.min(sourceDuration, 5)),
     trimStart: 0,
     sourceDuration,
     video,
@@ -261,6 +413,7 @@ export function makeVideoLayer(
     mute: false,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     fit: 1,
     effects: [],
@@ -281,13 +434,14 @@ export function makeAudioLayer(
     start: 0,
     // Áudio costuma ser música de fundo: entra inteiro, ao contrário do vídeo
     // (que é limitado a 5s pra você não cobrir a composição sem querer).
-    duration: sourceDuration,
+    duration: round(sourceDuration),
     trimStart: 0,
     sourceDuration,
     audio,
     mediaId,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     volume: 1,
     mute: false,
@@ -309,6 +463,7 @@ export function makeImageLayer(
     duration: 3,
     x: 0,
     y: 0,
+    rotate: 0,
     track: 0,
     fit: 0.8,
     img,

@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@elah/core": "^0.4.1",
     "mp4-muxer": "^5.2.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

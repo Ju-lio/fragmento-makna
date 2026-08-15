@@ -19,12 +19,15 @@ técnica do projeto sem precisar reabrir o código.
 | Fontes | `FontFace` API + arquivos `.ttf` locais | Canvas não carrega `@font-face` sozinho (ver seção própria) |
 | Testes | **`node:test`** (nativo do Node) | Zero dependência extra; roda os `.ts` direto, por type stripping |
 | Vídeo | Elemento `<video>` HTML | Decodificação fica a cargo do browser |
+| Áudio (reprodução) | Elementos `<audio>`/`<video>` | Mesmo caminho do vídeo; o som do clipe sai do próprio elemento |
+| Áudio (export) | **Web Audio API** (`OfflineAudioContext`) | Mixa mais rápido que tempo real e alinha as fontes sozinho |
+| Export de vídeo | **WebCodecs** + `mp4-muxer` | Codifica quadro a quadro no próprio navegador, sem servidor |
 
 Não usamos: Next.js (não tem servidor, não tem rotas), Redux/Zustand (o estado
 que precisa de performance vive fora do React de propósito, ver abaixo),
 Tailwind (o visual pixel-art é bevels e sombras duras — não é o forte de um
-framework utilitário), FFmpeg.wasm (pesado demais pro que precisamos; o plano
-de export usa a API nativa `WebCodecs`, ainda não implementada).
+framework utilitário), FFmpeg.wasm (pesado demais pro que precisamos — o export
+usa a API nativa `WebCodecs`).
 
 ---
 
@@ -43,7 +46,7 @@ desenhar formulários e botões.
 **Por que isso importa na prática:** se um dia o React virar um estorvo (ou a
 gente quiser portar pra outra coisa), a parte que tem valor de verdade sai
 inteira, sem reescrever nada. E dá pra testar o motor inteiro rodando só
-`node`, sem abrir navegador nenhum — é por isso que temos 106 testes automatizados
+`node`, sem abrir navegador nenhum — é por isso que temos 385 testes automatizados
 e zero configuração de ambiente de teste tipo Jest/Vitest com DOM simulado.
 
 ---
@@ -226,7 +229,7 @@ pontos que manipulam `<video>` diretamente, que ficam isolados em funções
 "burras"), dá pra testar tudo com o test runner que já vem dentro do Node —
 sem instalar nada, sem configurar ambiente de DOM simulado.
 
-Hoje são **106 testes** cobrindo:
+Hoje são **385 testes** cobrindo:
 - o runtime de efeitos (interpolação, composição, validação de JSON)
 - o viewport (zoom ancorado no cursor, limites de pan, fit automático,
   cálculo de resolução física de render)
@@ -245,6 +248,12 @@ Hoje são **106 testes** cobrindo:
   cache e render ao vivo nunca se misturam durante a reprodução)
 - a posse dos elementos `<video>`, que impede o preview e o pré-render de
   disputarem o mesmo elemento
+- a sincronia de som (deriva corrigida por andamento, seek só em evento) e a
+  posse do elemento de mídia quando vários clipes saem do mesmo arquivo
+- a mixagem do export (recorte de um trecho pelo meio de uma faixa, ganho,
+  clipe esticado além do arquivo)
+- as decisões do export que não dependem do navegador (dimensão par, timestamps,
+  bitrate, intervalo de keyframe)
 
 Rodar: `npm test`.
 
@@ -255,5 +264,3 @@ Rodar: `npm test`.
 | Fase futura | Tecnologia prevista | Motivo |
 |---|---|---|
 | Chroma key | Shader **WebGL** (GLSL) | Operação por pixel — inviável em Canvas 2D puro |
-| Export de vídeo | **WebCodecs API** + `mp4-muxer` | Codifica quadro a quadro no próprio navegador, sem servidor |
-| Áudio (v1: uma trilha) | **Web Audio API** | Nativa do browser, sem lib externa |

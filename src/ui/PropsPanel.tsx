@@ -5,11 +5,13 @@ import type { Layer, LayerPatch } from '../engine/types.ts';
 interface PropsPanelProps {
   layer: Layer | null;
   onChange: (id: number, patch: LayerPatch) => void;
+  /** Tira o som do clipe de vídeo e o põe numa faixa própria. */
+  onDetachAudio: (id: number) => void;
 }
 
 const SWATCHES = ['#f7efdc', '#f0c04a', '#e2615c', '#64c48a', '#6ba9d6', '#c9a6e8', '#241a33'];
 
-export function PropsPanel({ layer, onChange }: PropsPanelProps) {
+export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) {
   if (!layer) return <div className="hint">Selecione uma layer.</div>;
 
   const set = (patch: LayerPatch) => onChange(layer.id, patch);
@@ -39,11 +41,98 @@ export function PropsPanel({ layer, onChange }: PropsPanelProps) {
             </div>
             <input className="inp" value={layer.color} onChange={e => set({ color: e.target.value })} />
           </Field>
+
+          {/*
+            Legibilidade. Título claro sobre imagem clara some, e é o caso mais
+            comum de todos — legenda por cima de footage. Os dois padrões vêm
+            zerados: texto que já se lê não precisa deles.
+
+            Um botão "LEGÍVEL" antes dos números porque a resposta certa é quase
+            sempre a mesma (contorno escuro grosso), e ninguém quer descobrir
+            isso ajustando dois campos.
+          */}
+          <Field label="Legibilidade">
+            <div className="row">
+              <button
+                className="btn btn-sm btn-mint"
+                onClick={() => set({
+                  stroke: '#171021',
+                  strokeWidth: Math.max(2, Math.round(layer.size * 0.06)),
+                  shadow: '#171021',
+                  shadowBlur: Math.max(4, Math.round(layer.size * 0.12)),
+                  shadowOffset: Math.max(2, Math.round(layer.size * 0.04)),
+                })}
+                title="Contorno escuro e sombra, proporcionais ao tamanho do texto"
+              >
+                LEGÍVEL
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => set({ strokeWidth: 0, shadowBlur: 0, shadowOffset: 0 })}
+                title="Sem contorno nem sombra"
+              >
+                LIMPO
+              </button>
+            </div>
+          </Field>
+
+          <div className="row">
+            <NumField
+              label="Contorno"
+              value={layer.strokeWidth}
+              step={1}
+              onChange={v => set({ strokeWidth: Math.max(0, v) })}
+            />
+            <input
+              className="inp"
+              value={layer.stroke}
+              onChange={e => set({ stroke: e.target.value })}
+              title="Cor do contorno"
+            />
+          </div>
+
+          <div className="row">
+            <NumField
+              label="Sombra"
+              value={layer.shadowBlur}
+              step={1}
+              onChange={v => set({ shadowBlur: Math.max(0, v) })}
+            />
+            <NumField
+              label="Descida"
+              value={layer.shadowOffset}
+              step={1}
+              onChange={v => set({ shadowOffset: v })}
+            />
+            <input
+              className="inp"
+              value={layer.shadow}
+              onChange={e => set({ shadow: e.target.value })}
+              title="Cor da sombra"
+            />
+          </div>
         </>
       ) : (
         <>
           {layer.type !== 'audio' && (
             <NumField label="Escala base" value={layer.fit} step={0.05} onChange={v => set({ fit: v })} />
+          )}
+
+          {/*
+            Separar o som é operação de VÍDEO: uma faixa de áudio já está
+            separada. Some depois de usar, porque o clipe fica mudo e separar
+            de novo produziria uma segunda faixa idêntica em silêncio.
+          */}
+          {layer.type === 'video' && !layer.mute && (
+            <Field label="Áudio do clipe">
+              <button
+                className="btn btn-sm"
+                onClick={() => onDetachAudio(layer.id)}
+                title="Move o som pra uma faixa própria e cala o clipe"
+              >
+                ⇥ SEPARAR ÁUDIO
+              </button>
+            </Field>
           )}
 
           {(layer.type === 'video' || layer.type === 'audio') && (

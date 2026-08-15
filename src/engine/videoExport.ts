@@ -17,23 +17,22 @@
 
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { drawFrame } from './renderer.ts';
-import { frameIndexAt, timeAtFrameIndex, CACHE_FPS } from './frameCache.ts';
+import { frameIndexAt, lastFrameIndex, timeAtFrameIndex, CACHE_FPS } from './frameCache.ts';
 import { claimVideoElements, releaseVideoElements, pauseAllVideo } from './videoSync.ts';
 import { stageVideosAt } from './prerender.ts';
+import { frameProvider } from './videoFrames.ts';
 import type { CancelToken } from './prerender.ts';
 import { ensureDisplayFont } from './fonts.ts';
 import { Progress } from './progress.ts';
 import {
-  CODEC_CANDIDATES, evenDimensions, frameTimestamp, keyFrameInterval,
-  chooseBitrate, frameCount, exportFileName,
+  CODEC_CANDIDATES, AUDIO_CODEC_CANDIDATES, evenDimensions, frameTimestamp,
+  keyFrameInterval, chooseBitrate, frameCount, exportFileName,
 } from './exportPlan.ts';
 import { renderAudio, sliceAudio, SAMPLE_RATE, CHANNELS } from './audioRender.ts';
 import type { BlobResolver } from './audioRender.ts';
 import type { Project } from './types.ts';
 import type { Range } from './player.ts';
 
-/** Codec de áudio do MP4. AAC-LC é o que qualquer player abre. */
-const AUDIO_CODEC = 'mp4a.40.2';
 const AUDIO_BITRATE = 128_000;
 
 export const exportStatus = new Progress();
@@ -61,6 +60,16 @@ const SLICE_MS = 12;
  * o freio.
  */
 const MAX_QUEUE = 8;
+
+/**
+ * O mesmo freio pro áudio, mais folgado porque um bloco de PCM é ordens de
+ * grandeza menor que um quadro de 1080p.
+ *
+ * Sem freio nenhum, o laço enfileirava a faixa inteira de uma vez, síncrono:
+ * três minutos viravam ~2100 blocos empilhados antes do encoder tocar no
+ * primeiro, e a aba ficava travada o tempo todo.
+ */
+const AUDIO_MAX_QUEUE = 32;
 
 export class ExportUnsupportedError extends Error {}
 
@@ -107,6 +116,43 @@ async function chooseCodec(
   return null;
 }
 
+/** Ids de mídia viram nomes de arquivo — é o que a pessoa reconhece num aviso. */
+function mediaNames(project: Project, ids: readonly string[]): string[] {
+  return ids.map(id => project.media.find(m => m.id === id)?.name ?? id);
+}
+
+interface ChosenAudioCodec {
+  muxer: 'aac' | 'opus';
+  label: string;
+  config: AudioEncoderConfig;
+}
+
+/**
+ * Primeiro codec de áudio que este navegador aceita, ou `null` se nenhum.
+ *
+ * Perguntar antes é o ponto: ver `AUDIO_CODEC_CANDIDATES` pra por que
+ * `configure()` não serve como teste.
+ */
+async function chooseAudioCodec(): Promise<ChosenAudioCodec | null> {
+  if (typeof AudioEncoder === 'undefined') return null;
+
+  for (const candidate of AUDIO_CODEC_CANDIDATES) {
+    const config: AudioEncoderConfig = {
+      codec: candidate.codec,
+      sampleRate: SAMPLE_RATE,
+      numberOfChannels: CHANNELS,
+      bitrate: AUDIO_BITRATE,
+    };
+    try {
+      const { supported } = await AudioEncoder.isConfigSupported(config);
+      if (supported) return { muxer: candidate.muxer, label: candidate.label, config };
+    } catch {
+      // Configuração malformada pra este navegador: tenta a próxima.
+    }
+  }
+  return null;
+}
+
 export interface ExportOptions extends Range {
   fps?: number;
   /** Fração da resolução do projeto. 1 = cheia, que é o padrão pro arquivo final. */
@@ -128,6 +174,21 @@ export interface ExportResult {
   frames: number;
   /** O arquivo saiu com trilha de áudio? */
   hasAudio: boolean;
+  /**
+   * Mídias cujo som não entrou, pelo nome.
+   *
+   * Existe porque a alternativa era o que acontecia antes: uma faixa que o
+   * navegador não decodifica sumia do arquivo sem nada avisar, e você só
+   * descobria assistindo o resultado.
+   */
+  audioFailed: string[];
+  /**
+   * Por que a trilha inteira ficou de fora, ou `null` se não ficou.
+   *
+   * Separado de `audioFailed`: um arquivo que não decodifica e um navegador sem
+   * encoder nenhum são problemas diferentes, e a saída pra cada um também.
+   */
+  audioSkipped: string | null;
 }
 
 /**
@@ -157,50 +218,32 @@ export async function exportVideo(
   }
 
   const first = frameIndexAt(from, fps);
-  const last = frameIndexAt(to, fps);
+  // Meio-aberto: o quadro que começa em `to` é o primeiro do que vem DEPOIS do
+  // trecho. Ver `lastFrameIndex` — contá-lo gravava um quadro a mais em todo
+  // export, e o arquivo saía 1/fps mais longo que o projeto.
+  const last = lastFrameIndex(from, to, fps);
   const total = frameCount(first, last);
   if (total === 0) throw new ExportUnsupportedError('O trecho selecionado não tem quadros.');
+
+  /**
+   * O som cobre exatamente o mesmo intervalo que os quadros — e não `from..to`.
+   *
+   * O vídeo não começa em `from`: começa no quadro da grade mais próximo, e o
+   * último quadro dura mais 1/fps depois de `to`. Mixar o som no intervalo cru
+   * punha as duas trilhas em origens diferentes, e o desencontro chegava a meio
+   * quadro sempre que o IN foi marcado no cursor — que quase nunca cai na
+   * grade, porque `player.t` vem do rAF. O fim tinha o problema espelhado: o
+   * último quadro saía sem som.
+   */
+  const audioRange = {
+    from: timeAtFrameIndex(first, fps),
+    to: timeAtFrameIndex(last + 1, fps),
+  };
 
   // A fonte do canvas precisa estar carregada ANTES do primeiro quadro, senão
   // o arquivo sai com a fonte de fallback — e o preview mostrando outra coisa.
   await ensureDisplayFont();
   await document.fonts.ready;
-
-  /**
-   * O som é mixado ANTES do primeiro quadro, e não em paralelo.
-   *
-   * A mixagem decodifica os arquivos inteiros, e fazer isso enquanto o
-   * `<video>` está sendo levado quadro a quadro coloca os dois disputando o
-   * mesmo decoder — o que atrasa os seeks e, pior, é a situação em que eles
-   * começam a falhar por timeout.
-   *
-   * Também define se a trilha de áudio existe no muxer, que precisa ser
-   * declarada na construção dele.
-   */
-  const audio = getBlob && typeof OfflineAudioContext !== 'undefined'
-    ? await renderAudio(project.layers, { from, to }, getBlob).catch(() => null)
-    : null;
-  if (token.cancelled) return null;
-
-  const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
-    video: { codec: chosen.muxer, width, height, frameRate: fps },
-    ...(audio
-      ? { audio: { codec: 'aac' as const, numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE } }
-      : {}),
-    // Metadados no começo do arquivo: é o que faz o vídeo começar a tocar sem
-    // baixar tudo, e o que players e redes sociais esperam encontrar.
-    fastStart: 'in-memory',
-  });
-
-  let encodeError: unknown = null;
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    // O erro chega por aqui, fora da pilha de quem chamou `encode()`. Guardar
-    // e checar no laço é o que transforma isso numa exceção que você vê.
-    error: err => { encodeError = err; },
-  });
-  encoder.configure(chosen.config);
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -208,50 +251,130 @@ export async function exportVideo(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new ExportUnsupportedError('Canvas 2D indisponível.');
 
-  /**
-   * O áudio é codificado inteiro antes do vídeo começar.
-   *
-   * O muxer aceita as duas trilhas em qualquer ordem, e adiantar a de áudio
-   * evita manter o buffer de PCM vivo durante todo o laço de vídeo — que é a
-   * fase longa e a que já está no limite de memória.
-   */
-  let audioEncoder: AudioEncoder | null = null;
-  if (audio) {
-    audioEncoder = new AudioEncoder({
-      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-      error: err => { encodeError = err; },
-    });
-    audioEncoder.configure({
-      codec: AUDIO_CODEC,
-      sampleRate: SAMPLE_RATE,
-      numberOfChannels: CHANNELS,
-      bitrate: AUDIO_BITRATE,
-    });
-
-    for (const chunk of sliceAudio(audio.buffer)) {
-      try {
-        audioEncoder.encode(chunk);
-      } finally {
-        chunk.close();
-      }
-    }
-    await audioEncoder.flush();
-  }
-
   const keyEvery = keyFrameInterval(fps);
-  let sliceStart = performance.now();
+  let encodeError: unknown = null;
   let encoded = 0;
+  // Declarados fora do `try` só pro `finally` conseguir fechá-los: o momento em
+  // que cada um nasce depende de decisões tomadas lá dentro.
+  let encoder: VideoEncoder | null = null;
+  let audioEncoder: AudioEncoder | null = null;
+  let audioSkipped: string | null = null;
 
+  /**
+   * Progresso e cancelamento existem a partir DAQUI, antes da mixagem.
+   *
+   * Estavam depois dela, e a mixagem é justamente a fase que decodifica os
+   * arquivos inteiros: pelo trecho mais demorado do export a aba ficava parada,
+   * sem barra nenhuma e com o botão PARAR inerte, porque `activeToken` ainda
+   * era nulo. Quem exporta uma música de três minutos passava esse tempo sem
+   * saber se tinha travado.
+   */
   activeToken = token;
   exportStatus.begin(total);
 
   // Os `<video>` são nossos daqui até o `finally`: o loop do preview
   // continuaria empurrando cada um pra posição do cursor, e os quadros sairiam
-  // com o vídeo no instante errado.
+  // com o vídeo no instante errado. Reivindicar antes da mixagem também tira
+  // os elementos de cima do decoder, que é o recurso que ela vai disputar.
   pauseAllVideo(project);
   claimVideoElements(token);
 
   try {
+    /**
+     * O som é mixado ANTES do primeiro quadro, e não em paralelo.
+     *
+     * A mixagem decodifica os arquivos inteiros, e fazer isso enquanto o
+     * `<video>` está sendo levado quadro a quadro coloca os dois disputando o
+     * mesmo decoder — o que atrasa os seeks e, pior, é a situação em que eles
+     * começam a falhar por timeout.
+     *
+     * Também define se a trilha de áudio existe no muxer, que precisa ser
+     * declarada na construção dele.
+     */
+    const audio = getBlob && typeof OfflineAudioContext !== 'undefined'
+      ? await renderAudio(project.layers, audioRange, getBlob).catch(() => null)
+      : null;
+    if (token.cancelled) return null;
+
+    /**
+     * O codec é escolhido AQUI, antes do muxer, porque é ele que nomeia a
+     * trilha de áudio na construção — e a trilha só pode ser declarada se
+     * houver mesmo um encoder pra preenchê-la. Declarar e não preencher deixa
+     * o arquivo com uma faixa vazia.
+     */
+    const audioCodec = audio ? await chooseAudioCodec() : null;
+    if (audio && !audioCodec) {
+      audioSkipped = 'Este navegador não tem encoder de áudio (nem AAC nem Opus).';
+    }
+    const withAudio = audio && audioCodec ? { buffer: audio.buffer, codec: audioCodec } : null;
+
+    const muxer = new Muxer({
+      target: new ArrayBufferTarget(),
+      video: { codec: chosen.muxer, width, height, frameRate: fps },
+      ...(withAudio
+        ? {
+          audio: {
+            codec: withAudio.codec.muxer,
+            numberOfChannels: CHANNELS,
+            sampleRate: SAMPLE_RATE,
+          },
+        }
+        : {}),
+      // Metadados no começo do arquivo: é o que faz o vídeo começar a tocar sem
+      // baixar tudo, e o que players e redes sociais esperam encontrar.
+      fastStart: 'in-memory',
+    });
+
+    encoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      // O erro chega por aqui, fora da pilha de quem chamou `encode()`. Guardar
+      // e checar no laço é o que transforma isso numa exceção que você vê.
+      error: err => { encodeError = err; },
+    });
+    encoder.configure(chosen.config);
+
+    /**
+     * O áudio é codificado inteiro antes do vídeo começar.
+     *
+     * O muxer aceita as duas trilhas em qualquer ordem, e adiantar a de áudio
+     * evita manter o buffer de PCM vivo durante todo o laço de vídeo — que é a
+     * fase longa e a que já está no limite de memória.
+     */
+    if (withAudio) {
+      audioEncoder = new AudioEncoder({
+        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        error: err => { encodeError = err; },
+      });
+      audioEncoder.configure(withAudio.codec.config);
+
+      let audioSlice = performance.now();
+      for (const chunk of sliceAudio(withAudio.buffer)) {
+        if (token.cancelled) { chunk.close(); return null; }
+        try {
+          audioEncoder.encode(chunk);
+        } finally {
+          chunk.close();
+        }
+
+        // Mesmo freio do laço de vídeo, pelo mesmo motivo: `encode()` não
+        // bloqueia, então sem isto o PCM se acumula mais rápido do que o
+        // encoder consome — e nada devolve a vez ao navegador no caminho.
+        while (audioEncoder.encodeQueueSize > AUDIO_MAX_QUEUE && !token.cancelled) {
+          await new Promise(r => setTimeout(r, 0));
+        }
+        if (performance.now() - audioSlice >= SLICE_MS) {
+          await new Promise(r => setTimeout(r, 0));
+          audioSlice = performance.now();
+        }
+      }
+
+      if (token.cancelled) return null;
+      await audioEncoder.flush();
+      if (encodeError) throw encodeError;
+    }
+
+    let sliceStart = performance.now();
+
     for (let i = first; i <= last; i++) {
       if (token.cancelled) return null;
       if (encodeError) throw encodeError;
@@ -264,10 +387,10 @@ export async function exportVideo(
       if (token.cancelled) return null;
 
       const t = timeAtFrameIndex(i, fps);
-      await stageVideosAt(project, t);
+      await stageVideosAt(frameProvider, project, t);
       if (token.cancelled) return null;
 
-      drawFrame(ctx, project, t, { fastPreview: false });
+      drawFrame(ctx, project, t, { fastPreview: false, frameFor: frameProvider.frameFor(project, t) });
 
       const frame = new VideoFrame(canvas, {
         timestamp: frameTimestamp(i, first, fps),
@@ -303,9 +426,13 @@ export async function exportVideo(
     return {
       blob: new Blob([buffer], { type: 'video/mp4' }),
       fileName: exportFileName(from, to, extension),
-      codec: chosen.label,
+      // O rótulo leva os dois codecs: quando o áudio cai pro Opus, o arquivo
+      // continua abrindo em todo lugar, mas é bom você saber que caiu.
+      codec: withAudio ? `${chosen.label} + ${withAudio.codec.label}` : chosen.label,
       frames: encoded,
-      hasAudio: audio !== null,
+      hasAudio: withAudio !== null,
+      audioFailed: mediaNames(project, audio?.failed ?? []),
+      audioSkipped,
     };
   } finally {
     releaseVideoElements(token);
@@ -313,7 +440,7 @@ export async function exportVideo(
     exportStatus.end();
     // `close()` num encoder já fechado lança; o estado depende de ter dado
     // erro, cancelado ou terminado, então não vale confiar no caminho.
-    try { encoder.close(); } catch { /* já estava fechado */ }
+    try { encoder?.close(); } catch { /* já estava fechado */ }
     try { audioEncoder?.close(); } catch { /* idem */ }
   }
 }

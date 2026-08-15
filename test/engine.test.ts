@@ -7,6 +7,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EASE } from '../src/engine/easings.ts';
+import { projectDuration, rulerDuration, MIN_PROJECT } from '../src/engine/project.ts';
+import { textLayer } from './fixtures.ts';
 import {
   sampleTrack,
   effectProgress,
@@ -107,4 +109,49 @@ test('validateEffect rejects malformed effects', () => {
     /key inválida/,
     'malformed key',
   );
+});
+
+// --- duração do projeto -------------------------------------------------
+
+test('a duração vai até o fim do último clipe', () => {
+  // Era um campo digitado, e clipe que passasse do número saía cortado do
+  // export sem nada avisar.
+  assert.equal(projectDuration([
+    textLayer({ start: 0, duration: 4 }),
+    textLayer({ start: 8, duration: 4.5 }),
+  ]), 12.5);
+});
+
+test('o clipe mais longo não precisa ser o último da lista', () => {
+  assert.equal(projectDuration([
+    textLayer({ start: 20, duration: 2 }),
+    textLayer({ start: 0, duration: 1 }),
+  ]), 22);
+});
+
+test('projeto vazio ainda tem régua', () => {
+  // Sem piso não haveria onde soltar o primeiro clipe.
+  assert.equal(projectDuration([]), MIN_PROJECT);
+});
+
+test('conteúdo minúsculo não encolhe a régua abaixo do piso', () => {
+  assert.equal(projectDuration([textLayer({ start: 0, duration: 0.2 })]), MIN_PROJECT);
+});
+
+test('a régua da timeline é mais longa que o projeto', () => {
+  // Sem a pista, a duração derivada vira armadilha circular: o arrasto prende o
+  // clipe dentro da duração, e a duração vem dos clipes.
+  const layers = [textLayer({ start: 0, duration: 10 })];
+  assert.ok(rulerDuration(layers) > projectDuration(layers));
+});
+
+test('a pista é proporcional, com piso e teto', () => {
+  // Fixa, sufocava projeto curto e sumia em projeto longo.
+  const pista = (segundos: number) => {
+    const layers = [textLayer({ start: 0, duration: segundos })];
+    return +(rulerDuration(layers) - projectDuration(layers)).toFixed(3);
+  };
+  assert.equal(pista(2), 1, 'piso de 1s');
+  assert.equal(pista(20), 3, '15% no meio da faixa');
+  assert.equal(pista(300), 5, 'teto de 5s');
 });

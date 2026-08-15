@@ -4,7 +4,7 @@ import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError, PROJECT_FORMAT,
 } from '../src/engine/serialize.ts';
 import { project, textLayer, videoLayer, imageLayer, fakeVideo, fakeImage } from './fixtures.ts';
-import type { VideoLayer } from '../src/engine/types.ts';
+import type { TextLayer, VideoLayer } from '../src/engine/types.ts';
 
 /** Resolve qualquer id — o caso em que toda a mídia continua disponível. */
 const anyMedia = () => fakeVideo();
@@ -216,7 +216,10 @@ test('a faixa salva vence o índice quando existe', () => {
     layers: [{ type: 'text', name: 'A', track: 4 }, { type: 'text', name: 'B', track: 4 }],
   }, anyMedia);
 
-  assert.deepEqual(p.layers.map(l => l.track), [4, 4], 'duas layers dividem a faixa');
+  // O número absoluto é compactado na leitura (ver a migração 5 → 6); o que
+  // tem que sobreviver é a RELAÇÃO — as duas seguem na mesma faixa, e não em
+  // 0 e 1 como o índice do array diria.
+  assert.equal(p.layers[0]?.track, p.layers[1]?.track, 'duas layers dividem a faixa');
 });
 
 test('faixa inválida no arquivo não vira NaN circulando pela engine', () => {
@@ -232,5 +235,88 @@ test('faixa inválida no arquivo não vira NaN circulando pela engine', () => {
 test('a faixa sobrevive à ida e volta', () => {
   const original = project([textLayer({ track: 3 }), textLayer({ id: 9, track: 3, start: 6 })]);
   const { project: back } = deserializeProject(serializeProject(original), anyMedia);
-  assert.deepEqual(back.layers.map(l => l.track), [3, 3]);
+  assert.equal(back.layers[0]?.track, back.layers[1]?.track, 'continuam juntas');
+});
+
+// --- contorno e sombra do texto -----------------------------------------
+
+test('contorno e sombra sobrevivem à ida e volta', () => {
+  const layer = textLayer({
+    stroke: '#112233', strokeWidth: 6, shadow: '#445566', shadowBlur: 9, shadowOffset: 3,
+  });
+  const { project: back } = deserializeProject(
+    serializeProject(project([layer])), () => null,
+  );
+  const t = back.layers[0] as TextLayer;
+  assert.equal(t.stroke, '#112233');
+  assert.equal(t.strokeWidth, 6);
+  assert.equal(t.shadow, '#445566');
+  assert.equal(t.shadowBlur, 9);
+  assert.equal(t.shadowOffset, 3);
+});
+
+test('projeto antigo abre com contorno e sombra desligados', () => {
+  // É exatamente como ele já se desenhava — não há informação a recuperar.
+  const antigo = serializeProject(project([textLayer()])) as unknown as {
+    format: number; layers: Record<string, unknown>[];
+  };
+  antigo.format = 4;
+  for (const l of antigo.layers) {
+    delete l.stroke; delete l.strokeWidth;
+    delete l.shadow; delete l.shadowBlur; delete l.shadowOffset;
+  }
+
+  const { project: back } = deserializeProject(antigo as never, () => null);
+  const t = back.layers[0] as TextLayer;
+  assert.equal(t.strokeWidth, 0, 'sem contorno');
+  assert.equal(t.shadowBlur, 0, 'sem sombra');
+  assert.equal(t.shadowOffset, 0);
+  assert.ok(t.stroke.length > 0, 'mas com uma cor pronta pra quando você ligar');
+});
+
+test('largura de contorno negativa é recusada', () => {
+  // `lineWidth` negativo é ignorado pelo canvas em silêncio — o texto sairia
+  // sem contorno nenhum e ninguém saberia por quê.
+  const ruim = serializeProject(project([textLayer()])) as unknown as {
+    layers: Record<string, unknown>[];
+  };
+  (ruim.layers[0] as Record<string, unknown>).strokeWidth = -5;
+  const { project: back } = deserializeProject(ruim as never, () => null);
+  assert.equal((back.layers[0] as TextLayer).strokeWidth, 0);
+});
+
+// --- migração 5 → 6: espaços de faixa separados -------------------------
+
+test('projeto antigo: a faixa do áudio deixa de depender das de vídeo', () => {
+  // No formato 5 a numeração era compartilhada, então uma faixa de áudio podia
+  // ser a 2 só porque existiam duas de vídeo. Agora cada tipo tem o seu espaço.
+  const { project: p } = deserializeProject({
+    format: 5,
+    layers: [
+      { type: 'text', name: 'A', track: 0 },
+      { type: 'text', name: 'B', track: 1 },
+      { type: 'audio', name: 'música', track: 2, mediaId: 'm', sourceDuration: 30, duration: 30 },
+    ],
+  }, anyMedia);
+
+  const audio = p.layers.find(l => l.type === 'audio');
+  assert.equal(audio?.track, 0, 'a única faixa de áudio é a 0 do espaço dela');
+  assert.deepEqual(
+    p.layers.filter(l => l.type === 'text').map(l => l.track),
+    [0, 1],
+    'as de vídeo não se mexem',
+  );
+});
+
+test('a migração não move clipe nenhum no tempo', () => {
+  const { project: p } = deserializeProject({
+    format: 5,
+    layers: [
+      { type: 'text', name: 'A', track: 3, start: 2.5, duration: 4 },
+      { type: 'audio', name: 'm', track: 7, start: 1.25, duration: 9, mediaId: 'm', sourceDuration: 30 },
+    ],
+  }, anyMedia);
+
+  assert.deepEqual(p.layers.map(l => l.start), [2.5, 1.25]);
+  assert.deepEqual(p.layers.map(l => l.duration), [4, 9]);
 });
