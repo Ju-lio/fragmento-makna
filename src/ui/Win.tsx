@@ -69,9 +69,11 @@ interface TextFieldProps {
   /** Renderiza um `<textarea>` no lugar do `<input>`. */
   area?: boolean;
   rows?: number;
+  /** O valor continua existindo — é o que volta se algo mais parar de ocupá-lo. */
+  disabled?: boolean;
 }
 
-export function TextField({ label, value, onChange, area = false, rows = 2 }: TextFieldProps) {
+export function TextField({ label, value, onChange, area = false, rows = 2, disabled = false }: TextFieldProps) {
   const Cmp = area ? 'textarea' : 'input';
   return (
     <Field label={label}>
@@ -79,6 +81,7 @@ export function TextField({ label, value, onChange, area = false, rows = 2 }: Te
         className="inp"
         value={value}
         rows={area ? rows : undefined}
+        disabled={disabled}
         onChange={e => onChange(e.target.value)}
       />
     </Field>

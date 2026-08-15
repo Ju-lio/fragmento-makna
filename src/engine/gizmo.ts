@@ -12,6 +12,7 @@
  * aparecendo agora.
  */
 
+import { displayText } from './countUp.ts';
 import type { Layer, LayerState, Project, VisualLayer } from './types.ts';
 
 export interface Point { x: number; y: number }
@@ -35,10 +36,15 @@ export function layerBox(
   layer: VisualLayer,
   project: Project,
   measure: TextMeasurer,
+  t: number,
 ): Box {
   if (layer.type === 'text') {
     const font = `${layer.size}px ${layer.font}`;
-    const lines = String(layer.text).split('\n');
+    // `displayText`, não `layer.text` direto — ver o comentário em
+    // `countUp.ts`: com um contador ligado, medir o texto estático deixaria a
+    // moldura de seleção (e o hit-test de `pickLayer`) presas no tamanho
+    // errado enquanto o número na tela muda de largura a cada quadro.
+    const lines = displayText(layer, t).split('\n');
     const w = lines.reduce((max, ln) => Math.max(max, measure(ln, font)), 0);
     // Mesma conta do `drawText`: as linhas se espalham a partir do centro, então
     // a altura é o vão entre a primeira e a última mais um corpo de fonte.
@@ -102,13 +108,14 @@ export function pickLayer(
   project: Project,
   measure: TextMeasurer,
   stateOf: (layer: Layer) => LayerState,
+  t: number,
   pad = 0,
 ): VisualLayer | null {
   for (let i = order.length - 1; i >= 0; i--) {
     const layer = order[i];
     if (!layer) continue;
     const st = stateOf(layer);
-    const box = layerBox(layer, project, measure);
+    const box = layerBox(layer, project, measure, t);
     if (box.w <= 0 || box.h <= 0) continue;
     if (hitBox(toLocal(point, layerCenter(project, st), st.rotate, st.scale), box, pad)) {
       return layer;

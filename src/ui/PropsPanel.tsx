@@ -1,6 +1,8 @@
 import { NumField, TextField, Field } from './Win.tsx';
 import { maxDuration } from '../engine/project.ts';
-import type { Layer, LayerPatch } from '../engine/types.ts';
+import { seedCountUpFromText } from '../engine/countUp.ts';
+import { EASE_NAMES } from '../engine/easings.ts';
+import type { CountUp, Layer, LayerPatch } from '../engine/types.ts';
 
 interface PropsPanelProps {
   layer: Layer | null;
@@ -22,7 +24,54 @@ export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) 
 
       {layer.type === 'text' ? (
         <>
-          <TextField label="Texto" value={layer.text} onChange={v => set({ text: v })} area rows={2} />
+          <TextField
+            label="Texto"
+            value={layer.text}
+            onChange={v => set({ text: v })}
+            area
+            rows={2}
+            disabled={Boolean(layer.countUp)}
+          />
+          {layer.countUp && <div className="hint">Ocupado pelo contador — desligue pra editar</div>}
+
+          {/*
+            O contador SUBSTITUI o texto, nunca combina — ver `CountUp` em
+            types.ts. Por isso o campo "Texto" acima fica desabilitado (não
+            escondido: o valor continua existindo, é o que volta se você
+            desligar) em vez de os dois convivendo e um confundindo o outro.
+
+            Ligar tenta ler um número que você já tinha digitado ("559.872 km
+            rodados") pra pré-preencher `to`/sufixo — é de graça
+            (`seedCountUpFromText`) e cobre o caso mais comum: escrever o valor
+            final primeiro, depois decidir animá-lo.
+          */}
+          <Field label="Contador">
+            <button
+              className={`btn btn-sm${layer.countUp ? ' on' : ''}`}
+              onClick={() => set({
+                countUp: layer.countUp ? undefined : {
+                  from: 0,
+                  duration: layer.duration,
+                  decimals: 0,
+                  separator: true,
+                  // `outQuad`, não `outExpo`: medido, o expo chega a 97% do
+                  // valor final já na METADE do tempo — parece que o número
+                  // só "aparece" grande, sem o efeito de contar de verdade.
+                  // O quad sobe gradual e ainda desacelera no fim.
+                  ease: 'outQuad',
+                  ...(seedCountUpFromText(layer.text) ?? { to: 100 }),
+                },
+              })}
+              title={layer.countUp ? 'Desligar e voltar ao texto fixo' : 'Animar este texto como um número contando'}
+            >
+              {layer.countUp ? '🔢 CONTANDO' : '🔢 VIRAR CONTADOR'}
+            </button>
+          </Field>
+
+          {layer.countUp && (
+            <CountUpFields countUp={layer.countUp} onChange={cu => set({ countUp: cu })} />
+          )}
+
           <div className="row">
             <NumField label="Tamanho" value={layer.size} step={2} onChange={v => set({ size: v })} />
           </div>
@@ -214,3 +263,82 @@ export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) 
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+interface CountUpFieldsProps {
+  countUp: CountUp;
+  onChange: (cu: CountUp) => void;
+}
+
+/**
+ * Os campos do contador, uma vez ligado.
+ *
+ * `anchor` e `loop` ficam de fora de propósito: o motor puro (`countUp.ts`)
+ * já os suporta de graça, reaproveitando `effectProgress`, mas expor os dois
+ * juntos (ancorar no fim ENQUANTO repete) é complexidade que não serve o caso
+ * de uso principal — um contador que corre do início ao fim do texto na tela.
+ * Fácil de acrescentar depois se alguém pedir; editável na unha num `.frag`
+ * até lá.
+ */
+function CountUpFields({ countUp, onChange }: CountUpFieldsProps) {
+  const patch = (p: Partial<CountUp>) => onChange({ ...countUp, ...p });
+
+  return (
+    <>
+      <div className="row">
+        <NumField label="De" value={countUp.from} step={1} onChange={v => patch({ from: v })} />
+        <NumField label="Até" value={countUp.to} step={1} onChange={v => patch({ to: v })} />
+      </div>
+
+      <div className="row">
+        <NumField
+          label="Duração (s)"
+          value={countUp.duration ?? 0}
+          step={0.1}
+          min={0.1}
+          onChange={v => patch({ duration: Math.max(0.1, v) })}
+        />
+        <NumField
+          label="Atraso (s)"
+          value={countUp.delay ?? 0}
+          step={0.1}
+          min={0}
+          onChange={v => patch({ delay: Math.max(0, v) })}
+        />
+      </div>
+
+      <div className="row">
+        <NumField
+          label="Casas decimais"
+          value={countUp.decimals ?? 0}
+          step={1}
+          min={0}
+          onChange={v => patch({ decimals: Math.max(0, Math.round(v)) })}
+        />
+        <Field label="Separador">
+          <button
+            className={`btn btn-sm${countUp.separator !== false ? ' on' : ''}`}
+            onClick={() => patch({ separator: countUp.separator === false })}
+            title="Separador de milhar, no padrão brasileiro (559.872)"
+          >
+            {countUp.separator !== false ? '1.234' : '1234'}
+          </button>
+        </Field>
+      </div>
+
+      <div className="row">
+        <TextField label="Prefixo" value={countUp.prefix ?? ''} onChange={v => patch({ prefix: v })} />
+        <TextField label="Sufixo" value={countUp.suffix ?? ''} onChange={v => patch({ suffix: v })} />
+      </div>
+
+      <Field label="Suavização">
+        <select
+          className="inp"
+          value={countUp.ease ?? 'outExpo'}
+          onChange={e => patch({ ease: e.target.value as CountUp['ease'] })}
+        >
+          {EASE_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </Field>
+    </>
+  );
+}

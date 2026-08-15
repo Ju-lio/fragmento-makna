@@ -17,7 +17,7 @@ const comp = () => project([]);
 // --- caixa da layer -----------------------------------------------------
 
 test('a caixa do texto sai da medição, e a altura do corpo da fonte', () => {
-  const box = layerBox(textLayer({ text: 'ABCDE', size: 100 }), comp(), measure);
+  const box = layerBox(textLayer({ text: 'ABCDE', size: 100 }), comp(), measure, 0);
   assert.equal(box.w, 50);
   assert.equal(box.h, 100, 'uma linha: um corpo');
 });
@@ -25,7 +25,7 @@ test('a caixa do texto sai da medição, e a altura do corpo da fonte', () => {
 test('texto de várias linhas usa a linha mais larga e a entrelinha do desenho', () => {
   // A caixa TEM que bater com o `drawText`: contas em lugares diferentes é
   // justamente o que faria a moldura não coincidir com o que está na tela.
-  const box = layerBox(textLayer({ text: 'AB\nABCD', size: 100 }), comp(), measure);
+  const box = layerBox(textLayer({ text: 'AB\nABCD', size: 100 }), comp(), measure, 0);
   assert.equal(box.w, 40, 'a linha mais larga manda');
   assert.equal(box.h, 100 * 1.12 + 100, 'um vão de entrelinha mais um corpo');
 });
@@ -34,14 +34,31 @@ test('a caixa da imagem usa a mesma conta do desenho', () => {
   // Fonte 100x100 numa composição 1920x1080, com fit 0.5:
   // escala = min(1920/100, 1080/100) * 0.5 = 5.4  ->  100 * 5.4 = 540.
   // A altura manda porque é o lado que aperta — o mesmo `Math.min` do desenho.
-  const box = layerBox(imageLayer({ img: fakeImage(), fit: 0.5 }), comp(), measure);
+  const box = layerBox(imageLayer({ img: fakeImage(), fit: 0.5 }), comp(), measure, 0);
   assert.equal(box.w, 540);
   assert.equal(box.h, 540, 'a imagem falsa é quadrada');
 });
 
 test('mídia sem dimensões ainda não tem caixa', () => {
   const semImagem = imageLayer({ img: { width: 0, height: 0 } as HTMLImageElement });
-  assert.deepEqual(layerBox(semImagem, comp(), measure), { w: 0, h: 0 });
+  assert.deepEqual(layerBox(semImagem, comp(), measure, 0), { w: 0, h: 0 });
+});
+
+test('com um contador ligado, a caixa mede o NÚMERO no instante t, não o `text` estático', () => {
+  /**
+   * A regressão que este teste existe pra travar: sem `t` chegando até aqui,
+   * a moldura de seleção e o hit-test de `pickLayer` ficariam presos medindo
+   * "X" pra sempre, enquanto o número desenhado na tela cresce de "0" até
+   * "1000000" — a moldura destoaria cada vez mais do que está visível, e um
+   * clique em cima do número real erraria o alvo.
+   */
+  const layer = textLayer({
+    text: 'X', size: 100,
+    countUp: { from: 0, to: 1000000, duration: 4, ease: 'linear' },
+  });
+  const noMeio = layerBox(layer, comp(), measure, 2);   // "500.000" — bem mais largo que "X"
+  const doTextoEstatico = layerBox(textLayer({ text: 'X', size: 100 }), comp(), measure, 2);
+  assert.ok(noMeio.w > doTextoEstatico.w * 5, `esperava caixa bem mais larga, deu ${noMeio.w} vs ${doTextoEstatico.w}`);
 });
 
 // --- referencial da layer -----------------------------------------------
@@ -87,7 +104,7 @@ test('numa layer girada, o acerto acompanha', () => {
   const layer = p.layers[0] as VisualLayer;
   const st = resolveState(layer, 0);
   const center = layerCenter(p, st);
-  const box = layerBox(layer, p, measure);   // 100 de largura, 40 de altura
+  const box = layerBox(layer, p, measure, 0);   // 100 de largura, 40 de altura
 
   // Deitada 90°, a extensão longa passou a ser vertical.
   const acimaDoCentro = { x: center.x, y: center.y - 45 };
@@ -105,20 +122,20 @@ test('clicar pega a layer da FRENTE', () => {
     textLayer({ id: 2, track: 1, text: 'AAAA', size: 100, effects: [] }),
   ]);
   const meio = { x: p.width / 2, y: p.height / 2 };
-  const achada = pickLayer(drawOrder(p), meio, p, measure, l => resolveState(l, 0));
+  const achada = pickLayer(drawOrder(p), meio, p, measure, l => resolveState(l, 0), 0);
   assert.equal(achada?.id, 2);
 });
 
 test('clicar no vazio não seleciona nada', () => {
   const p = project([textLayer({ text: 'A', size: 20, effects: [] })]);
-  assert.equal(pickLayer(drawOrder(p), { x: 5, y: 5 }, p, measure, l => resolveState(l, 0)), null);
+  assert.equal(pickLayer(drawOrder(p), { x: 5, y: 5 }, p, measure, l => resolveState(l, 0), 0), null);
 });
 
 test('layer sem caixa não pode ser pega', () => {
   // Senão uma imagem que ainda não carregou roubaria o clique de quem está atrás.
   const p = project([imageLayer({ img: { width: 0, height: 0 } as HTMLImageElement })]);
   const meio = { x: p.width / 2, y: p.height / 2 };
-  assert.equal(pickLayer(drawOrder(p), meio, p, measure, l => resolveState(l, 0)), null);
+  assert.equal(pickLayer(drawOrder(p), meio, p, measure, l => resolveState(l, 0), 0), null);
 });
 
 // --- escalar ------------------------------------------------------------

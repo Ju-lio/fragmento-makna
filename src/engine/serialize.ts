@@ -20,7 +20,7 @@
 import { BASE_STATE } from './effects.ts';
 import { compactTracks } from './project.ts';
 import type {
-  AnimProp, AudioLayer, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
+  AnimProp, AudioLayer, CountUp, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
   TextLayer, Track, VideoLayer,
 } from './types.ts';
 
@@ -52,7 +52,15 @@ import type {
  * cada tipo por conta própria — o que é literalmente a tradução pro modelo
  * novo, e não move clipe nenhum no tempo.
  */
-export const PROJECT_FORMAT = 6;
+/**
+ * 6 → 7: texto ganhou `countUp` (contador numérico animado), opcional.
+ * Ausente = como já era — texto estático, nada a migrar. O bump existe pelo
+ * mesmo motivo do 4 → 5: não porque o dado antigo quebra (não quebra), mas
+ * pra que um `.frag` com contador não seja aberto silenciosamente numa build
+ * mais velha e perca a animação sem aviso — `deserializeProject` já recusa
+ * formato futuro com mensagem explícita.
+ */
+export const PROJECT_FORMAT = 7;
 
 export interface SerializedProject {
   format: number;
@@ -86,7 +94,7 @@ interface SerializedSound {
 
 export type SerializedLayer =
   | (SerializedBase & SerializedDecor & {
-    type: 'text'; text: string; size: number; color: string; font: string;
+    type: 'text'; text: string; size: number; color: string; font: string; countUp?: CountUp;
   })
   | (SerializedBase & { type: 'image'; fit: number; mediaId: string })
   | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
@@ -154,6 +162,12 @@ function serializeLayer(l: Layer): SerializedLayer {
       ...base, type: 'text', text: l.text, size: l.size, color: l.color, font: l.font,
       stroke: l.stroke, strokeWidth: l.strokeWidth,
       shadow: l.shadow, shadowBlur: l.shadowBlur, shadowOffset: l.shadowOffset,
+      // Espalhado condicionalmente, não `countUp: l.countUp` direto: a chave
+      // presente com valor `undefined` sai igual no JSON, mas no objeto em
+      // memória `assert.deepEqual({countUp: undefined}, {})` é FALSO — um
+      // projeto sem contador deixaria de bater com uma layer construída sem
+      // tocar no campo.
+      ...(l.countUp ? { countUp: l.countUp } : {}),
     };
   }
   if (l.type === 'image') {
@@ -320,6 +334,7 @@ function readLayer(
   };
 
   if (l.type === 'text') {
+    const countUp = readCountUp(l.countUp);
     return {
       ...base, type: 'text',
       text: str(l.text, ''),
@@ -333,6 +348,10 @@ function readLayer(
       shadow: str(l.shadow, '#171021'),
       shadowBlur: Math.max(0, num(l.shadowBlur, 0)),
       shadowOffset: num(l.shadowOffset, 0),
+      // Espalhado condicionalmente — mesmo motivo de `serializeLayer`: um
+      // projeto do formato 6 (sem `countUp`) tem que voltar IDÊNTICO a uma
+      // layer que nunca tocou no campo, não com uma chave `undefined` a mais.
+      ...(countUp ? { countUp } : {}),
     } satisfies TextLayer;
   }
 
@@ -422,6 +441,33 @@ function readEffects(raw: unknown): Effect[] {
     if (typeof e.loop === 'boolean') effect.loop = e.loop;
     return [effect];
   });
+}
+
+/**
+ * Igual em espírito a `readEffects`: garante só a FORMA, com cada campo tendo
+ * um padrão — a entrada pode vir de um `.frag` editado à mão. `from`/`to` são
+ * os únicos obrigatórios; sem eles não há contador nenhum pra ler, e `undefined`
+ * (não uma exceção) é o que deixa o texto continuar estático.
+ */
+function readCountUp(raw: unknown): CountUp | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const c = raw as Record<string, unknown>;
+  if (typeof c.from !== 'number' || typeof c.to !== 'number') return undefined;
+
+  const cu: CountUp = { from: c.from, to: c.to };
+  if (typeof c.duration === 'number') cu.duration = c.duration;
+  if (typeof c.delay === 'number') cu.delay = c.delay;
+  if (c.anchor === 'end' || c.anchor === 'start') cu.anchor = c.anchor;
+  if (typeof c.loop === 'boolean') cu.loop = c.loop;
+  // Não validado contra `EASE_NAMES`, igual ao `ease` de `readEffects`: um
+  // nome desconhecido cai em `linear` na hora de usar (ver `countUp.ts`), não
+  // na hora de ler.
+  if (typeof c.ease === 'string') cu.ease = c.ease as CountUp['ease'];
+  if (typeof c.decimals === 'number') cu.decimals = Math.max(0, Math.round(c.decimals));
+  if (typeof c.separator === 'boolean') cu.separator = c.separator;
+  if (typeof c.prefix === 'string') cu.prefix = c.prefix;
+  if (typeof c.suffix === 'string') cu.suffix = c.suffix;
+  return cu;
 }
 
 const num = (v: unknown, fallback: number): number =>
