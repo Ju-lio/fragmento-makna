@@ -20,6 +20,7 @@ import { drawFrame } from './renderer.ts';
 import { frameIndexAt, timeAtFrameIndex, CACHE_FPS } from './frameCache.ts';
 import { claimVideoElements, releaseVideoElements, pauseAllVideo } from './videoSync.ts';
 import { stageVideosAt } from './prerender.ts';
+import { frameProvider } from './videoFrames.ts';
 import type { CancelToken } from './prerender.ts';
 import { ensureDisplayFont } from './fonts.ts';
 import { Progress } from './progress.ts';
@@ -383,10 +384,10 @@ export async function exportVideo(
       if (token.cancelled) return null;
 
       const t = timeAtFrameIndex(i, fps);
-      await stageVideosAt(project, t);
+      await stageVideosAt(frameProvider, project, t);
       if (token.cancelled) return null;
 
-      drawFrame(ctx, project, t, { fastPreview: false });
+      drawFrame(ctx, project, t, { fastPreview: false, frameFor: frameProvider.frameFor(project, t) });
 
       const frame = new VideoFrame(canvas, {
         timestamp: frameTimestamp(i, first, fps),

@@ -24,6 +24,7 @@ import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
 import { attachAudioElement, syncSoundLayers, stopAllSound, soundClock } from '../engine/audioSync.ts';
 import { clearPeaks } from '../engine/waveformStore.ts';
+import { frameFor, registerSource, releaseFrames } from '../engine/videoFrames.ts';
 import { Stage } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
 import { Win } from './Win.tsx';
@@ -159,6 +160,7 @@ export default function App() {
 
         await Promise.all(media.map(m => new Promise<void>(done => {
           const url = urlFor(m.id, m.blob);
+          registerSource(m.id, url);
           if (m.type.startsWith('audio/')) {
             const a = attachAudioElement(new Audio());
             a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
@@ -360,6 +362,8 @@ export default function App() {
     putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
 
     const url = urlFor(mediaId, file);
+    // O decodificador de quadros lê desta mesma URL — nenhum byte a mais.
+    registerSource(mediaId, url);
     attachMedia(file.type, url, mediaId, file.name, element => {
       // Entra no acervo E na linha do tempo. Importar pra depois posicionar é
       // um fluxo válido, mas o comum é querer ver na hora.
@@ -728,6 +732,7 @@ export default function App() {
     // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
     // que possa trazer as layers de volta.
     releaseAll();
+    releaseFrames();
     clearPeaks();
     // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
     // a próxima faixa destacada nascer lendo uma fonte morta.
@@ -756,7 +761,7 @@ export default function App() {
     cv.height = project.height;
     const ctx = cv.getContext('2d');
     if (!ctx) return flash('Canvas indisponível — não deu pra exportar');
-    drawFrame(ctx, project, player.t);
+    drawFrame(ctx, project, player.t, { frameFor: frameFor(project, player.t) });
     const a = document.createElement('a');
     a.download = `frame_${player.t.toFixed(2)}s.png`;
     a.href = cv.toDataURL('image/png');

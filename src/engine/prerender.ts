@@ -2,9 +2,8 @@ import { drawFrame } from './renderer.ts';
 import {
   frameCache, signatureOf, frameIndexAt, timeAtFrameIndex, CACHE_FPS,
 } from './frameCache.ts';
-import {
-  isLayerActive, sourceTimeAt, videoOwners, claimVideoElements, releaseVideoElements,
-} from './videoSync.ts';
+import { claimVideoElements, releaseVideoElements } from './videoSync.ts';
+import type { FrameLookup } from './renderer.ts';
 import type { Project } from './types.ts';
 import type { Range } from './player.ts';
 import { Progress } from './progress.ts';
@@ -23,10 +22,9 @@ export interface PrerenderOptions extends Range {
   onProgress?: (done: number, total: number) => void;
   token?: CancelToken;
   fps?: number;
+  /** Obrigatório na prática; ausente, o trecho sai sem as layers de vídeo. */
+  frames?: FrameProvider;
 }
-
-/** Quanto tempo esperar um seek antes de desistir dele. */
-const SEEK_TIMEOUT_MS = 3000;
 
 /** Quanto tempo trabalhar antes de devolver a vez ao navegador. */
 const SLICE_MS = 12;
@@ -77,67 +75,48 @@ export async function ensureRangeCached(
 }
 
 /**
- * Leva um <video> até `time` e resolve quando o frame estiver de fato pronto.
+ * De onde saem os quadros de vídeo — INJETADO, não importado.
  *
- * O `seeked` sozinho não basta: em alguns casos ele dispara antes do
- * `readyState` subir, e desenhar nessa janela pinta o frame anterior. Por isso
- * a espera também exige HAVE_CURRENT_DATA.
+ * A implementação real vive em `videoFrames.ts`, que depende do `@elah/core`.
+ * Esse pacote publica imports sem extensão, que o Node ESM recusa — e este
+ * projeto roda os testes nos `.ts` direto, sem etapa de build. Importá-lo aqui
+ * arrastaria o browser pra dentro do `node --test` e derrubaria a propriedade
+ * que o README defende: a engine é testável sem framework e sem navegador.
+ *
+ * Injetar também é honesto quanto ao papel: preencher cache é decidir QUANDO
+ * desenhar, não DE ONDE vem o pixel.
  */
-function seekVideoTo(video: HTMLVideoElement, time: number): Promise<void> {
-  return new Promise<void>(resolve => {
-    const alreadyThere = Math.abs(video.currentTime - time) < 0.001 && video.readyState >= 2;
-    if (alreadyThere) return resolve();
-
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      video.removeEventListener('seeked', onSeeked);
-      resolve();
-    };
-
-    const onSeeked = () => {
-      if (video.readyState >= 2) finish();
-      // readyState ainda baixo: espera o decoder soltar o frame de verdade.
-      else video.addEventListener('loadeddata', finish, { once: true });
-    };
-
-    // Sem timeout, um seek perdido (acontece) travaria o pré-render pra sempre.
-    const timer = setTimeout(finish, SEEK_TIMEOUT_MS);
-    video.addEventListener('seeked', onSeeked);
-    video.currentTime = time;
-  });
+export interface FrameProvider {
+  /** Espera os quadros de `t`. `false` = estourou o limite. */
+  stage(project: Project, t: number): Promise<boolean>;
+  frameFor(project: Project, t: number): FrameLookup;
 }
 
 /**
- * Põe todos os vídeos ativos em `t` na posição certa, em paralelo.
+ * Garante que todo quadro necessário pra desenhar `t` está decodificado.
  *
- * Exportado porque é a parte genuinamente difícil de compor quadro a quadro —
- * levar cada `<video>` ao instante exato e esperar o frame existir de verdade
- * — e o exportador precisa dela idêntica. Duas implementações disso divergiriam
- * e o arquivo exportado deixaria de bater com o preview.
+ * Exportado porque o pré-render e o export precisam **exatamente da mesma**
+ * espera — duas implementações divergiriam e o arquivo deixaria de bater com o
+ * preview.
+ *
+ * Ficou de três linhas. A versão anterior levava cada `<video>` ao instante e
+ * esperava o `seeked` — com timeout, porque seek se perde, e com uma espera
+ * extra por `loadeddata`, porque o `seeked` às vezes chega antes do quadro
+ * existir. Nada disso existe quando se pede um quadro por número: ou ele está
+ * decodificado, ou se espera ele ficar. Ver `videoFrames.ts`.
+ *
+ * Devolve `false` quando estourou a espera — e aí quem chama desenha com o que
+ * tiver, marcando o quadro como degradado, em vez de travar pra sempre num
+ * arquivo que este navegador não abre.
  */
-export async function stageVideosAt(project: Project, t: number): Promise<void> {
-  const waits: Array<Promise<void>> = [];
-  // Um clipe por arquivo, senão dois clipes sobrepostos do mesmo vídeo mandam
-  // o mesmo elemento pra dois instantes e esperam os dois seeks — o que sempre
-  // resolve com o quadro de um dos dois, sem dizer qual. Ver `ownersByElement`.
-  const active = videoOwners(project, t).filter(l => isLayerActive(l, t));
-
-  for (const layer of active) {
-    const want = Math.max(0, Math.min(sourceTimeAt(layer, t), layer.sourceDuration));
-    if (!layer.video.paused) layer.video.pause();
-    // A reprodução deixa o elemento num rate corrigido; aqui queremos o quadro
-    // exato, sem herdar nada do ajuste de deriva do preview.
-    layer.video.playbackRate = 1;
-    waits.push(seekVideoTo(layer.video, want));
-  }
-  if (waits.length) await Promise.all(waits);
+export async function stageVideosAt(
+  frames: FrameProvider, project: Project, t: number,
+): Promise<boolean> {
+  return frames.stage(project, t);
 }
 
 export async function prerenderRange(project: Project, {
-  from, to, scale, onProgress, token = { cancelled: false }, fps = project.fps ?? CACHE_FPS,
+  from, to, scale, onProgress, token = { cancelled: false }, fps = project.fps ?? CACHE_FPS, frames,
 }: PrerenderOptions): Promise<PrerenderResult> {
   const sig = signatureOf(project);
   frameCache.useSignature(sig, scale);
@@ -183,10 +162,10 @@ export async function prerenderRange(project: Project, {
       }
 
       const t = timeAtFrameIndex(i, fps);
-      await stageVideosAt(project, t);
+      if (frames) await frames.stage(project, t);
       if (token.cancelled) return { rendered, cancelled: true };
 
-      drawFrame(ctx, project, t, { fastPreview: false });
+      drawFrame(ctx, project, t, { fastPreview: false, frameFor: frames?.frameFor(project, t) });
 
       const bitmap = await createImageBitmap(canvas);
       // Pré-render é sempre qualidade cheia — por isso `degraded: false`, e por

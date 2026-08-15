@@ -4,6 +4,7 @@ import { trimLeft, trimRight } from '../engine/project.ts';
 import { autoPrerender } from '../engine/autoPrerender.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
+import { frameProvider } from '../engine/videoFrames.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { Waveform } from './Waveform.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
@@ -246,7 +247,7 @@ export function Timeline({
     if (autoPrerender.on && !isRangeCached(project, { from, to })) {
       player.seek(from);
       const scale = renderScale(viewport.zoom, window.devicePixelRatio || 1);
-      const { cancelled } = await ensureRangeCached(project, { from, to, scale });
+      const { cancelled } = await ensureRangeCached(project, { from, to, scale, frames: frameProvider });
       if (cancelled) return;   // você mandou parar: não sai reproduzindo sozinho
     }
 

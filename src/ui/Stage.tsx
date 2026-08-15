@@ -2,9 +2,10 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
+import { aimAt, frameFor, framesReadyAt } from '../engine/videoFrames.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import {
-  syncVideoLayers, previewBusyState, hasActiveVideo, videoElementsOwner, videosParkedAt,
+  previewBusyState, videoElementsOwner,
 } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource } from '../engine/frameSource.ts';
@@ -58,6 +59,19 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
      * imperceptível num preview, e o preço de não engessar a reprodução na
      * grade do cache.
      */
+    /**
+     * Até quando vale segurar a imagem esperando o quadro decodificado.
+     *
+     * Segurar é pra absorver alguns milissegundos. Passando disso, alguma coisa
+     * deu errado — e a resposta certa nunca é tela congelada sem explicação:
+     * desenha-se com o que houver, o `drawFrame` marca como degradado, e a
+     * barra de atividade explica. Foi assim que um export inteiro saiu numa
+     * imagem só: a espera não tinha fim.
+     */
+    const HOLD_LIMIT_MS = 400;
+    let holdT = -1;
+    let holdSince = 0;
+
     let capturing = false;
     const captureFrame = (sig: string, index: number, degraded: boolean) => {
       if (capturing) return;
@@ -149,38 +163,40 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       if (player.playing && player.fromCache) return;
 
-      syncVideoLayers(project, t);
+      /**
+       * Diz ao decodificador onde estamos, pra ele correr à frente, e desenha
+       * só quando o quadro daquele instante estiver em mãos.
+       *
+       * O `<video>` saiu do caminho da imagem — segue como fonte do SOM,
+       * conduzido pelo `syncSoundLayers`. O que se vê é o quadro pedido por
+       * NÚMERO, ou o quadro anterior segurado de propósito. Nunca o vizinho.
+       */
+      aimAt(project, t);
+
+      if (!framesReadyAt(project, t)) {
+        if (holdT !== t) { holdT = t; holdSince = performance.now(); }
+        if (performance.now() - holdSince < HOLD_LIMIT_MS) {
+          // Segurar exige AGENDAR a volta: o laço pula quadros limpos, então
+          // sair daqui sem marcar sujo deixa a tela na imagem anterior pra
+          // sempre — foi o que a primeira verificação pegou.
+          setTimeout(() => player.invalidate(), 16);
+          return;
+        }
+        // Estourou a espera: desenha, e o drawFrame marca como degradado.
+      } else {
+        holdT = -1;
+      }
+
+      const { degraded } = drawFrame(ctx, project, t, { fastPreview, frameFor: frameFor(project, t) });
 
       /**
-       * Parado, só compõe com o `<video>` que JÁ POUSOU no quadro pedido.
-       *
-       * `syncVideoLayers` escreve `currentTime` e volta na hora — o seek é
-       * assíncrono. Desenhar em seguida, no mesmo tick, compunha com a imagem
-       * ANTERIOR do elemento e mandava pra tela um quadro que o export nunca
-       * geraria. Parar em cima de um corte e ver o frame de antes dele vinha
-       * daqui, e é exatamente o que inviabiliza cortar com precisão.
-       *
-       * Segurar o quadro anterior transforma isso numa espera de alguns
-       * milissegundos — a mesma saída que o furo de cache já usa, e a barra de
-       * atividade ("decodificando") explica a pausa. O repaint é garantido:
-       * `attachVideoElement` escuta `seeked` e `loadeddata`.
-       *
-       * Só vale PARADO. Durante a reprodução ao vivo o elemento nunca está
-       * "pousado" — ele roda solto por construção — e exigir isso aqui
-       * congelaria a imagem inteira.
+       * A captura agora é fiel: o quadro veio decodificado pelo número daquele
+       * instante, o mesmo que o export vai usar. Antes era preciso marcar toda
+       * captura de reprodução como degradada, porque o `<video>` corria solto —
+       * esse regime deixou de existir. O que ainda degrada um quadro é o
+       * desfoque pulado ou um quadro ausente, e o `drawFrame` relata os dois.
        */
-      if (!player.playing && !videosParkedAt(project, t)) return;
-
-      const { degraded } = drawFrame(ctx, project, t, { fastPreview });
-
-      /**
-       * Reproduzindo ao vivo, o `<video>` corre no relógio dele e só é
-       * corrigido quando desvia mais de 80ms. O quadro capturado aí serve
-       * pra reexibir, mas não é fiel ao instante da grade — então entra como
-       * degradado, e o pré-render vai regerá-lo com o seek exato.
-       */
-      const videoApprox = player.playing && hasActiveVideo(project, t);
-      captureFrame(sig, index, degraded || videoApprox);
+      captureFrame(sig, index, degraded);
     });
     player.invalidate();
     return unsub;
