@@ -138,6 +138,23 @@ export default function App() {
    */
   const [restoring, setRestoring] = useState(true);
 
+  /**
+   * O projeto guardado não pôde ser lido — então NADA pode ser gravado por cima.
+   *
+   * Sem isto, um projeto ilegível era **destruído 600ms depois de abrir o
+   * editor**: o restore falhava, o editor caía no projeto de exemplo, o
+   * `finally` liberava o autosave e o exemplo era gravado por cima. Os bytes
+   * sumiam, e não havia nem como tentar de novo — o pior resultado possível,
+   * porque o motivo de o restore falhar costuma ser um defeito NOSSO (uma
+   * migração nova, um campo que mudou de forma), e quem paga é a edição de
+   * quem estava usando.
+   *
+   * Enquanto isto for verdade o editor é só leitura, e diz isso. Sai por
+   * decisão explícita: `✧ NOVO` descarta, que é o único gesto que significa
+   * "pode escrever por cima".
+   */
+  const [saveBlocked, setSaveBlocked] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -204,6 +221,10 @@ export default function App() {
       } catch (err) {
         // Projeto ilegível não pode impedir o editor de abrir. Fica no de
         // exemplo e avisa, em vez de mostrar tela branca.
+        //
+        // E TRAVA a gravação: o que está no disco é o trabalho de alguém, e
+        // não conseguir lê-lo não é motivo pra apagá-lo. Ver `saveBlocked`.
+        if (!cancelled) setSaveBlocked(true);
         flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir o projeto salvo');
       } finally {
         if (!cancelled) setRestoring(false);
@@ -221,12 +242,12 @@ export default function App() {
    * transações que terminam fora de ordem.
    */
   useEffect(() => {
-    if (restoring) return;
+    if (restoring || saveBlocked) return;
     const timer = setTimeout(() => {
       saveProject(serializeProject(project)).catch(() => { /* cota cheia ou modo privado */ });
     }, 600);
     return () => clearTimeout(timer);
-  }, [project, restoring]);
+  }, [project, restoring, saveBlocked]);
 
   useEffect(() => {
     player.start();
@@ -779,6 +800,9 @@ export default function App() {
     // a próxima faixa destacada nascer lendo uma fonte morta.
     audioElementsRef.current.clear();
     await Promise.all([clearProject(), pruneMedia(new Set())]);
+    // Descartar é o gesto explícito que libera a gravação de novo — ver
+    // `saveBlocked`. Nada mais deve liberá-la.
+    setSaveBlocked(false);
     flash('Projeto novo');
   };
 
@@ -842,6 +866,19 @@ export default function App() {
 
         <div className="topbar-spacer" />
 
+        {/*
+          Fica na barra o tempo todo, e não como toast: um aviso que some
+          deixaria você editar uma hora achando que está salvando. Ver
+          `saveBlocked`.
+        */}
+        {saveBlocked && (
+          <span
+            className="save-blocked"
+            title="O projeto guardado não pôde ser lido, e não vai ser sobrescrito. Baixe o .frag pra não perder o que está na tela; ✧ NOVO descarta o guardado e volta a salvar."
+          >
+            ⚠ NÃO ESTÁ SALVANDO
+          </span>
+        )}
         {toast && <span className="toast">{toast}</span>}
         <button className="btn" onClick={newProject} title="Descartar tudo e começar um projeto novo">✧ NOVO</button>
         <button className="btn btn-gold" onClick={copySchema}>▣ SCHEMA</button>

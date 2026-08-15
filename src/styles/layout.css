@@ -58,6 +58,30 @@
   text-transform: uppercase;
 }
 
+/*
+  "Não está salvando" — a forma do toast, a cor do perigo, e permanente.
+
+  Pisca porque é o único estado do editor em que continuar trabalhando custa o
+  trabalho: o que você fizer daqui não vai pro disco. Um aviso discreto aqui
+  seria pior que nenhum, porque daria a impressão de que já foi visto.
+*/
+.save-blocked {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--paper);
+  background: var(--coral);
+  border: 2px solid var(--ink);
+  padding: 3px 7px;
+  text-transform: uppercase;
+  animation: save-blocked-pulse 1.4s steps(2, end) infinite;
+}
+@keyframes save-blocked-pulse {
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-blocked { animation: none; }
+}
+
 /* --- workspace --- */
 .workspace {
   flex: 1;
