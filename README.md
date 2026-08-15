@@ -481,9 +481,38 @@ Consequência direta: `mediaIdsOf` passou a olhar o acervo, não as layers. Um
 arquivo importado e ainda não usado continua sendo do projeto, e varrer só as
 layers o apagaria na próxima abertura.
 
-Arquivos entram arrastando pra qualquer lugar do editor. O `preventDefault` no
-`dragover` não é detalhe: sem ele o navegador **abre** o arquivo, troca o editor
-pelo vídeo, e leva junto o que ainda não tinha sido salvo.
+Arquivos entram arrastando pra qualquer lugar do editor, e **+ MÍDIA** aceita
+seleção múltipla. O `preventDefault` no `dragover` não é detalhe: sem ele o
+navegador **abre** o arquivo, troca o editor pelo vídeo, e leva junto o que
+ainda não tinha sido salvo.
+
+### Vários arquivos de uma vez formam uma SEQUÊNCIA, não uma pilha
+
+Um arquivo isolado pousa como sempre pousou: faixa nova, no cursor
+(`addLayer` decide isso sozinho a cada chamada). Repetir essa regra em laço
+pra um lote é o defeito óbvio que não aparece óbvio: três vídeos
+selecionados juntos ganhariam três faixas, todos no MESMO instante — b-roll
+empilhado, quando o gesto claramente pedia um corte.
+
+`importFiles` reserva a faixa de cada espaço (visual e som são espaços
+diferentes — ver mais abaixo) **uma vez**, no início do lote, e processa os
+arquivos **em série**: a duração de um clipe só se conhece depois que os
+metadados chegam, e é dela que depende onde o próximo da mesma sequência
+começa. Paralelizar deixaria a ordem de CHEGADA decidir a sequência — não a
+ordem em que os arquivos foram escolhidos, porque um arquivo maior demora
+mais pra entregar metadados que um pequeno. Local (`blob:`), essa espera é
+questão de milissegundos, então processar em série não se sente mais lento
+que em paralelo.
+
+Um lote de tamanho 1 colapsa exatamente no comportamento de sempre — não há
+caso especial pra "um arquivo só".
+
+**Um arquivo com bytes malformados às vezes não dispara `loadedmetadata`
+nem `error`** — fica parado pra sempre, sem decidir. Como o lote processa em
+série, um arquivo assim travaria a fila inteira: nada depois dele seria
+sequer tentado, sem mensagem nenhuma. `attachMedia` tem um timeout de 10s —
+folgado de propósito, porque ler metadados de um blob local é cabeçalho, não
+decodificação, e qualquer arquivo que preste responde bem antes disso.
 
 ## Áudio
 
