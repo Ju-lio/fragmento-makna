@@ -31,6 +31,7 @@ src/
     timeSpan.ts        de quem é o instante t — a fronteira entre dois clipes
     easings.ts         curvas de aceleração
     effects.ts         runtime: sampleTrack, effectProgress, resolveState
+    countUp.ts         contador numérico animado — ortogonal a effects.ts
     renderer.ts        drawFrame(ctx, project, t) — função pura
     player.ts          relógio + loop rAF (fora do React de propósito)
     playbackClock.ts   o avanço do playhead em quadros inteiros (puro)
@@ -135,6 +136,54 @@ permite empilhar vários efeitos na mesma layer sem que briguem.
 3. Cola o JSON de volta na aba **Efeitos**
 
 O app entrega um *runtime*, não um catálogo — a biblioteca cresce sob demanda.
+
+### Contador numérico (`countUp`) — por que NÃO é um efeito
+
+Colar um JSON pedindo um "count up" (tipo
+[reactbits.dev/text-animations/count-up](https://reactbits.dev/text-animations/count-up))
+na aba Efeitos não funciona, e não é acidente: `validateEffect` rejeita
+qualquer `prop` fora das oito de cima, e mesmo que aceitasse, `resolveState`
+só escreve num `LayerState` numérico — o CONTEÚDO do texto nunca passa por
+ali. `TextLayer.text` é uma string fixa.
+
+Contar é outra categoria de animação: `scale`/`opacity`/`brightness`
+multiplicam e o resto soma, mas "qual texto mostrar" não é nem uma coisa nem
+outra — é substituição, não composição. Forçar isso dentro de
+`resolveState` misturaria duas semânticas no único lugar do código que hoje é
+100% "número entra, número compõe, número sai".
+
+Por isso é um campo dedicado, opcional, em `TextLayer.countUp` — e não um
+`AnimProp` a mais. As duas coisas convivem na mesma layer sem se atrapalhar:
+um `zoom-punch` entrando enquanto o número conta é só dois sistemas
+independentes lendo o mesmo `t`.
+
+**Reaproveitado, e não duplicado:** a janela de tempo (delay, `anchor`, loop)
+é a mesma conta de `effectProgress`, só que por um tipo mais estreito,
+`TimeWindow` — `{ duration?, delay?, anchor?, loop? }` — que nem `Effect` nem
+`CountUp` precisam fingir ser um o outro pra usar. Duração ausente, porém,
+cai na duração da LAYER inteira, não em 1s: um contador roda enquanto o texto
+está na tela, não como um floreio de entrada curto.
+
+Formatação é sempre `pt-BR` (`Intl.NumberFormat`) — o app inteiro fala
+português, e o projeto de exemplo já usa "559.872". O interruptor de
+separador de milhar troca só o AGRUPAMENTO; o separador DECIMAL continua
+sendo vírgula nos dois estados, porque desligar um não devia trocar o outro.
+
+**A moldura de seleção tem que medir o NÚMERO, não o `text` estático.**
+`layerBox` e `pickLayer` (`gizmo.ts`) passaram a receber `t` e chamar a mesma
+`displayText(layer, t)` que `drawText` usa — um lugar só decidindo "qual
+texto", ou a moldura ficaria presa no tamanho do texto original enquanto os
+dígitos crescem na tela, e um clique em cima do número real erraria o alvo.
+
+**O padrão de easing é `outQuad`, não `outExpo`.** Medido: `outExpo` chega a
+97% do valor final já na METADE do tempo — o número parece só "aparecer"
+grande, sem o efeito de contar de verdade. `outQuad` sobe gradual e ainda
+desacelera no fim.
+
+Verificado exportando o projeto de exemplo pelo botão real: no mesmo
+instante (t=2,85s), preview e MP4 exportado mostram exatamente
+"422.117 km rodados" — o mesmo número, porque os dois vêm do mesmo
+`drawFrame`.
 
 ## Viewport
 
@@ -1783,8 +1832,9 @@ arrasto e no trim, Alt desliga), **projeto em arquivo** (`.frag`) e **histórico
 de versões**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
 **quadro de vídeo por número** (um decodificador por clipe, armado antes do
 corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
-o remix reproduz a 99,2% do tempo real), e atalhos de
-Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 498
+o remix reproduz a 99,2% do tempo real), **contador numérico animado**
+(`countUp`, campo dedicado do texto — não é um efeito), e atalhos de
+Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 524
 testes.
 
 ### O caminho até "usável"
