@@ -1,6 +1,23 @@
 /**
  * Mantém as trilhas de som alinhadas ao relógio do player.
  *
+ * ⚠️ **FORA DO CAMINHO DO SOM desde o tocador WebAudio.** Quem toca e quem dá
+ * as horas hoje é o `soundEngine`; `syncSoundLayers`, `soundSyncPlan`,
+ * `soundClock`, `clockLayer`, `isClockMaster` e `soundOwners` não têm mais
+ * chamador em `src/`. Continuam aqui, com seus testes, pra sair de uma vez numa
+ * limpeza própria — a mesma situação do `syncVideoLayers` no `videoSync.ts`.
+ * **Não volte a chamá-los.**
+ *
+ * O motivo de terem saído está em `soundSchedule.ts`, e é medido: conduzindo
+ * elementos, um remix busca o `<video>` a cada corte e o elemento anda 88,8% do
+ * tempo de parede (contra 98,7% num clipe só). Como a linha do tempo seguia o
+ * elemento, a reprodução inteira saía lenta. Nada nas regras abaixo está
+ * errado; o que estava errado era a premissa de que um elemento de mídia
+ * buscado a cada corte pode ser fonte de som e de tempo.
+ *
+ * O que ainda vale daqui: `attachAudioElement` (os elementos seguem existindo,
+ * mudos, pra `sourceDuration` e pro acervo) e `stopAllSound`.
+ *
  * Duas regras carregam este arquivo, e as duas custaram bug:
  *
  * 1. **Um elemento por arquivo, não por layer.** Cortar um clipe (`splitLayer`)

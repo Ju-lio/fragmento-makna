@@ -15,14 +15,15 @@ import {
 import type { MediaElement } from '../engine/serialize.ts';
 import {
   newMediaId, putMedia, allMedia, urlFor, existingUrl, releaseAll, pruneMedia,
-  saveProject, loadProject, clearProject,
+  saveProject, loadProject, clearProject, mediaBlob,
 } from '../engine/mediaStore.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
 import { ensureDisplayFont } from '../engine/fonts.ts';
 import { attachVideoElement, pauseAllVideo } from '../engine/videoSync.ts';
-import { attachAudioElement, syncSoundLayers, stopAllSound, soundClock } from '../engine/audioSync.ts';
+import { attachAudioElement, stopAllSound } from '../engine/audioSync.ts';
+import { soundEngine } from '../engine/soundEngine.ts';
 import { clearPeaks } from '../engine/waveformStore.ts';
 import { frameFor, registerSource, releaseFrames } from '../engine/videoFrames.ts';
 import { Stage } from './Stage.tsx';
@@ -234,10 +235,21 @@ export default function App() {
     // The canvas font must be fetched explicitly; repaint once it lands.
     ensureDisplayFont().then(() => player.invalidate());
 
+    /**
+     * De onde o tocador tira os bytes pra decodificar. Instalado uma vez.
+     *
+     * O módulo do som não conhece o IndexedDB — mesma injeção que o
+     * `renderAudio` do export já usava.
+     */
+    soundEngine.setBlobResolver(mediaBlob);
+
     // Nem vídeo nem som podem continuar rolando depois que o transporte para.
     const unsubState = player.onState(p => {
       if (!p.playing) {
         pauseAllVideo(projectRef.current);
+        soundEngine.stop();
+        // Os elementos não tocam mais, mas podem ter sobrado rolando de uma
+        // sessão anterior a esta mudança. Barato, e cobre o caso.
         stopAllSound(projectRef.current.layers);
       }
     });
@@ -248,32 +260,52 @@ export default function App() {
      * `onFrame` é pulado quando nada mudou na tela — que é exatamente o
      * momento em que a música tem que continuar tocando. Amarrar som a
      * repintura faria a trilha travar num trecho parado.
+     *
+     * Quase todo tick não faz nada: uma agenda já no ar toca sozinha. Ver
+     * `soundAction`.
      */
     const unsubTick = player.onTick(t => {
-      syncSoundLayers(projectRef.current.layers, t, player.playing, {
-        /**
-         * SEMPRE conduz os `<video>`, não só quando a imagem vem do cache.
-         *
-         * Antes o `videoSync` os conduzia durante a reprodução ao vivo, porque
-         * eles eram a fonte da IMAGEM. Não são mais — quem entrega pixel é o
-         * decodificador de quadros. O único motivo de o elemento existir agora
-         * é o SOM, então quem cuida do som é quem tem que conduzi-lo.
-         *
-         * Sem isto ninguém dá `play()` no elemento e o clipe toca mudo.
-         */
-        driveVideo: true,
+      soundEngine.sync(projectRef.current.layers, {
+        t, playing: player.playing, duration: player.duration,
       });
     });
 
     /**
-     * O som passa a ditar o tempo. Ver `player.setTimeSource` e `soundClock`.
+     * O som passa a ditar o tempo — agora pelo `AudioContext`.
      *
-     * Instalado uma vez, aqui, e não a cada mudança de projeto: a fonte lê o
-     * `projectRef` na hora da chamada, então ela acompanha a edição sozinha —
-     * reinstalar a cada render descartaria a leitura anterior e perderia o
-     * delta a cada quadro, deixando a reprodução parada.
+     * Era o `currentTime` de um `<video>`, e num remix esse elemento é buscado
+     * a cada corte: medido, ele andava 88,8% do tempo de parede contra 98,7% do
+     * mesmo arquivo num clipe só. Como a linha do tempo seguia o elemento, a
+     * reprodução inteira saía 11% lenta. O `currentTime` do contexto de áudio
+     * corre no hardware e não conhece seek. Ver `soundSchedule.ts`.
+     *
+     * Instalado uma vez, aqui, e não a cada mudança de projeto: reinstalar
+     * descartaria a leitura anterior e perderia o delta a cada quadro,
+     * deixando a reprodução parada.
      */
-    player.setTimeSource(() => soundClock(projectRef.current.layers, player.t));
+    player.setTimeSource(() => soundEngine.clock());
+
+    /**
+     * Janela de inspeção pro relógio, só em desenvolvimento.
+     *
+     * Existe porque a verificação deste projeto acontece no navegador, com o
+     * app de verdade — e de fora da página não há como perguntar o que o
+     * relógio respondeu neste tick. Sem isso, medir o relógio exige
+     * instrumentar o código a cada investigação, que é justamente o passo caro
+     * que fez a bancada anterior se perder.
+     *
+     * Só leitura, e some do pacote em produção (`import.meta.env.DEV`).
+     */
+    if (import.meta.env.DEV) {
+      (globalThis as Record<string, unknown>).__FRAG__ = {
+        player,
+        layers: () => projectRef.current.layers,
+        soundClock: () => soundEngine.clock(),
+        // A saída do tocador, pra bancada gravar o que está sendo tocado e
+        // conferir o CONTEÚDO do som, não só que houve som.
+        soundOutput: () => soundEngine.output(),
+      };
+    }
 
     // ?t=1.6 opens the editor parked at that timestamp.
     const t = parseFloat(new URLSearchParams(location.search).get('t') ?? '');
@@ -741,6 +773,7 @@ export default function App() {
     // que possa trazer as layers de volta.
     releaseAll();
     releaseFrames();
+    soundEngine.release();
     clearPeaks();
     // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
     // a próxima faixa destacada nascer lendo uma fonte morta.
