@@ -1,6 +1,6 @@
 import { drawFrame } from './renderer.ts';
 import {
-  frameCache, signatureOf, frameIndexAt, timeAtFrameIndex, CACHE_FPS,
+  frameCache, signatureOf, frameIndexAt, lastFrameIndex, timeAtFrameIndex, CACHE_FPS,
 } from './frameCache.ts';
 import { claimVideoElements, releaseVideoElements } from './videoSync.ts';
 import type { FrameLookup } from './renderer.ts';
@@ -48,7 +48,10 @@ export function isRangeCached(project: Project, { from, to }: Range): boolean {
   if (frameCache.signature !== sig) return false;
 
   const first = frameIndexAt(from, fps);
-  const last = frameIndexAt(to, fps);
+  // O mesmo intervalo meio-aberto que o export renderiza — ver `lastFrameIndex`.
+  // Divergir aqui faria o pré-render declarar pronto um trecho com um quadro a
+  // mais, ou nunca declarar pronto um que está.
+  const last = lastFrameIndex(from, to, fps);
   for (let i = first; i <= last; i++) {
     if (!frameCache.has(sig, i)) return false;
   }
@@ -122,7 +125,7 @@ export async function prerenderRange(project: Project, {
   frameCache.useSignature(sig, scale);
 
   const first = frameIndexAt(from, fps);
-  const last = frameIndexAt(to, fps);
+  const last = lastFrameIndex(from, to, fps);
   const total = Math.max(0, last - first + 1);
 
   // Libera o orçamento pro trecho alvo antes de começar. Sem isso, quadros

@@ -1,5 +1,6 @@
 import { resolveState } from './effects.ts';
 import { drawOrder } from './project.ts';
+import { coversAt } from './timeSpan.ts';
 import type { ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
 
 /** Um quadro já decodificado. `VideoFrame` e `ImageBitmap` servem os dois. */
@@ -89,7 +90,14 @@ export function drawFrame(
   // Ordem de desenho por faixa, não a ordem do array: várias layers dividem
   // uma faixa agora, e é a faixa que decide quem fica por cima.
   for (const layer of drawOrder(project)) {
-    if (t < layer.start || t > layer.start + layer.duration) continue;
+    /**
+     * Meio-aberto — ver `timeSpan.ts`.
+     *
+     * Com `t > start + duration` como corte, dois clipes encostados desenhavam
+     * os dois no quadro da fronteira, e quem ficava por cima era o último do
+     * array. Em projeto reorganizado, esse podia ser o clipe que ESTÁ SAINDO.
+     */
+    if (!coversAt(layer, t)) continue;
 
     const st = resolveState(layer, t);
     if (st.opacity <= 0.001 || st.scale === 0) continue;

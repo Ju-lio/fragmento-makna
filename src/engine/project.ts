@@ -282,11 +282,40 @@ export function compactTracks(layers: readonly Layer[]): Layer[] {
   });
 }
 
-/** Dois clipes ocupam o mesmo pedaço da mesma faixa? */
+/**
+ * Fim de um trecho, na grade de milissegundos em que a linha do tempo vive.
+ *
+ * A grade não é enfeite: `start` já passa por `round` em toda edição (trim,
+ * corte, arrasto). O fim precisa passar também, porque `start + duration` é uma
+ * soma de ponto flutuante e ela sai da grade sozinha — `0.2 + 0.1` dá
+ * `0.30000000000000004`.
+ */
+function endOf(span: TimeSpan): number {
+  return round(span.start + span.duration);
+}
+
+/**
+ * Dois clipes ocupam o mesmo pedaço da mesma faixa?
+ *
+ * Estrito nas duas pontas: um clipe terminando exatamente onde o outro começa é
+ * o caso NORMAL (é o que um corte produz), não uma colisão.
+ *
+ * As pontas são comparadas na GRADE, e é isso que faz a estritez valer de fato.
+ * Antes, `start` era arredondado ao milissegundo e o fim não, então o fim caía
+ * um fio DEPOIS do início do vizinho e a comparação estrita achava uma
+ * sobreposição de 4×10⁻¹⁷ segundos:
+ *
+ *   Ctrl+D repetido num clipe de 0,1s — [0,2 … 0,30000000000000004) contra um
+ *   vizinho começando em 0,3. A partir da terceira cópia, cada duplicata subia
+ *   uma faixa "sem motivo". Com duração fracionária (o que um trim produz), já
+ *   na primeira.
+ *
+ * Não é tolerância afrouxada pra o problema sumir: é a resolução do modelo. A
+ * linha do tempo é uma grade de milissegundos, e duas posições dentro do mesmo
+ * milissegundo são a mesma posição.
+ */
 export function overlaps(a: TimeSpan, b: TimeSpan): boolean {
-  // Estrito nas duas pontas: um clipe terminando exatamente onde o outro
-  // começa é o caso NORMAL (é o que um corte produz), não uma colisão.
-  return a.start < b.start + b.duration && b.start < a.start + a.duration;
+  return round(a.start) < endOf(b) && round(b.start) < endOf(a);
 }
 
 /**
@@ -373,7 +402,9 @@ export function makeVideoLayer(
     type: 'video',
     name: 'Vídeo',
     start: 0,
-    duration: Math.min(sourceDuration, 5),
+    // Na grade, como todo resto: a duração crua vem do `<video>` com a precisão
+    // que o arquivo tiver, e é ela que tirava o FIM do clipe da grade.
+    duration: round(Math.min(sourceDuration, 5)),
     trimStart: 0,
     sourceDuration,
     video,
@@ -403,7 +434,7 @@ export function makeAudioLayer(
     start: 0,
     // Áudio costuma ser música de fundo: entra inteiro, ao contrário do vídeo
     // (que é limitado a 5s pra você não cobrir a composição sem querer).
-    duration: sourceDuration,
+    duration: round(sourceDuration),
     trimStart: 0,
     sourceDuration,
     audio,

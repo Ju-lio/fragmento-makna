@@ -28,6 +28,27 @@ export const frameIndexAt = (t: number, fps: number = CACHE_FPS): number => Math
 export const timeAtFrameIndex = (i: number, fps: number = CACHE_FPS): number => i / fps;
 
 /**
+ * Último quadro de um intervalo `[from, to)` da linha do tempo.
+ *
+ * O par de `frameIndexAt`, e existe porque o intervalo é **meio-aberto** — a
+ * mesma regra que decide de quem é a fronteira entre dois clipes, ver
+ * `timeSpan.ts`. O quadro que começa exatamente em `to` já é o primeiro do que
+ * vem depois; ele não pertence a este trecho.
+ *
+ * Era `frameIndexAt(to)`, e isso fazia todo export sair com **um quadro a
+ * mais**: um projeto de 3s a 30fps gravava 91 quadros — 3,033s de arquivo pra
+ * 3s de conteúdo. Não aparecia como quadro preto porque o clipe também contava
+ * a fronteira a mais, e os dois erros se cancelavam exatamente. Corrigir um só
+ * dos dois é que produziria o quadro preto; por isso os dois andam juntos.
+ *
+ * O piso em `first` é o caso do trecho vazio (`from === to`): devolver
+ * `first - 1` daria contagem negativa em quem chama.
+ */
+export function lastFrameIndex(from: number, to: number, fps: number = CACHE_FPS): number {
+  return Math.max(frameIndexAt(from, fps), frameIndexAt(to, fps) - 1);
+}
+
+/**
  * Anda `frames` quadros a partir de `t`, pousando SEMPRE na grade.
  *
  * Somar `frames / fps` ao tempo atual seria mais curto e estaria errado: um

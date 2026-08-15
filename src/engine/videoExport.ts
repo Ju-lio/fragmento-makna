@@ -17,7 +17,7 @@
 
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { drawFrame } from './renderer.ts';
-import { frameIndexAt, timeAtFrameIndex, CACHE_FPS } from './frameCache.ts';
+import { frameIndexAt, lastFrameIndex, timeAtFrameIndex, CACHE_FPS } from './frameCache.ts';
 import { claimVideoElements, releaseVideoElements, pauseAllVideo } from './videoSync.ts';
 import { stageVideosAt } from './prerender.ts';
 import { frameProvider } from './videoFrames.ts';
@@ -218,7 +218,10 @@ export async function exportVideo(
   }
 
   const first = frameIndexAt(from, fps);
-  const last = frameIndexAt(to, fps);
+  // Meio-aberto: o quadro que começa em `to` é o primeiro do que vem DEPOIS do
+  // trecho. Ver `lastFrameIndex` — contá-lo gravava um quadro a mais em todo
+  // export, e o arquivo saía 1/fps mais longo que o projeto.
+  const last = lastFrameIndex(from, to, fps);
   const total = frameCount(first, last);
   if (total === 0) throw new ExportUnsupportedError('O trecho selecionado não tem quadros.');
 

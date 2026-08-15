@@ -11,6 +11,7 @@
  * e eles são invisíveis olhando a forma de onda.
  */
 
+import { coversAt } from './timeSpan.ts';
 import type { Layer, SoundLayer, TimeSpan } from './types.ts';
 
 /** Um pedaço de som a tocar no arquivo de saída. */
@@ -117,5 +118,8 @@ export function hasSound(layers: readonly Layer[], range: { from: number; to: nu
  * do clipe é audível como um estalo.
  */
 export function isSoundActive(layer: TimeSpan, t: number): boolean {
-  return t >= layer.start && t < layer.start + layer.duration;
+  // A regra é a mesma da imagem, e agora mora num lugar só — ver `timeSpan.ts`.
+  // Esta metade sempre esteve certa; era a da imagem que contava a fronteira
+  // duas vezes.
+  return coversAt(layer, t);
 }

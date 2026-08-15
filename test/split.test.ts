@@ -5,7 +5,7 @@ import {
   pasteSlot, topTrackOf,
 } from '../src/engine/project.ts';
 import { audioLayer, textLayer, videoLayer } from './fixtures.ts';
-import type { VideoLayer } from '../src/engine/types.ts';
+import type { Layer, VideoLayer } from '../src/engine/types.ts';
 
 // --- corte --------------------------------------------------------------
 
@@ -101,6 +101,49 @@ test('overlaps ignora clipes que só se encostam', () => {
 test('overlaps acusa invasão, mesmo mínima', () => {
   assert.equal(overlaps({ start: 0, duration: 2 }, { start: 1.9, duration: 2 }), true);
   assert.equal(overlaps({ start: 0, duration: 5 }, { start: 1, duration: 1 }), true, 'contido');
+});
+
+test('poeira de ponto flutuante na emenda NÃO é invasão', () => {
+  /**
+   * `0.2 + 0.1` dá `0.30000000000000004`. Com o fim fora da grade e o início do
+   * vizinho dentro dela, a comparação estrita via uma sobreposição de 4×10⁻¹⁷
+   * segundos — e ela era suficiente pra mandar a duplicata pra outra faixa.
+   */
+  assert.equal(overlaps({ start: 0.2, duration: 0.1 }, { start: 0.3, duration: 0.1 }), false);
+  assert.equal(overlaps({ start: 0, duration: 1 / 3 }, { start: 0.333, duration: 0.1 }), false);
+});
+
+test('Ctrl+D repetido mantém a faixa enquanto houver espaço à frente', () => {
+  /**
+   * O sintoma relatado: duplicar um clipe várias vezes e, da terceira ou quarta
+   * em diante, a cópia ir parar na faixa de cima "sem necessidade". Nunca foi
+   * escolha de colocação — era a emenda entre a cópia anterior e a nova sendo
+   * lida como colisão. Ver `overlaps`.
+   *
+   * Anda como o `duplicateSelected`: cada cópia nasce logo depois da anterior.
+   */
+  let layers = [{ id: 1, type: 'video', track: 0, start: 0, duration: 0.1 } as unknown as Layer];
+  let sel = layers[0] as Layer;
+
+  for (let i = 0; i < 8; i++) {
+    const span = { start: +(sel.start + sel.duration).toFixed(3), duration: sel.duration };
+    const slot = pasteSlot(layers, span, sel.track, 'visual');
+    assert.equal(slot.track, 0, `a cópia ${i + 1} saiu da faixa 0`);
+    const copia = { ...sel, id: 100 + i, ...slot } as Layer;
+    layers = [...layers, copia];
+    sel = copia;
+  }
+});
+
+test('duplicar em cima de um clipe existente AINDA sobe de faixa', () => {
+  // A correção não pode ter apagado o motivo de `pasteSlot` existir: quando o
+  // lugar está de fato ocupado, subir é o certo.
+  const layers = [
+    { id: 1, type: 'video', track: 0, start: 0, duration: 2 },
+    { id: 2, type: 'video', track: 0, start: 2, duration: 2 },
+  ] as unknown as Layer[];
+
+  assert.equal(pasteSlot(layers, { start: 2, duration: 2 }, 0, 'visual').track, 1);
 });
 
 // --- faixas -------------------------------------------------------------
