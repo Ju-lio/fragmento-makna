@@ -52,7 +52,9 @@ src/
     exportPlan.ts      as decisões do export que não dependem do browser
     progress.ts        observável de progresso (pré-render, export)
     audioMix.ts        o que toca, quando, e de onde do arquivo
-    audioSync.ts       trilhas alinhadas ao relógio do player
+    soundEngine.ts     toca o som e dá as horas: um AudioBufferSource por clipe
+    soundSchedule.ts   quando reagendar, e o que cada fonte recebe (puro)
+    audioSync.ts       o caminho antigo, por elementos — fora de uso
     audioRender.ts     mixagem offline pro export
     waveform.ts        envelope de picos e recorte pra desenho (puro)
     waveformStore.ts   decodifica uma vez por arquivo e guarda o envelope
@@ -629,6 +631,14 @@ Verificado exportando: fonte a -21,1 dB de média, arquivo exportado a -21,1 dB 
 o som sai uma vez só, sem o vídeo mudo somar de novo por cima.
 
 ### Um elemento por arquivo, não por clipe
+
+> **História.** Esta seção e as duas seguintes descrevem o tocador por
+> elementos `<audio>`/`<video>`, que **não está mais no caminho do som** — ver
+> "O tocador: uma fonte agendada por clipe". Ficam registradas porque a disputa
+> pelo elemento continua valendo pra imagem (`videoOwners`), e porque a razão de
+> o modelo ter caído está aqui dentro: a última frase desta seção já apontava
+> pro `OfflineAudioContext` do export como o jeito certo de tocar clipes
+> sobrepostos. Era o jeito certo de tocar clipes, ponto.
 
 O sintoma: depois de cortar uma música com Ctrl+B, a **primeira** metade tocava
 muda. Cortar de novo, e a penúltima metade também. Nada na timeline parecia
@@ -1405,45 +1415,91 @@ Arquivo que falhou de vez é a exceção: não vem quadro nenhum, nunca, e esper
 por ele deixaria o palco em branco pra sempre — inclusive os títulos, que não
 têm nada a ver com o vídeo quebrado. Elemento com `error` é composto sem espera.
 
-### O som virou o relógio-mestre
+### O som é o relógio-mestre
 
 Havia dois relógios na reprodução. O do rAF, que o navegador atrasa a cada
-coleta de lixo, engasgo de decoder ou aba em segundo plano. E o do `<audio>`,
-que corre no relógio do **hardware de som** e é o mais estável da plataforma.
+coleta de lixo, engasgo de decoder ou aba em segundo plano. E o do som, que
+corre no relógio do **hardware** e é o mais estável da plataforma.
 
 O editor corrigia o segundo pra alcançar o primeiro — disciplinava o relógio bom
 pelo ruim. O preço aparecia como som cortado em lugar diferente a cada
-reprodução: uma travada punha os dois a mais de 90ms de distância, e acima disso
-a única correção possível era um **seek**, que é corte audível.
+reprodução. Invertido, o problema deixa de existir em vez de ser tolerado: a
+linha do tempo anda **o tanto que o som de fato andou**, e a imagem segue o som.
 
-Invertido, o problema deixa de existir em vez de ser tolerado: a linha do tempo
-anda **o tanto que o som de fato andou**, e a imagem segue o som. Dessincronia
-entre áudio e vídeo vira impossível por construção.
-
-Três detalhes que fazem a inversão funcionar:
+Dois detalhes fazem a inversão funcionar:
 
 - **`player.ts` não conhece áudio, e não deve.** Ele recebe uma função
-  (`setTimeSource`) que devolve a posição na linha do tempo. Quem sabe eleger a
-  trilha condutora é o `audioSync`, e é lá que essa regra vive.
+  (`setTimeSource`) que devolve a posição na linha do tempo. Quem sabe responder
+  isso é o `soundEngine`, e é lá que a regra vive.
 - **Usa-se o delta entre duas leituras, nunca a posição absoluta.** A posição
-  absoluta obrigaria a acertar o instante em que o `play()` chega ao alto-falante
-  (latência variável, de 1 a 157ms medidos) e daria um salto toda vez que a
-  trilha condutora mudasse. O delta só diz "saiu tanto de som desde o último
-  quadro", que é exatamente o que a linha do tempo precisa andar.
-- **Quem dita o relógio não se corrige.** Corrigir a referência pela cópia é
-  realimentação, não sincronia — e não é hipótese: como o playhead pousa na
-  grade, `t` fica sistematicamente até 1/fps atrás da posição real do elemento.
-  A 30fps são 33ms, acima da tolerância de 20ms. A condutora seria freada contra
-  um resíduo de arredondamento, e como a linha do tempo segue ela, a reprodução
-  inteira sairia lenta. As **outras** trilhas continuam sendo corrigidas para
-  ela — é assim que a sincronia acontece: todo mundo segue o som, o som não
-  segue ninguém.
+  absoluta obrigaria a acertar o instante em que o som chega ao alto-falante e
+  daria um salto toda vez que a fonte do tempo mudasse. O delta só diz "saiu
+  tanto de som desde o último quadro", que é exatamente o que a linha do tempo
+  precisa andar.
 
-O clamp do delta do som é bem mais folgado que o do rAF, de propósito. O limite
-de 0,25s existe contra o salto de voltar pra uma aba parada; já o delta do som é
-**medição do que aconteceu de verdade** — se saíram 400ms de áudio, a linha do
-tempo tem que andar 400ms, senão a imagem fica pra trás justamente na travada em
-que ela já está sofrendo.
+### Mas o relógio não pode ser um `<video>`
+
+A primeira versão lia o `currentTime` do elemento que estava tocando. Funciona
+num clipe só e desmorona num **remix** — várias fatias do mesmo arquivo em ordem
+trocada, que é justamente o que este editor existe pra fazer.
+
+Medido com um remix de seis fatias de 0,8s, amostrando a cada rAF:
+
+```
+remix mudo (relógio de rAF) .......... 99,2%   0 travas
+clipe inteiro com som (sem cortes) ... 98,7%
+remix com som (6 cortes) ............. 88,8%   2 travas (0,10s e 0,13s)
+```
+
+A perda não estava no encanamento: tick a tick, **zero** deltas descartados,
+quase nada de rAF. Era o próprio elemento andando 88,8% do tempo de parede.
+Cada corte é um `seek`, e um seek custa reprodução que o elemento nunca
+recupera. O controle sem cortes fecha o caso.
+
+E não adiantaria só tirá-lo do posto de relógio: o seek continuaria lá, e com
+ele o engasgo audível na emenda. **Um elemento de mídia buscado a cada corte não
+serve nem como fonte de som nem como fonte de tempo.**
+
+### O tocador: uma fonte agendada por clipe
+
+Cada clipe vira um `AudioBufferSourceNode` com `start(quando, offset, duração)`
+— o mesmo modelo que o export já usava em `renderAudio`. Não existe seek: o
+corte é um agendamento em amostra exata. O relógio passa a ser o `currentTime`
+do `AudioContext`.
+
+O ganho não é só de precisão. Preview e arquivo final passam a montar o som com
+a **mesma conta** (`mixPlan`), o que é bem mais forte que os dois soarem
+parecido.
+
+Três decisões que carregam o `soundSchedule.ts`:
+
+- **A âncora conta de quando o som fica audível**, somando `outputLatency`.
+  Ancorar no `currentTime` puro deixaria a imagem adiantada pela latência do
+  dispositivo em **todo** projeto — um desencontro constante que ninguém
+  consegue atribuir a nada olhando o editor.
+- **A agenda é uma fotografia, e a assinatura é a do projeto INTEIRO.** Um
+  `<audio>` reagia a cada tick; uma fonte já agendada não reage a nada, então
+  editar durante a reprodução precisa reagendar. A versão óbvia — assinar o
+  plano a partir do playhead — está errada de um jeito silencioso: `at`,
+  `offset` e `duration` dependem de `t`, a assinatura nunca se repete e a agenda
+  é refeita a cada quadro. Deu 171 reagendamentos em 6s, cada um um corte no
+  som, sem nenhum teste acusando (todos comparavam duas assinaturas no mesmo
+  `t`).
+- **O limiar de salto é 0,15s, não zero.** O playhead pousa na grade de quadros
+  e fica até 1/fps atrás da posição real — a 30fps, 33ms. Reagendar contra esse
+  resíduo seria recortar a trilha dezenas de vezes por segundo.
+
+Depois da troca: **99,2%**, o mesmo teto do projeto mudo, zero travas, e apenas
+dois reagendamentos em 6s — o início e a volta do laço, que são exatamente as
+duas descontinuidades que existem.
+
+Verificado pelo conteúdo, não pela entrega: o material de teste tem um bipe por
+segundo, cada um numa frequência (400 + 100n Hz), que é o análogo sonoro do
+número desenhado no quadro. Gravando a saída do tocador e lendo por DFT, saem
+800, 500, 1100, 600, 1300 e 400 Hz, espaçados de 0,80s ±0,01 — exatamente o
+remix `[4, 1, 7, 2, 9, 0]`. É pra isso que o tocador expõe uma **saída única**
+(`output()`): sem um nó onde ligar o gravador, o som do preview não é
+observável de lugar nenhum.
 
 ### O que continua não sendo exato, e por quê
 
@@ -1568,8 +1624,10 @@ quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
 arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
 **quadro de vídeo por número** (um decodificador por clipe, armado antes do
-corte), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript
-`strict`, com 429 testes.
+corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
+o remix reproduz a 99,2% do tempo real), e atalhos de
+Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 468
+testes.
 
 ### O caminho até "usável"
 
