@@ -2,7 +2,41 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   fitPxPerSecond, clampPxPerSecond, zoomAnchor, clampScroll, tickStep, followPlayhead,
+  timelineView,
 } from '../src/engine/timelineView.ts';
+import { projectDuration, rulerDuration } from '../src/engine/project.ts';
+import { videoLayer } from './fixtures.ts';
+
+// --- a régua não mede a duração do projeto ------------------------------
+
+test('a régua é MAIOR que o projeto, então as duas não se substituem', () => {
+  /**
+   * A armadilha que custou dois defeitos de interface: arrastar o cursor e
+   * arrastar as alças de trim convertiam pixel em segundo com
+   * `largura / player.duration`. Mas a régua mede `rulerDuration`, que tem uma
+   * sobra depois do último clipe — então o gesto inteiro saía encolhido pelo
+   * fator entre as duas, e o elemento ficava para trás do mouse.
+   *
+   * Enquanto esta diferença existir, nenhuma conta de arrasto pode usar a
+   * duração do projeto. A conversão certa é `timelineView.pxPerSecond`.
+   */
+  const layers = [videoLayer({ start: 0, duration: 2 })];
+
+  assert.equal(projectDuration(layers), 2);
+  assert.ok(rulerDuration(layers) > projectDuration(layers), 'a régua tem sobra');
+});
+
+test('pxPerSecond é a conversão que gerou a largura do conteúdo', () => {
+  // O que torna `timelineView.pxPerSecond` a fonte certa: a largura do elemento
+  // que o ponteiro mede sai exatamente dela. Medir o elemento e dividir por
+  // qualquer outra duração é reintroduzir o defeito.
+  const span = rulerDuration([videoLayer({ start: 0, duration: 2 })]);
+  timelineView.setViewport(600, span);
+
+  assert.equal(timelineView.contentWidth / span, timelineView.pxPerSecond);
+  // E a volta: o pixel arrastado vira segundo sem passar por duração nenhuma.
+  assert.equal(timelineView.timeAt(timelineView.xOf(1.5)), 1.5);
+});
 
 // --- o piso do zoom -----------------------------------------------------
 

@@ -307,11 +307,24 @@ export function Timeline({
     return () => removeEventListener('keydown', onKey);
   }, []);
 
+  /**
+   * Pixel do ponteiro -> instante, pela conversão da PRÓPRIA régua.
+   *
+   * Era `(x / r.width) * player.duration`, e isso assumia que a régua mede
+   * exatamente a duração do projeto. Ela não mede: `rulerDuration` acrescenta
+   * uma sobra de 1 a 5s depois do último clipe, pra dar onde soltar um clipe no
+   * fim. Então a régua vale `rulerSpan` segundos e a conta dividia por
+   * `duration` — o cursor andava só `duration / rulerSpan` do que o mouse
+   * andou. Num projeto de 2s isso são 67% do gesto; num de 1s, metade.
+   *
+   * `timelineView.pxPerSecond` é a conversão que gerou a largura do conteúdo,
+   * então usá-la direto tira a duração da conta e o erro deixa de ser possível.
+   */
   const scrub = (e: { clientX: number }) => {
     const ruler = rulerRef.current;
     if (!ruler) return;
     const r = ruler.getBoundingClientRect();
-    player.seek(((e.clientX - r.left) / r.width) * player.duration);
+    player.seek(timelineView.timeAt(e.clientX - r.left));
   };
 
   const startScrub = (e: React.PointerEvent) => {
@@ -335,9 +348,6 @@ export function Timeline({
     e.stopPropagation();          // don't also start a move drag
     onSelect(layer.id);
 
-    const ruler = rulerRef.current;
-    if (!ruler) return;
-    const rect = ruler.getBoundingClientRect();
     const startX = e.clientX;
     const orig = { ...layer };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -346,7 +356,9 @@ export function Timeline({
     const bounds = freeWindow(project.layers, layer);
 
     const move = (ev: PointerEvent) => {
-      const delta = ((ev.clientX - startX) / rect.width) * player.duration;
+      // Pixels arrastados -> segundos, pela mesma conversão da régua. Ver
+      // `scrub`: dividir pela duração do projeto encolhia o gesto inteiro.
+      const delta = (ev.clientX - startX) / timelineView.pxPerSecond;
       const patch = edge === 'left'
         ? trimLeft(orig, delta, bounds)
         : trimRight(orig, delta, bounds);
@@ -380,7 +392,10 @@ export function Timeline({
     const clip = e.currentTarget as HTMLElement;
     if (!ruler || !tracks) return;
 
-    const pxPerSecond = ruler.getBoundingClientRect().width / player.duration;
+    // A conversão da régua, não `largura / duração`: a régua vale `rulerSpan`
+    // segundos, não `player.duration`. Ver `scrub` — mesmo defeito, e aqui ele
+    // fazia o clipe ficar para trás do ponteiro durante o arrasto.
+    const pxPerSecond = timelineView.pxPerSecond;
     const kind = trackKind(layer);
 
     // A altura da faixa sai do layout já aplicado, não de uma constante: assim
