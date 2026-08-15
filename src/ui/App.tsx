@@ -20,7 +20,7 @@ import {
   DatabaseBlockedError,
 } from '../engine/mediaStore.ts';
 import { snapshotPlan, snapshotLabel } from '../engine/snapshots.ts';
-import { toFrag, fromFrag, fragFileName, FragFileError } from '../engine/fragFile.ts';
+import { toFrag, fromFrag, fragFileName, mediaNeeded, FragFileError } from '../engine/fragFile.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
@@ -515,10 +515,24 @@ export default function App() {
   };
 
   /** Reutiliza um arquivo do acervo — sem reimportar, sem guardar outra cópia. */
-  const useAsset = (asset: MediaAsset) => {
+  const useAsset = async (asset: MediaAsset) => {
     const element = elementsRef.current.get(asset.id);
-    if (!element) return flash('Esse arquivo ainda está carregando');
-    addLayerFor(asset.id, asset.type, element, asset.name);
+    if (element) return addLayerFor(asset.id, asset.type, element, asset.name);
+
+    /**
+     * Sem elemento, "ainda está carregando" era MENTIRA na metade dos casos.
+     *
+     * O acervo vem do projeto, e o projeto pode citar um arquivo cujos bytes
+     * não estão neste navegador — é o caso normal de abrir um `.frag` vindo de
+     * outra máquina. Ali o arquivo não está carregando: ele não existe, e
+     * nunca vai carregar. Dizer "aguarde" manda a pessoa esperar pra sempre.
+     *
+     * A pergunta que separa os dois casos é se os BYTES estão guardados.
+     */
+    const bytes = await mediaBlob(asset.id).catch(() => null);
+    flash(bytes
+      ? `"${asset.name}" ainda está carregando — tente de novo em instantes`
+      : `"${asset.name}" não está neste navegador. Use ▲ ABRIR no .frag pra localizar o arquivo, ou + MÍDIA pra importar de novo.`);
   };
 
   /** Tira do acervo junto com os clipes que o usam — um só passo de histórico. */
@@ -919,6 +933,14 @@ export default function App() {
     flash('Projeto baixado');
   };
 
+  /**
+   * O `.frag` pede arquivos que este navegador não tem.
+   *
+   * `null` quando não há nada pendente. Enquanto houver, o projeto NÃO é
+   * aberto — ver `onFragFile` pro porquê de a ordem importar.
+   */
+  const [religar, setReligar] = useState<{ dados: unknown; faltando: MediaAsset[] } | null>(null);
+
   const onFragFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     // Zera o input antes de qualquer await: sem isso, escolher O MESMO arquivo
@@ -927,13 +949,65 @@ export default function App() {
     if (!file) return;
 
     try {
-      await abrirSerializado(fromFrag(await file.text()), `Aberto: ${file.name}`);
+      const dados = fromFrag(await file.text());
+
+      /**
+       * Pede o material que falta ANTES de montar o projeto — e a ordem é o
+       * ponto todo.
+       *
+       * A desserialização DESCARTA a layer cuja mídia não resolve. Abrindo
+       * primeiro e religando depois, os clipes já teriam sido jogados fora:
+       * você reencontraria o arquivo e continuaria sem a edição, que é
+       * exatamente o oposto do que um projeto salvo serve pra fazer.
+       *
+       * Resolvendo antes, todas as layers resolvem normalmente e nada se perde.
+       */
+      const guardadas = new Set((await allMedia()).map(m => m.id));
+      const faltando = mediaNeeded(dados).filter(m => !guardadas.has(m.id));
+      if (faltando.length) {
+        setReligar({ dados, faltando });
+        return;
+      }
+
+      await abrirSerializado(dados, `Aberto: ${file.name}`);
     } catch (err) {
       // A mensagem do erro é o produto aqui — ela diz o que fazer a seguir.
       flash(err instanceof FragFileError || err instanceof ProjectFormatError
         ? err.message
         : 'Não consegui abrir esse arquivo');
     }
+  };
+
+  /**
+   * O arquivo que o usuário localizou pra uma mídia que faltava.
+   *
+   * Guarda sob o **mesmo `mediaId`** do projeto — é isso que faz as layers
+   * reencontrarem o material sem nada saber que ele veio de outro lugar. Nome e
+   * tipo vêm do arquivo novo: se você localizou um arquivo diferente, o acervo
+   * deve mostrar o que está lá de fato.
+   */
+  const localizar = async (asset: MediaAsset, file: File) => {
+    if (!religar) return;
+    try {
+      await putMedia(asset.id, file);
+    } catch {
+      return flash('Não consegui guardar essa mídia');
+    }
+
+    const restante = religar.faltando.filter(m => m.id !== asset.id);
+    if (restante.length) return setReligar({ ...religar, faltando: restante });
+
+    // Achou tudo: agora sim monta o projeto, com todas as layers resolvendo.
+    const { dados } = religar;
+    setReligar(null);
+    await abrirSerializado(dados, 'Projeto aberto com as mídias localizadas');
+  };
+
+  const abrirSemMidia = async () => {
+    if (!religar) return;
+    const { dados } = religar;
+    setReligar(null);
+    await abrirSerializado(dados, 'Aberto sem as mídias que faltavam');
   };
 
   // --- histórico de versões ---
@@ -1100,6 +1174,50 @@ export default function App() {
       {dropping && (
         <div className="dropzone" role="status">
           <span>Solte pra importar</span>
+        </div>
+      )}
+
+      {religar && (
+        <div className="versoes-fundo">
+          <div className="versoes">
+            <Win title="Localizar mídia" icon="⚠">
+              <p className="versoes-ajuda">
+                Este projeto usa {religar.faltando.length} arquivo(s) que não estão neste
+                navegador — um <code>.frag</code> guarda a edição, não os vídeos. Localize
+                cada um pra abrir sem perder nada.
+              </p>
+              <ul className="versoes-lista">
+                {religar.faltando.map(m => (
+                  <li key={m.id}>
+                    <span>
+                      {m.name}
+                      {m.duration > 0 && ` · ${m.duration.toFixed(1)}s`}
+                    </span>
+                    <label className="btn btn-sm">
+                      LOCALIZAR
+                      <input
+                        type="file"
+                        accept="image/*,video/*,audio/*"
+                        hidden
+                        onChange={e => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f) void localizar(m, f);
+                        }}
+                      />
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <p className="versoes-ajuda" style={{ margin: '8px 0 0' }}>
+                Abrir sem localizar <b>descarta</b> os clipes que usam esses arquivos.
+              </p>
+              <div className="versoes-acoes">
+                <button className="btn btn-sm" onClick={() => setReligar(null)}>CANCELAR</button>
+                <button className="btn btn-sm" onClick={abrirSemMidia}>ABRIR MESMO ASSIM</button>
+              </div>
+            </Win>
+          </div>
         </div>
       )}
 

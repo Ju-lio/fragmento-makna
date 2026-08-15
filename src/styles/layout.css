@@ -985,3 +985,13 @@
   height: 2px;
   background: var(--plum-lt);
 }
+
+/* Botões do rodapé de um painel: à direita, como num diálogo. */
+.versoes-acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+/* `label` como botão precisa se comportar como um. */
+.versoes-lista label.btn { cursor: pointer; }

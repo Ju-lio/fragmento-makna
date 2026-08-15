@@ -44,9 +44,9 @@
  * diferentes.
  */
 
-import { PROJECT_FORMAT, serializeProject } from './serialize.ts';
+import { PROJECT_FORMAT, mediaIdsOf, serializeProject } from './serialize.ts';
 import type { SerializedProject } from './serialize.ts';
-import type { Project } from './types.ts';
+import type { MediaAsset, Project } from './types.ts';
 
 export const FRAG_EXT = '.frag';
 
@@ -87,6 +87,41 @@ export function toFrag(project: Project, at = new Date()): string {
   // Dois espaços, e `\n` no fim: é um arquivo de texto, e ferramenta de texto
   // (git, diff, editor) espera terminar em quebra de linha.
   return `${JSON.stringify(arquivo, null, 2)}\n`;
+}
+
+/**
+ * O material que este projeto precisa, com nome e tipo — pra pedir de volta.
+ *
+ * Existe porque um `.frag` sem os arquivos é o caso NORMAL, não o excepcional:
+ * é o que acontece ao abrir o projeto em outra máquina, noutro navegador, ou
+ * depois de um `✧ NOVO`. Tratar isso como erro é tratar o uso principal do
+ * formato como defeito.
+ *
+ * Sai do acervo (`media`) quando ele existe, porque é lá que estão o nome e o
+ * tipo — sem eles, "localize o arquivo" vira adivinhação. Um projeto de formato
+ * 3 ou anterior não tinha acervo; aí os ids saem das próprias layers e o nome
+ * fica vazio, que ainda é melhor que nada.
+ */
+export function mediaNeeded(raw: unknown): MediaAsset[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const obj = raw as Record<string, unknown>;
+
+  if (Array.isArray(obj.media)) {
+    return obj.media.flatMap((m): MediaAsset[] => {
+      if (typeof m !== 'object' || m === null) return [];
+      const a = m as Record<string, unknown>;
+      return typeof a.id === 'string' && a.id
+        ? [{
+          id: a.id,
+          name: typeof a.name === 'string' ? a.name : 'mídia',
+          type: typeof a.type === 'string' ? a.type : '',
+          duration: typeof a.duration === 'number' ? a.duration : 0,
+        }]
+        : [];
+    });
+  }
+
+  return [...mediaIdsOf(raw)].map(id => ({ id, name: 'mídia', type: '', duration: 0 }));
 }
 
 /** O arquivo não é um projeto do Fragmento, ou está corrompido. */
