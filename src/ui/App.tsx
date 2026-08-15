@@ -16,7 +16,10 @@ import type { MediaElement } from '../engine/serialize.ts';
 import {
   newMediaId, putMedia, allMedia, urlFor, existingUrl, releaseAll, pruneMedia,
   saveProject, loadProject, clearProject, mediaBlob,
+  listSnapshots, putSnapshot, getSnapshot, deleteSnapshots, clearSnapshots,
 } from '../engine/mediaStore.ts';
+import { snapshotPlan, snapshotLabel } from '../engine/snapshots.ts';
+import { toFrag, fromFrag, fragFileName, FragFileError } from '../engine/fragFile.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
 import { drawFrame } from '../engine/renderer.ts';
@@ -41,12 +44,74 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'fx', label: 'Efeitos' },
 ];
 
+/**
+ * Um elemento carregado por mídia guardada, pronto pra desserialização.
+ *
+ * Fora do componente porque não depende de estado nenhum — e porque é usada por
+ * DOIS caminhos: reabrir o projeto do disco e importar um `.frag`. Duas cópias
+ * disto divergiriam, e o jeito de divergir é uma delas esquecer o
+ * `registerSource` e o vídeo importado abrir sem imagem.
+ *
+ * Espera o `loadedmetadata` de cada um: a desserialização é síncrona e precisa
+ * dos elementos já resolvidos. Quem falhar em carregar simplesmente não entra no
+ * mapa, e vira `missingMedia` mais à frente — nunca uma exceção que derruba a
+ * abertura inteira por causa de um arquivo.
+ */
+/**
+ * Guarda uma versão no histórico, se a política deixar.
+ *
+ * Silenciosa nos dois sentidos: não avisa quando guarda (seria ruído a cada dois
+ * minutos) e não reclama quando falha. Histórico é rede de segurança — se a
+ * cota do navegador acabar, o certo é o editor continuar salvando o projeto
+ * principal, não parar de funcionar por causa do backup.
+ */
+async function guardarVersao(dados: unknown): Promise<void> {
+  try {
+    const agora = Date.now();
+    const plano = snapshotPlan((await listSnapshots()).map(at => ({ at })), agora);
+    if (!plano.write) return;
+    await putSnapshot(agora, dados);
+    // Apaga DEPOIS de gravar: o contrário abriria uma janela em que o histórico
+    // tem uma versão a menos e a nova ainda não existe.
+    if (plano.drop.length) await deleteSnapshots(plano.drop);
+  } catch { /* cota cheia: o projeto principal já está salvo */ }
+}
+
+async function carregarElementos(): Promise<Map<string, MediaElement>> {
+  const media = await allMedia();
+  const elements = new Map<string, MediaElement>();
+
+  await Promise.all(media.map(m => new Promise<void>(done => {
+    const url = urlFor(m.id, m.blob);
+    registerSource(m.id, url);
+    if (m.type.startsWith('audio/')) {
+      const a = attachAudioElement(new Audio());
+      a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
+      a.addEventListener('error', () => done(), { once: true });
+      a.src = url;
+    } else if (m.type.startsWith('video/')) {
+      const v = attachVideoElement(document.createElement('video'));
+      v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
+      v.addEventListener('error', () => done(), { once: true });
+      v.src = url;
+    } else {
+      const img = new Image();
+      img.onload = () => { elements.set(m.id, img); done(); };
+      img.onerror = () => done();
+      img.src = url;
+    }
+  })));
+
+  return elements;
+}
+
 export default function App() {
   const [project, setProject] = useState(defaultProject);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [tab, setTab] = useState<TabId>('media');
   const [toast, setToast] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const fragRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
 
@@ -173,29 +238,7 @@ export default function App() {
 
         // Cada mídia guardada vira um elemento antes de montar as layers: a
         // desserialização é síncrona e precisa dos elementos já resolvidos.
-        const media = await allMedia();
-        const elements = new Map<string, MediaElement>();
-
-        await Promise.all(media.map(m => new Promise<void>(done => {
-          const url = urlFor(m.id, m.blob);
-          registerSource(m.id, url);
-          if (m.type.startsWith('audio/')) {
-            const a = attachAudioElement(new Audio());
-            a.addEventListener('loadedmetadata', () => { elements.set(m.id, a); done(); }, { once: true });
-            a.addEventListener('error', () => done(), { once: true });
-            a.src = url;
-          } else if (m.type.startsWith('video/')) {
-            const v = attachVideoElement(document.createElement('video'));
-            v.addEventListener('loadedmetadata', () => { elements.set(m.id, v); done(); }, { once: true });
-            v.addEventListener('error', () => done(), { once: true });
-            v.src = url;
-          } else {
-            const img = new Image();
-            img.onload = () => { elements.set(m.id, img); done(); };
-            img.onerror = () => done();
-            img.src = url;
-          }
-        })));
+        const elements = await carregarElementos();
         if (cancelled) return;
 
         const { project: loaded, missingMedia } = deserializeProject(saved, (id, type) => (
@@ -244,7 +287,12 @@ export default function App() {
   useEffect(() => {
     if (restoring || saveBlocked) return;
     const timer = setTimeout(() => {
-      saveProject(serializeProject(project)).catch(() => { /* cota cheia ou modo privado */ });
+      const dados = serializeProject(project);
+      saveProject(dados)
+        // O histórico só depois de a gravação principal dar certo: guardar uma
+        // versão de algo que não foi salvo confundiria as duas coisas.
+        .then(() => guardarVersao(dados))
+        .catch(() => { /* cota cheia ou modo privado */ });
     }, 600);
     return () => clearTimeout(timer);
   }, [project, restoring, saveBlocked]);
@@ -781,7 +829,22 @@ export default function App() {
 
   /** Recomeça do zero — e só aqui a mídia órfã é de fato apagada. */
   const newProject = async () => {
-    if (!confirm('Descartar o projeto atual e começar um novo?')) return;
+    /**
+     * O aviso diz que o histórico vai junto, porque vai — e é a única coisa
+     * aqui que não tem volta.
+     *
+     * As versões guardadas não podem sobreviver a este gesto: ele apaga TODA a
+     * mídia (`pruneMedia(new Set())`), então uma versão antiga voltaria sem os
+     * vídeos e sem os áudios. Guardar uma lista de versões que não abrem direito
+     * seria uma promessa falsa justamente no lugar em que a pessoa vai procurar
+     * socorro.
+     */
+    const temHistorico = (await listSnapshots().catch(() => [])).length;
+    const aviso = temHistorico
+      ? `Descartar o projeto atual, a mídia importada e ${temHistorico} versão(ões) guardada(s)?`
+        + '\n\nIsso não tem desfazer. Se quiser guardar, cancele e use ▼ .FRAG antes.'
+      : 'Descartar o projeto atual e começar um novo?';
+    if (!confirm(aviso)) return;
 
     player.pause();
     const fresh = defaultProject();
@@ -799,11 +862,103 @@ export default function App() {
     // Os `<audio>` extras apontam pras URLs recém-revogadas — guardá-los faria
     // a próxima faixa destacada nascer lendo uma fonte morta.
     audioElementsRef.current.clear();
-    await Promise.all([clearProject(), pruneMedia(new Set())]);
+    await Promise.all([clearProject(), pruneMedia(new Set()), clearSnapshots()]);
     // Descartar é o gesto explícito que libera a gravação de novo — ver
     // `saveBlocked`. Nada mais deve liberá-la.
     setSaveBlocked(false);
     flash('Projeto novo');
+  };
+
+  /**
+   * Abre um projeto já serializado — de um arquivo, ou de uma versão guardada.
+   *
+   * **NÃO chama `pruneMedia`**, e a diferença é destrutiva. Reabrir do disco
+   * descarta a mídia órfã porque ali não há mais histórico que a alcance; abrir
+   * um `.frag` é outra coisa — o arquivo pode ser antigo e não citar a mídia que
+   * você acabou de importar, e podar por ele apagaria os arquivos de alguém que
+   * só queria olhar uma versão anterior.
+   */
+  const abrirSerializado = useCallback(async (dados: unknown, feito: string) => {
+    const elements = await carregarElementos();
+    const { project: loaded, missingMedia } = deserializeProject(dados, (id, type) => (
+      type === 'audio' && !(elements.get(id) instanceof HTMLAudioElement)
+        ? audioElementFor(id)
+        : elements.get(id) ?? null
+    ));
+
+    elementsRef.current = elements;
+    projectRef.current = loaded;
+    setProject(loaded);
+    history.reset(loaded);
+    setSelectedId(loaded.layers[loaded.layers.length - 1]?.id ?? null);
+    player.invalidate();
+    // Abrir um projeto que funciona é o gesto que destrava a gravação: o que
+    // está na tela agora é conhecido e bom. Ver `saveBlocked`.
+    setSaveBlocked(false);
+
+    flash(missingMedia.length
+      ? `${feito} — ${missingMedia.length} layer(s) sem a mídia original`
+      : feito);
+  }, [history, audioElementFor]);
+
+  /** Baixa o projeto como `.frag`. Ver `fragFile.ts`. */
+  const baixarFrag = () => {
+    const texto = toFrag(projectRef.current);
+    const url = URL.createObjectURL(new Blob([texto], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fragFileName();
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    flash('Projeto baixado');
+  };
+
+  const onFragFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Zera o input antes de qualquer await: sem isso, escolher O MESMO arquivo
+    // de novo não dispara `change` e parece que o editor ignorou o clique.
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      await abrirSerializado(fromFrag(await file.text()), `Aberto: ${file.name}`);
+    } catch (err) {
+      // A mensagem do erro é o produto aqui — ela diz o que fazer a seguir.
+      flash(err instanceof FragFileError || err instanceof ProjectFormatError
+        ? err.message
+        : 'Não consegui abrir esse arquivo');
+    }
+  };
+
+  // --- histórico de versões ---
+  const [versoes, setVersoes] = useState<number[] | null>(null);
+
+  const abrirVersoes = async () => {
+    try {
+      setVersoes((await listSnapshots()).slice().reverse());
+    } catch {
+      flash('Não consegui ler o histórico');
+    }
+  };
+
+  const voltarPara = async (at: number) => {
+    try {
+      const dados = await getSnapshot(at);
+      if (!dados) return flash('Essa versão não está mais guardada');
+      /**
+       * Guarda o estado ATUAL antes de trocar.
+       *
+       * Voltar pra uma versão não pode ser um caminho só de ida: se você
+       * escolheu a versão errada, o que estava na tela tem que continuar
+       * existindo em algum lugar. Sem isto, o próprio recurso de recuperação
+       * seria uma forma nova de perder trabalho.
+       */
+      await putSnapshot(Date.now(), serializeProject(projectRef.current));
+      await abrirSerializado(dados, `Voltou pra ${snapshotLabel(at, Date.now())}`);
+      setVersoes(null);
+    } catch (err) {
+      flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir essa versão');
+    }
   };
 
   const copySchema = async () => {
@@ -880,6 +1035,18 @@ export default function App() {
           </span>
         )}
         {toast && <span className="toast">{toast}</span>}
+        <button
+          className="btn"
+          onClick={abrirVersoes}
+          title="As últimas versões salvas automaticamente — pra voltar se algo der errado"
+        >⟲ VERSÕES</button>
+        <button className="btn" onClick={baixarFrag} title="Baixar o projeto como arquivo .frag">▼ .FRAG</button>
+        <button
+          className="btn"
+          onClick={() => fragRef.current?.click()}
+          title="Abrir um projeto .frag do disco"
+        >▲ ABRIR</button>
+        <input ref={fragRef} type="file" accept=".frag,application/json" hidden onChange={onFragFile} />
         <button className="btn" onClick={newProject} title="Descartar tudo e começar um projeto novo">✧ NOVO</button>
         <button className="btn btn-gold" onClick={copySchema}>▣ SCHEMA</button>
         <button className="btn" onClick={savePng}>▼ PNG</button>
@@ -927,6 +1094,40 @@ export default function App() {
       {dropping && (
         <div className="dropzone" role="status">
           <span>Solte pra importar</span>
+        </div>
+      )}
+
+      {versoes !== null && (
+        <div className="versoes-fundo" onClick={() => setVersoes(null)}>
+          <div className="versoes" onClick={e => e.stopPropagation()}>
+            <Win
+              title="Versões"
+              icon="⟲"
+              right={<button className="btn btn-sm" onClick={() => setVersoes(null)}>✕</button>}
+            >
+              {versoes.length === 0 ? (
+                <p className="versoes-vazio">
+                  Nenhuma versão guardada ainda. A primeira aparece assim que o projeto
+                  for salvo; depois disso, uma a cada dois minutos de trabalho.
+                </p>
+              ) : (
+                <>
+                  <p className="versoes-ajuda">
+                    Voltar não descarta o que está na tela — ele vira uma versão nova
+                    aqui na lista.
+                  </p>
+                  <ul className="versoes-lista">
+                    {versoes.map(at => (
+                      <li key={at}>
+                        <span>{snapshotLabel(at, Date.now())}</span>
+                        <button className="btn btn-sm" onClick={() => voltarPara(at)}>VOLTAR</button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </Win>
+          </div>
         </div>
       )}
 

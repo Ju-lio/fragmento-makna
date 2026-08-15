@@ -19,9 +19,19 @@
  */
 
 const DB_NAME = 'fragmento';
-const DB_VERSION = 1;
+/**
+ * 1 → 2: entrou o store `snapshots` (o histórico de versões do projeto).
+ *
+ * Subir a versão é o único jeito de criar um store, e o `onupgradeneeded` abaixo
+ * é escrito pra rodar em qualquer ponto de partida: cada store é criado só se
+ * ainda não existir, então quem vem da 1 ganha o novo e mantém os dois antigos
+ * intactos. Nada é reescrito, nada é migrado — o projeto guardado continua
+ * exatamente onde estava.
+ */
+const DB_VERSION = 2;
 const MEDIA_STORE = 'media';
 const PROJECT_STORE = 'project';
+const SNAPSHOT_STORE = 'snapshots';
 
 /** Só existe um projeto por enquanto; a chave é fixa. */
 const CURRENT_PROJECT = 'current';
@@ -43,6 +53,8 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result;
       if (!db.objectStoreNames.contains(MEDIA_STORE)) db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(PROJECT_STORE)) db.createObjectStore(PROJECT_STORE);
+      // Chave = instante da gravação, então listar já vem em ordem cronológica.
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) db.createObjectStore(SNAPSHOT_STORE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB indisponível'));
@@ -133,4 +145,34 @@ export async function loadProject(): Promise<unknown> {
 
 export async function clearProject(): Promise<void> {
   await tx(PROJECT_STORE, 'readwrite', s => s.delete(CURRENT_PROJECT));
+}
+
+// --- histórico de versões -------------------------------------------------
+
+/**
+ * As versões guardadas, da mais antiga pra mais nova.
+ *
+ * Só as CHAVES — os projetos em si podem ser dezenas, e a lista é lida a cada
+ * autosave só pra decidir se cabe uma nova (ver `snapshotPlan`). Trazer o
+ * conteúdo junto seria ler megabytes pra responder uma pergunta sobre datas.
+ */
+export async function listSnapshots(): Promise<number[]> {
+  const chaves = await tx<IDBValidKey[]>(SNAPSHOT_STORE, 'readonly', s => s.getAllKeys());
+  return chaves.filter((k): k is number => typeof k === 'number').sort((a, b) => a - b);
+}
+
+export async function putSnapshot(at: number, data: unknown): Promise<void> {
+  await tx(SNAPSHOT_STORE, 'readwrite', s => s.put(data, at));
+}
+
+export async function getSnapshot(at: number): Promise<unknown> {
+  return await tx(SNAPSHOT_STORE, 'readonly', s => s.get(at));
+}
+
+export async function deleteSnapshots(ats: readonly number[]): Promise<void> {
+  await Promise.all(ats.map(at => tx(SNAPSHOT_STORE, 'readwrite', s => s.delete(at))));
+}
+
+export async function clearSnapshots(): Promise<void> {
+  await tx(SNAPSHOT_STORE, 'readwrite', s => s.clear());
 }
