@@ -4,6 +4,7 @@ import { trimLeft, trimRight } from '../engine/project.ts';
 import { autoPrerender } from '../engine/autoPrerender.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, isRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
+import { PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
 import { frameProvider } from '../engine/videoFrames.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { Waveform } from './Waveform.tsx';
@@ -244,7 +245,10 @@ export function Timeline({
 
     const { from, to } = player.effectiveRange();
 
-    if (autoPrerender.on && !isRangeCached(project, { from, to })) {
+    // Com o cache fora do preview, pré-renderizar antes do play só cobraria a
+    // espera sem entregar nada — o desenho continuaria saindo ao vivo. Ver
+    // `PREVIEW_CACHE_ENABLED`.
+    if (PREVIEW_CACHE_ENABLED && autoPrerender.on && !isRangeCached(project, { from, to })) {
       player.seek(from);
       const scale = renderScale(viewport.zoom, window.devicePixelRatio || 1);
       const { cancelled } = await ensureRangeCached(project, { from, to, scale, frames: frameProvider });
@@ -253,7 +257,7 @@ export function Timeline({
 
     // Decidido UMA vez, aqui: o trecho inteiro sai do cache ou nada sai.
     // Misturar as duas origens quadro a quadro é o que faz o vídeo tremer.
-    player.fromCache = isRangeCached(project, { from, to });
+    player.fromCache = PREVIEW_CACHE_ENABLED && isRangeCached(project, { from, to });
 
     /**
      * Tocando do cache o `<video>` não pinta nada, mas continua sendo a fonte
@@ -551,13 +555,21 @@ export function Timeline({
           <span>{fmt(duration)}</span>
         </div>
 
-        <button
-          className={`btn btn-sm${autoPre ? ' on' : ''}`}
-          onClick={() => autoPrerender.toggle()}
-          title="Ligado: prepara o trecho antes de tocar — demora, e reproduz igual ao arquivo exportado. Desligado: toca na hora."
-        >
-          ⚙ AUTO PRÉ-RENDER
-        </button>
+        {/*
+          Escondido enquanto `PREVIEW_CACHE_ENABLED` é falso: o preview desenha
+          sempre ao vivo, então este botão não mudaria nada — e um interruptor
+          que não faz o que promete é pior que interruptor nenhum. Volta junto
+          com o cache.
+        */}
+        {PREVIEW_CACHE_ENABLED && (
+          <button
+            className={`btn btn-sm${autoPre ? ' on' : ''}`}
+            onClick={() => autoPrerender.toggle()}
+            title="Ligado: prepara o trecho antes de tocar — demora, e reproduz igual ao arquivo exportado. Desligado: toca na hora."
+          >
+            ⚙ AUTO PRÉ-RENDER
+          </button>
+        )}
 
         <div className="tl-zoom">
           <button

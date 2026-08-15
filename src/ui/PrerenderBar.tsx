@@ -3,6 +3,7 @@ import { player } from '../engine/player.ts';
 import { viewport, renderScale } from '../engine/viewport.ts';
 import { ensureRangeCached, prerenderStatus, cancelPrerender } from '../engine/prerender.ts';
 import { frameCache, signatureOf, estimateRange, formatBytes } from '../engine/frameCache.ts';
+import { PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
 import { mediaBlob } from '../engine/mediaStore.ts';
 import {
   exportVideo, cancelExport, exportStatus, exportSupport, downloadBlob,
@@ -186,14 +187,24 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
         </>
       ) : (
         <>
-          <button className="btn btn-sm btn-gold" onClick={start}>⚙ PRÉ-RENDER</button>
+          {/*
+            Marcar trecho e EXPORTAR continuam; o pré-render e a conta de
+            memória dele saem enquanto `PREVIEW_CACHE_ENABLED` é falso — o
+            preview desenha ao vivo, então encher o cache não mudaria o que
+            você vê. Voltam junto com ele.
+          */}
+          {PREVIEW_CACHE_ENABLED && (
+            <button className="btn btn-sm btn-gold" onClick={start}>⚙ PRÉ-RENDER</button>
+          )}
           <button className="btn btn-sm btn-mint" onClick={startExport}>⬛ EXPORTAR</button>
-          <span className={`prerender-est${estimate.fits ? '' : ' over'}`}>
-            {estimate.fits
-              ? `≈ ${formatBytes(estimate.bytes)}`
-              : `≈ ${formatBytes(estimate.bytes)} — não cabe, marque até ~${estimate.maxSeconds.toFixed(1)}s`}
-          </span>
-          {cached > 0 && (
+          {PREVIEW_CACHE_ENABLED && (
+            <span className={`prerender-est${estimate.fits ? '' : ' over'}`}>
+              {estimate.fits
+                ? `≈ ${formatBytes(estimate.bytes)}`
+                : `≈ ${formatBytes(estimate.bytes)} — não cabe, marque até ~${estimate.maxSeconds.toFixed(1)}s`}
+            </span>
+          )}
+          {PREVIEW_CACHE_ENABLED && cached > 0 && (
             <>
               <span className="prerender-cached" title="Frames prontos na memória">
                 {cached} frames
