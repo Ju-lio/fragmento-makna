@@ -62,6 +62,8 @@ src/
     magnet.ts          o ímã: encostar um clipe exatamente onde o outro acaba
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
+    fragFile.ts        o arquivo .frag: o projeto fora do navegador
+    snapshots.ts       a política do histórico de versões (puro)
     mediaStore.ts      blobs e projeto em IndexedDB
     autoPrerender.ts   o interruptor ⚙ AUTO PRÉ-RENDER
     previewStatus.ts   sinal da barra de atividade
@@ -1203,6 +1205,83 @@ o `src` revogado voltaria preto. O que sobra é descartado ao **reabrir** (aí n
 existe mais histórico que alcance a layer) e em ✧ NOVO. Sem essa limpeza, o
 editor decodificaria vídeos que ninguém usa a cada abertura.
 
+### O projeto ilegível era apagado 600ms depois de abrir
+
+O pior defeito que este editor teve, e ele era silencioso.
+
+Se o restore falhava — formato do futuro, migração com defeito, qualquer exceção
+ao ler uma layer —, o editor caía no projeto de exemplo e avisava. Até aí,
+certo. Mas o autosave era liberado do mesmo jeito, e 600ms depois o **exemplo era
+gravado por cima do trabalho guardado**. Os bytes sumiam, e não havia nem como
+tentar de novo.
+
+A trava do autosave durante a restauração existia exatamente pra impedir isso,
+mas cobria só o caminho feliz. O caminho que importa é o outro: o motivo de um
+restore falhar costuma ser um defeito *nosso*, e quem paga é a edição de quem
+estava usando.
+
+Hoje um restore que falha **trava a gravação**. O editor abre, mostra o que
+conseguir, e não escreve nada. Sai por decisão explícita — ✧ NOVO descarta, que
+é o único gesto que significa "pode escrever por cima". E o aviso fica na barra,
+permanente e pulsando, não como toast: é o único estado do editor em que
+continuar trabalhando custa o trabalho, e um aviso que some deixaria você editar
+uma hora achando que está salvando.
+
+### O arquivo `.frag`
+
+O autosave mora no IndexedDB da aba: some se você limpar os dados do site, não
+atravessa pra outra máquina, não entra num backup. O `.frag` é o contrário — é
+um arquivo, e você decide onde ele fica.
+
+**Não é um segundo formato.** É exatamente o que a serialização já produz, com
+um cabeçalho a mais (`app`, `appFormat`, `savedAt`), então não existe "converter
+pra exportar" e portanto não existe divergir: um `.frag` pode ser colado direto
+no IndexedDB e vice-versa. Dois formatos que se parecem são dois formatos que um
+dia discordam.
+
+É indentado, e as chaves saem na ordem em que a serialização as constrói. Três
+coisas vêm daí de graça:
+
+- dá pra **ler** e entender o projeto sem abrir o editor;
+- dá pra **colar num chat** e pedir pra uma IA explicar ou consertar;
+- dá pra **versionar em git**, e o `git diff` entre dois `.frag` mostra o que
+  mudou na edição.
+
+**Não carrega os bytes da mídia**, pelo mesmo motivo que o armazenamento não
+carrega: base64 incha 33% e um vídeo de 50 MB vira uma string que trava a aba.
+Ele guarda a *edição*, como um `.fcpxml` — o acervo descreve os arquivos por id,
+nome, tipo e duração, e reabrir sem eles reporta quais faltam.
+
+Migrar continua sendo trabalho de **código**, não de adivinhação. `format` diz o
+dialeto e as migrações vivem em `serialize.ts`, testadas. Uma IA ajuda a
+escrever a migração quando o formato muda; ela não deve *ser* a migração, senão
+duas aberturas do mesmo arquivo podem dar projetos diferentes.
+
+### Histórico de versões
+
+O autosave era uma cópia só. Hoje guarda as últimas 20, uma a cada **dois
+minutos** de trabalho — espaçadas de propósito: o autosave dispara a cada 600ms
+de pausa, e guardar todas encheria o histórico com o mesmo minuto, empurrando
+pra fora justamente as versões antigas. Espaçando, 20 versões cobrem ~40 minutos.
+
+Isto cobre o que o undo não cobre. O undo vive na memória da aba e morre com
+ela, e não protege do caso que assusta de verdade: você não desfez nada errado —
+o **editor** fez.
+
+**Voltar pra uma versão guarda o estado atual antes de trocar.** Sem isso, o
+próprio recurso de recuperação seria uma forma nova de perder trabalho.
+
+Duas armadilhas que o código evita de propósito:
+
+- **Abrir um `.frag` não poda a mídia órfã.** Reabrir do disco poda, porque ali
+  não existe mais histórico que alcance as layers; um arquivo é outra coisa —
+  ele pode ser antigo e não citar a mídia que você acabou de importar, e podar
+  por ele apagaria os arquivos de alguém que só queria olhar uma versão anterior.
+- **✧ NOVO apaga o histórico junto**, e o aviso diz isso com o número de
+  versões. Ele apaga toda a mídia, então versões antigas voltariam sem vídeo e
+  sem áudio — manter uma lista que não abre direito seria promessa falsa
+  justamente onde a pessoa vai procurar socorro.
+
 ## Performance do preview
 
 O sintoma: dar play travava, mesmo num projeto simples, principalmente em
@@ -1659,11 +1738,12 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
 arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **magnetismo** (ímã de 8px no
-arrasto e no trim, Alt desliga), **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
+arrasto e no trim, Alt desliga), **projeto em arquivo** (`.frag`) e **histórico
+de versões**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
 **quadro de vídeo por número** (um decodificador por clipe, armado antes do
 corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
 o remix reproduz a 99,2% do tempo real), e atalhos de
-Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 481
+Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 498
 testes.
 
 ### O caminho até "usável"
