@@ -21,7 +21,7 @@ const drag = (over: Partial<typeof base> = {}) => clipDragPlan({ ...base, ...ove
 // --- movimento no tempo -------------------------------------------------
 
 test('parado, o plano é exatamente onde o clipe já está', () => {
-  assert.deepEqual(drag(), { start: 1, track: 2, insert: false, valid: true });
+  assert.deepEqual(drag(), { start: 1, track: 2, insert: false, valid: true, snappedTo: null });
 });
 
 test('arrastar na horizontal converte pixel em segundo', () => {
@@ -85,7 +85,7 @@ test('a faixa é limitada às que aceitam o clipe', () => {
 
 test('as duas direções valem no mesmo gesto', () => {
   // É o ponto da feature: reposicionar no tempo e trocar de faixa de uma vez.
-  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 1, insert: false, valid: true });
+  assert.deepEqual(drag({ dx: 100, dy: 28 }), { start: 2, track: 1, insert: false, valid: true, snappedTo: null });
 });
 
 // --- colisão ------------------------------------------------------------

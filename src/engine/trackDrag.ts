@@ -20,6 +20,7 @@
  * errar aqui reorganiza o projeto sem que nada acuse.
  */
 
+import { magnetize } from './magnet.ts';
 import { overlaps } from './project.ts';
 import type { TimeSpan } from './types.ts';
 
@@ -54,6 +55,13 @@ export interface ClipDragInput {
   maxTrack: number;
   /** Os outros clipes do projeto. O arrastado NÃO entra — colidiria consigo. */
   others: readonly Occupant[];
+  /**
+   * O ímã. Ausente, o clipe pousa onde o ponteiro deixou.
+   *
+   * O raio vem em SEGUNDOS já convertidos — quem sabe quantos pixels valem um
+   * segundo é quem desenha. Ver `magnet.ts`.
+   */
+  magnet?: { targets: readonly number[]; radius: number };
 }
 
 export interface ClipDragPlan {
@@ -67,6 +75,14 @@ export interface ClipDragPlan {
   insert: boolean;
   /** Falso quando o destino colide com outro clipe da mesma faixa. */
   valid: boolean;
+  /**
+   * A que instante o ímã grudou, ou `null`.
+   *
+   * Existe pra interface, não pra lógica: um clipe que salta sozinho sem
+   * nenhuma marca na tela parece defeito. A guia é o que transforma o salto em
+   * "encaixou aqui".
+   */
+  snappedTo: number | null;
 }
 
 /**
@@ -83,7 +99,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 
 export function clipDragPlan({
   dx, dy, pxPerSecond, trackPitch, start, track, span, duration, maxTrack, others,
-  invertedRows = true,
+  invertedRows = true, magnet,
 }: ClipDragInput): ClipDragPlan {
   // Sem escala não há como converter pixel em segundo; segurar o clipe onde
   // está é melhor que jogá-lo pra 0 por uma divisão por zero.
@@ -91,7 +107,20 @@ export function clipDragPlan({
 
   // O clipe não pode passar do fim: o limite é a duração do projeto MENOS a
   // dele, senão a cauda sairia da linha.
-  const nextStart = clamp(start + seconds, 0, Math.max(0, duration - span));
+  const solto = clamp(start + seconds, 0, Math.max(0, duration - span));
+
+  /**
+   * O ímã vem DEPOIS do limite e ANTES da colisão.
+   *
+   * Depois do limite porque grudar não pode ser desculpa pra sair da linha;
+   * antes da colisão porque o pouso a validar é o pouso de verdade — testar a
+   * posição solta e mover depois diria "válido" pra um lugar onde o clipe não
+   * vai ficar.
+   */
+  const ima = magnet
+    ? magnetize({ start: solto, span, targets: magnet.targets, radius: magnet.radius })
+    : null;
+  const nextStart = ima ? ima.start : solto;
 
   /**
    * A direção depende de qual espaço de faixa é este, e passou a ser um
@@ -133,6 +162,7 @@ export function clipDragPlan({
       insert: true,
       // Faixa nova nasce vazia: não há com o que colidir.
       valid: true,
+      snappedTo: ima?.snappedTo ?? null,
     };
   }
 
@@ -143,6 +173,7 @@ export function clipDragPlan({
     track: nextTrack,
     insert: false,
     valid: !others.some(o => o.track === nextTrack && overlaps(o, landing)),
+    snappedTo: ima?.snappedTo ?? null,
   };
 }
 

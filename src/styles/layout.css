@@ -675,6 +675,28 @@
   border: 2px solid var(--ink);
 }
 
+/*
+  A guia do ímã: onde o clipe grudou.
+
+  Tracejada e em outra cor de propósito — o playhead é onde VOCÊ está, esta é
+  onde o clipe ENCOSTOU. Duas linhas verticais iguais na mesma área seriam lidas
+  como a mesma coisa. Fica abaixo do playhead no empilhamento porque, quando os
+  dois coincidem (encostar no cursor é um gesto comum), quem tem que aparecer é
+  o playhead.
+*/
+.snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--mint);
+  margin-left: -1px;
+  pointer-events: none;
+  display: none;
+  z-index: 4;
+}
+.snap-guide.on { display: block; }
+
 @media (max-width: 900px) {
   .sidebar { flex-basis: 240px; }
 }

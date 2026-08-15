@@ -9,6 +9,7 @@ import { frameProvider } from '../engine/videoFrames.ts';
 import { PrerenderBar } from './PrerenderBar.tsx';
 import { Waveform } from './Waveform.tsx';
 import { clipDragPlan, flipOrder } from '../engine/trackDrag.ts';
+import { magnetize, magnetTargets, MAGNET_PX } from '../engine/magnet.ts';
 import {
   topTrackOf, trackKind, layersOfKind, freeWindow, rulerDuration,
 } from '../engine/project.ts';
@@ -52,6 +53,8 @@ export function Timeline({
   const rulerRef = useRef<HTMLDivElement>(null);
   const tracksRef = useRef<HTMLDivElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
+  /** A guia vertical do ímã. Escrita direto no DOM, como o playhead. */
+  const snapRef = useRef<HTMLDivElement>(null);
   /** A janela que rola. O conteúdo dentro dela é maior que ela quando há zoom. */
   const wrapRef = useRef<HTMLDivElement>(null);
   const rangeRef = useRef<HTMLSpanElement>(null);
@@ -358,19 +361,50 @@ export function Timeline({
     // Os limites saem dos vizinhos da mesma faixa: esticar por cima do clipe
     // seguinte quebraria a invariante que sustenta a ordem de desenho.
     const bounds = freeWindow(project.layers, layer);
+    const alvos = magnetTargets(project.layers.filter(l => l.id !== layer.id), [0, player.t]);
+    // A borda que se move: é ela que o ímã atrai, não o clipe inteiro.
+    const bordaOriginal = edge === 'left' ? orig.start : orig.start + orig.duration;
 
     const move = (ev: PointerEvent) => {
       // Pixels arrastados -> segundos, pela mesma conversão da régua. Ver
       // `scrub`: dividir pela duração do projeto encolhia o gesto inteiro.
-      const delta = (ev.clientX - startX) / timelineView.pxPerSecond;
+      const pxPorSegundo = timelineView.pxPerSecond;
+      const bruto = (ev.clientX - startX) / pxPorSegundo;
+
+      /**
+       * `span: 0` porque aqui o que gruda é um PONTO, não um clipe: as duas
+       * bordas do ímã coincidem e a mesma função serve sem caso especial.
+       *
+       * Trimar é onde o ímã mais paga: encostar o fim de um clipe no começo do
+       * vizinho a olho deixa um buraco de poucos milissegundos que não aparece
+       * na timeline e aparece no export, como um piscar preto no corte.
+       */
+      const grudado = ev.altKey ? null : magnetize({
+        start: bordaOriginal + bruto,
+        span: 0,
+        targets: alvos,
+        radius: MAGNET_PX / pxPorSegundo,
+      });
+      const delta = grudado?.snappedTo !== undefined && grudado?.snappedTo !== null
+        ? grudado.start - bordaOriginal
+        : bruto;
+
       const patch = edge === 'left'
         ? trimLeft(orig, delta, bounds)
         : trimRight(orig, delta, bounds);
       if (patch) onChange(layer.id, patch);
+
+      const guia = snapRef.current;
+      if (guia) {
+        const grudou = grudado?.snappedTo != null;
+        guia.classList.toggle('on', grudou);
+        if (grudou) guia.style.left = `${(grudado!.snappedTo! / rulerSpan) * 100}%`;
+      }
     };
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
+      snapRef.current?.classList.remove('on');
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
@@ -418,6 +452,19 @@ export function Timeline({
       .filter(l => l.id !== layer.id)
       .map(l => ({ track: l.track, start: l.start, duration: l.duration }));
 
+    /**
+     * O que atrai: as bordas de TODOS os clipes, mais o playhead e o zero.
+     *
+     * Todos, e não só os do mesmo tipo como em `others`: colidir é uma coisa
+     * (só acontece dentro do próprio espaço de faixa), alinhar é outra —
+     * encostar um título no corte do vídeo de baixo é o uso mais comum que
+     * existe, e restringir ao tipo faria o ímã falhar justamente aí.
+     */
+    const alvos = magnetTargets(
+      project.layers.filter(l => l.id !== layer.id),
+      [0, player.t],
+    );
+
     const startX = e.clientX;
     const startY = e.clientY;
     /**
@@ -429,7 +476,10 @@ export function Timeline({
     const rowOf = (track: number) => (
       kind === 'visual' ? flipOrder(track, visualRows) : visualRows + track
     );
-    let plan = { start: layer.start, track: layer.track, insert: false, valid: true };
+    let plan = {
+      start: layer.start, track: layer.track, insert: false, valid: true,
+      snappedTo: null as number | null,
+    };
 
     clip.classList.add('clip-dragging');
     clip.setPointerCapture(e.pointerId);
@@ -457,6 +507,12 @@ export function Timeline({
         // Só o vídeo desenha as linhas invertidas — ver `clipDragPlan`.
         invertedRows: kind === 'visual',
         others,
+        /**
+         * Segurar Alt desliga o ímã. Lido a cada movimento, não no início: você
+         * arrasta grudando, percebe que precisa de um lugar exato entre duas
+         * bordas, e solta o ímã sem largar o clipe.
+         */
+        magnet: ev.altKey ? undefined : { targets: alvos, radius: MAGNET_PX / pxPerSecond },
       });
 
       // O clipe acompanha o plano JÁ arredondado na vertical, então ele encaixa
@@ -480,6 +536,14 @@ export function Timeline({
         // largar é o que faz esse tipo de arrasto parecer quebrado.
         drop.classList.toggle('blocked', !plan.valid);
       }
+
+      // A guia do ímã: sem ela o clipe salta sozinho e parece defeito.
+      const guia = snapRef.current;
+      if (guia) {
+        const grudou = plan.snappedTo !== null;
+        guia.classList.toggle('on', grudou);
+        if (grudou) guia.style.left = `${(plan.snappedTo! / rulerSpan) * 100}%`;
+      }
     };
 
     const up = () => {
@@ -489,6 +553,7 @@ export function Timeline({
       clip.classList.remove('clip-dragging', 'clip-blocked');
       clip.style.transform = '';
       drop?.classList.remove('on', 'blocked', 'inserting');
+      snapRef.current?.classList.remove('on');
 
       // Destino ocupado: o clipe volta pro lugar em vez de empurrar ninguém.
       if (!plan.valid) return;
@@ -713,6 +778,7 @@ export function Timeline({
             <div className="track-drop" ref={dropRef} />
           </div>
 
+          <div className="snap-guide" ref={snapRef} />
           <div className="playhead" ref={headRef} />
         </div>
       </div>
