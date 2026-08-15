@@ -46,9 +46,33 @@ export interface StoredMedia {
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
+/** Outra aba está segurando a versão antiga do banco. Ver `openDb`. */
+export class DatabaseBlockedError extends Error {}
+
 function openDb(): Promise<IDBDatabase> {
-  dbPromise ??= new Promise((resolve, reject) => {
+  dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    /**
+     * Outra aba segura a versão anterior — e sem isto o editor TRAVA CALADO.
+     *
+     * Quando existe uma conexão aberta numa versão mais velha, o `open` de uma
+     * versão nova dispara **só** `blocked`: nunca `success`, nunca `error`.
+     * Sem tratar esse evento a promessa não resolve nunca, e tudo que espera
+     * por ela — abrir o projeto, carregar a mídia, salvar — fica pendurado sem
+     * mensagem nenhuma. O sintoma é o editor "carregando" pra sempre, e não há
+     * o que a pessoa faça, porque nada indica que a culpa é da outra aba.
+     *
+     * Falhar com uma frase acionável é muito melhor que esperar em silêncio.
+     */
+    req.onblocked = () => {
+      dbPromise = null;   // deixa a próxima tentativa começar do zero
+      reject(new DatabaseBlockedError(
+        'O Fragmento está aberto em outra aba com uma versão anterior. '
+        + 'Feche as outras abas e recarregue esta.',
+      ));
+    };
+
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(MEDIA_STORE)) db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
@@ -56,8 +80,26 @@ function openDb(): Promise<IDBDatabase> {
       // Chave = instante da gravação, então listar já vem em ordem cronológica.
       if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) db.createObjectStore(SNAPSHOT_STORE);
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB indisponível'));
+    req.onsuccess = () => {
+      const db = req.result;
+      /**
+       * Sai da frente quando OUTRA aba quiser atualizar o banco.
+       *
+       * É a metade que impede o `onblocked` acima de acontecer da próxima vez:
+       * segurando a conexão, esta aba trava a aba nova. Fechando, a atualização
+       * segue — e esta aba passa a falhar nas próximas transações, o que é
+       * correto: ela está rodando código velho contra um banco novo.
+       */
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error ?? new Error('IndexedDB indisponível'));
+    };
   });
   return dbPromise;
 }

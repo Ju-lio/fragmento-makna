@@ -17,6 +17,7 @@ import {
   newMediaId, putMedia, allMedia, urlFor, existingUrl, releaseAll, pruneMedia,
   saveProject, loadProject, clearProject, mediaBlob,
   listSnapshots, putSnapshot, getSnapshot, deleteSnapshots, clearSnapshots,
+  DatabaseBlockedError,
 } from '../engine/mediaStore.ts';
 import { snapshotPlan, snapshotLabel } from '../engine/snapshots.ts';
 import { toFrag, fromFrag, fragFileName, FragFileError } from '../engine/fragFile.ts';
@@ -45,19 +46,6 @@ const TABS: Array<{ id: TabId; label: string }> = [
 ];
 
 /**
- * Um elemento carregado por mídia guardada, pronto pra desserialização.
- *
- * Fora do componente porque não depende de estado nenhum — e porque é usada por
- * DOIS caminhos: reabrir o projeto do disco e importar um `.frag`. Duas cópias
- * disto divergiriam, e o jeito de divergir é uma delas esquecer o
- * `registerSource` e o vídeo importado abrir sem imagem.
- *
- * Espera o `loadedmetadata` de cada um: a desserialização é síncrona e precisa
- * dos elementos já resolvidos. Quem falhar em carregar simplesmente não entra no
- * mapa, e vira `missingMedia` mais à frente — nunca uma exceção que derruba a
- * abertura inteira por causa de um arquivo.
- */
-/**
  * Guarda uma versão no histórico, se a política deixar.
  *
  * Silenciosa nos dois sentidos: não avisa quando guarda (seria ruído a cada dois
@@ -77,6 +65,19 @@ async function guardarVersao(dados: unknown): Promise<void> {
   } catch { /* cota cheia: o projeto principal já está salvo */ }
 }
 
+/**
+ * Um elemento carregado por mídia guardada, pronto pra desserialização.
+ *
+ * Fora do componente porque não depende de estado nenhum — e porque é usada por
+ * DOIS caminhos: reabrir o projeto do disco e importar um `.frag`. Duas cópias
+ * disto divergiriam, e o jeito de divergir é uma delas esquecer o
+ * `registerSource` e o vídeo importado abrir sem imagem.
+ *
+ * Espera o `loadedmetadata` de cada um: a desserialização é síncrona e precisa
+ * dos elementos já resolvidos. Quem falhar em carregar simplesmente não entra no
+ * mapa, e vira `missingMedia` mais à frente — nunca uma exceção que derruba a
+ * abertura inteira por causa de um arquivo.
+ */
 async function carregarElementos(): Promise<Map<string, MediaElement>> {
   const media = await allMedia();
   const elements = new Map<string, MediaElement>();
@@ -268,7 +269,12 @@ export default function App() {
         // E TRAVA a gravação: o que está no disco é o trabalho de alguém, e
         // não conseguir lê-lo não é motivo pra apagá-lo. Ver `saveBlocked`.
         if (!cancelled) setSaveBlocked(true);
-        flash(err instanceof ProjectFormatError ? err.message : 'Não consegui abrir o projeto salvo');
+        // A mensagem dos erros que a gente mesmo levanta já diz o que fazer —
+        // "feche as outras abas", "salvo numa versão mais nova". Trocá-la por
+        // um genérico esconderia justamente a parte acionável.
+        flash(err instanceof ProjectFormatError || err instanceof DatabaseBlockedError
+          ? err.message
+          : 'Não consegui abrir o projeto salvo');
       } finally {
         if (!cancelled) setRestoring(false);
       }
