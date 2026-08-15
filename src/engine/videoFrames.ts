@@ -35,7 +35,7 @@
  * dinâmico, ou seja, só quando um vídeo é de fato aberto.
  */
 
-import { createVideoFrameProvider } from '@elah/core';
+import { createDefaultDemuxerFactory, createVideoFrameProvider } from '@elah/core';
 import type { Project, VideoLayer, VideoTiming } from './types.ts';
 
 /** O que `getCurrent` devolve: os dois desenham com `ctx.drawImage`. */
@@ -77,7 +77,22 @@ function provedorDe(mediaId: string, fps: number): Provider | null {
   const url = urls.get(mediaId);
   if (!url) return null;
 
-  const p = createVideoFrameProvider(url, { fps, lookaheadFrames: LOOKAHEAD }) as Provider;
+  /**
+   * O `demuxerFactory` NÃO é opcional na prática.
+   *
+   * Sem ele, `createVideoFrameProvider` devolve um gerador SINTÉTICO — um
+   * padrão de teste com o número do quadro e o fundo trocando — e sequer olha
+   * a `src`. Todo vídeo importado virava esse padrão.
+   *
+   * E o modo como isso passou é a lição: as duas verificações que fiz checavam
+   * que o quadro CHEGOU e que quadros consecutivos eram DIFERENTES. O sintético
+   * satisfaz as duas com folga. Verificar entrega não é verificar conteúdo.
+   */
+  const p = createVideoFrameProvider(url, {
+    fps,
+    lookaheadFrames: LOOKAHEAD,
+    demuxerFactory: createDefaultDemuxerFactory(),
+  }) as Provider;
   provedores.set(mediaId, p);
   return p;
 }
