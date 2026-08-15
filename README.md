@@ -59,6 +59,7 @@ src/
     waveform.ts        envelope de picos e recorte pra desenho (puro)
     waveformStore.ts   decodifica uma vez por arquivo e guarda o envelope
     trackDrag.ts       para onde vai um clipe arrastado na timeline
+    magnet.ts          o ímã: encostar um clipe exatamente onde o outro acaba
     history.ts         pilha de undo/redo, genérica
     serialize.ts       projeto ↔ JSON (puro, sem DOM)
     mediaStore.ts      blobs e projeto em IndexedDB
@@ -1078,6 +1079,41 @@ funcionar:
 - **Entre faixas**, discreto: `Math.round(dy / altura da faixa)`. O clipe encaixa
   visivelmente numa faixa em vez de flutuar entre duas.
 
+### Magnetismo: encostar não dava pra fazer a olho
+
+Um clipe arrastado até o fim do vizinho pousa em 1,997 ou 2,003. A diferença é
+**um pixel** na tela, e ninguém mira melhor que isso. O buraco de 3ms não
+aparece na timeline — aparece no export, como um piscar preto no meio do corte.
+
+O ímã (`magnet.ts`) resolve, e três decisões o sustentam:
+
+- **O raio é em pixels, não em segundos.** Oito. Em segundos, ele pareceria
+  fraco com zoom fechado (0,1s pode ser meio pixel) e agarraria tudo com zoom
+  aberto. Em pixels tem sempre a mesma força na **mão**, que é onde é percebido
+  — e por isso parece certo em qualquer zoom sem ninguém recalibrar nada.
+- **As duas bordas atraem.** Encostar é levar o *fim* do clipe ao começo do
+  outro; alinhar dois começos é o *início*. Testar só o início faria o ímã
+  falhar justamente no gesto mais comum da edição.
+- **O resultado é arredondado ao milissegundo**, e isso não é cosmético. É o que
+  faz o fim cair exatamente no início do vizinho e, portanto, o que faz
+  `overlaps` responder "encostou" em vez de "invadiu" — ver "Encostar não é
+  invadir". Um ímã que produzisse `2.0000000000000004` brigaria com a detecção
+  de colisão e o clipe seria **recusado no ponto em que o usuário mirou**.
+
+Atrai as bordas de todos os clipes — não só as do mesmo tipo, porque encostar um
+título no corte do vídeo de baixo é tão comum quanto emendar dois clipes da
+mesma faixa —, mais o playhead e o zero. Vale no arrasto e no **trim**, que é
+onde ele mais paga.
+
+**Alt desliga**, e é lido a cada movimento, não no início do gesto: você arrasta
+grudando, percebe que precisa de um lugar exato entre duas bordas, e solta o ímã
+sem largar o clipe.
+
+A guia tracejada existe porque um clipe que salta sozinho, sem marca nenhuma na
+tela, parece defeito. Fica **abaixo** do playhead no empilhamento: quando os
+dois coincidem — e encostar no cursor é um gesto comum —, quem tem que aparecer
+é o cursor.
+
 **Nada é aplicado durante o arrasto.** O clipe segue o ponteiro por `transform`
 escrito direto no DOM e a faixa de destino acende — o gesto inteiro custa zero
 re-render, e a lista é reordenada uma vez só, ao soltar. Reordenar a cada
@@ -1622,11 +1658,12 @@ layers nas faixas da timeline** (mover no tempo e reordenar num gesto só),
 **faixas com vários clipes**, **corte no cursor** (Ctrl+B), **navegação quadro a
 quadro** (setas), **áudio** (importar, volume, mudo, mixado no export),
 **export de vídeo MP4** via WebCodecs, **acervo de mídia** com importar
-arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
+arrastando, **zoom e rolagem na timeline**, **duração derivada do conteúdo**, **contorno e sombra no texto**, **gizmo no canvas** (posicionar, escalar, girar), **separar o áudio do vídeo**, **forma de onda nos clipes de áudio**, **faixas de áudio separadas das de vídeo**, **magnetismo** (ímã de 8px no
+arrasto e no trim, Alt desliga), **preview fiel ao export** (relógio em quadros, som como relógio-mestre),
 **quadro de vídeo por número** (um decodificador por clipe, armado antes do
 corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
 o remix reproduz a 99,2% do tempo real), e atalhos de
-Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 468
+Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 481
 testes.
 
 ### O caminho até "usável"
@@ -1639,16 +1676,15 @@ que separa de um clone, não pré-requisito.
 
 
 **Depois disso, o que separa de um clone:** transições, velocidade do clipe,
-snap magnético, presets de texto, pool de mídia, presets de export.
+presets de texto, pool de mídia, presets de export.
 
 **O diferencial:** abrir o vocabulário de efeitos CSS — `contrast`, `saturate`,
 `hue-rotate`, `drop-shadow`, `sepia`, `invert`. O `ctx.filter` já aceita a
 sintaxe de CSS filter e o renderer já a usa, então é o item mais barato da lista
 e o único que ninguém mais tem.
 
-**No radar:** snap magnético entre clipes ao arrastar, e o arrasto empurrar o
-vizinho em vez de recusar — os dois deixam o gesto mais parecido com o CapCut,
-mas nenhum é pré-requisito de nada.
+**No radar:** o arrasto empurrar o vizinho em vez de recusar — deixa o gesto
+mais parecido com o CapCut, mas não é pré-requisito de nada.
 
 **No radar, ainda sem data:** atalhos de edição estilo CapCut (cortar no
 playhead, deletar, duplicar), responsividade mobile/touch — esse último é o
