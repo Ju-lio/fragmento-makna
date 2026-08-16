@@ -112,6 +112,83 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [tab, setTab] = useState<TabId>('media');
   const [toast, setToast] = useState('');
+
+  /**
+   * Layout de edição vertical: o preview ocupa a coluna esquerda inteira, e
+   * topo/inspector/timeline empilham numa coluna estreita à direita. Pensado
+   * pra formato TikTok/Reels, onde o canvas normal (largo, no meio) sobra
+   * pequeno num projeto 1080×1920.
+   *
+   * Não é um componente novo: é o MESMO `<Stage>`/`<Timeline>`/sidebar,
+   * só reposicionados por `grid-area` no CSS — ver `.app.foco` em
+   * `layout.css`. Fica ligado na URL (`?layout=foco`) pra dar pra
+   * compartilhar/recarregar já no modo certo, sem precisar de um roteador.
+   */
+  const [foco, setFoco] = useState(
+    () => new URLSearchParams(location.search).get('layout') === 'foco',
+  );
+  const toggleFoco = () => {
+    setFoco(prev => {
+      const next = !prev;
+      const url = new URL(location.href);
+      if (next) url.searchParams.set('layout', 'foco');
+      else url.searchParams.delete('layout');
+      window.history.replaceState(null, '', url);
+      return next;
+    });
+  };
+
+  /**
+   * Largura da coluna direita (topo/inspector/timeline), arrastável pela
+   * `.rail-resizer` entre ela e o preview.
+   *
+   * Guardada como pixels crus, não `null` até o primeiro arrasto: sem estado
+   * nenhum o CSS já desenha um padrão por modo (`--rail-w` cai pro `300px`/
+   * `340px` do `.app`/`.app.foco`) — é só o que o usuário ESCOLHEU que precisa
+   * ser lembrado.
+   */
+  const RAIL_MIN = 240;
+  const RAIL_MAX = 640;
+  const RAIL_KEY = 'fragmento:railWidth';
+  const appRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [railWidth, setRailWidth] = useState<number | null>(() => {
+    const saved = Number(localStorage.getItem(RAIL_KEY));
+    return Number.isFinite(saved) && saved > 0 ? saved : null;
+  });
+
+  /**
+   * Escreve direto no DOM durante o arrasto, e só grava estado (e localStorage)
+   * no soltar — mesma ideia do resto do editor (Gizmo, playhead): um
+   * `setState` por `pointermove` re-renderizaria o app inteiro a cada pixel de
+   * mouse.
+   */
+  const onRailPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    // Parte da largura que já está na tela — inclusive a que o CSS escolheu
+    // sozinho quando ninguém nunca arrastou nada.
+    const startWidth = sidebarRef.current?.getBoundingClientRect().width
+      ?? (foco ? 340 : 300);
+
+    const clamp = (w: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, w));
+    // A régua fica à ESQUERDA da coluna: mover o mouse pra esquerda alarga.
+    const widthAt = (clientX: number) => clamp(startWidth + (startX - clientX));
+
+    const move = (ev: PointerEvent) => {
+      appRef.current?.style.setProperty('--rail-w', `${widthAt(ev.clientX)}px`);
+    };
+    const up = (ev: PointerEvent) => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      const next = widthAt(ev.clientX);
+      setRailWidth(next);
+      localStorage.setItem(RAIL_KEY, String(next));
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  };
   const fileRef = useRef<HTMLInputElement>(null);
   const fragRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
@@ -1204,7 +1281,9 @@ export default function App() {
 
   return (
     <div
-      className={`app${dropping ? ' dropping' : ''}`}
+      className={`app${dropping ? ' dropping' : ''}${foco ? ' foco' : ''}`}
+      ref={appRef}
+      style={railWidth ? { ['--rail-w' as string]: `${railWidth}px` } : undefined}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
@@ -1262,46 +1341,56 @@ export default function App() {
         <button className="btn" onClick={newProject} title="Descartar tudo e começar um projeto novo">✧ NOVO</button>
         <button className="btn btn-gold" onClick={copySchema}>▣ SCHEMA</button>
         <button className="btn" onClick={savePng}>▼ PNG</button>
+        <span className="topbar-sep" />
+        <button
+          className={`btn${foco ? ' btn-gold' : ''}`}
+          onClick={toggleFoco}
+          title="Preview grande à esquerda, ferramentas à direita — bom pra editar formato vertical (TikTok/Reels)"
+        >{foco ? '▥ EDITOR' : '▥ FOCO'}</button>
       </header>
 
-      <main className="workspace">
-        <Stage
-          project={project}
-          onResize={resizeProject}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onChange={updateLayer}
-        />
+      <div
+        className="rail-resizer"
+        onPointerDown={onRailPointerDown}
+        title="Arraste pra redimensionar"
+      />
 
-        <aside className="sidebar">
-          <Win
-            title="Inspector"
-            icon="▦"
-            right={
-              <div className="tabstrip">
-                {TABS.map(t => (
-                  <button
-                    key={t.id}
-                    className={`tabbtn${tab === t.id ? ' on' : ''}`}
-                    onClick={() => setTab(t.id)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            }
-            className="sidebar-win"
-          >
-            {tab === 'media' && (
-              <MediaPanel project={project} onUse={useAsset} onRemove={removeAsset} />
-            )}
-            {tab === 'props' && (
-              <PropsPanel layer={selected} onChange={updateLayer} onDetachAudio={detachAudio} />
-            )}
-            {tab === 'fx' && <EffectsPanel layer={selected} onChange={updateLayer} />}
-          </Win>
-        </aside>
-      </main>
+      <Stage
+        project={project}
+        onResize={resizeProject}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onChange={updateLayer}
+      />
+
+      <aside className="sidebar" ref={sidebarRef}>
+        <Win
+          title="Inspector"
+          icon="▦"
+          right={
+            <div className="tabstrip">
+              {TABS.map(t => (
+                <button
+                  key={t.id}
+                  className={`tabbtn${tab === t.id ? ' on' : ''}`}
+                  onClick={() => setTab(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          }
+          className="sidebar-win"
+        >
+          {tab === 'media' && (
+            <MediaPanel project={project} onUse={useAsset} onRemove={removeAsset} />
+          )}
+          {tab === 'props' && (
+            <PropsPanel layer={selected} onChange={updateLayer} onDetachAudio={detachAudio} />
+          )}
+          {tab === 'fx' && <EffectsPanel layer={selected} onChange={updateLayer} />}
+        </Win>
+      </aside>
 
       {dropping && (
         <div className="dropzone" role="status">

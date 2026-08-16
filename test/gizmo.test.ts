@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   layerBox, layerCenter, toLocal, hitBox, pickLayer,
   scaleFactor, rotationDelta, normalizeAngle, snapAngle, boxCorners,
+  snapToCenter,
 } from '../src/engine/gizmo.ts';
 import { resolveState } from '../src/engine/effects.ts';
 import { drawOrder } from '../src/engine/project.ts';
@@ -211,6 +212,38 @@ test('o ângulo não acumula voltas', () => {
 test('Shift prende de 15 em 15 graus', () => {
   assert.equal(snapAngle(37, true), 30);
   assert.equal(snapAngle(37, false), 37);
+});
+
+// --- ímã do centro --------------------------------------------------------
+
+test('perto do centro nos dois eixos, gruda nos dois', () => {
+  const s = snapToCenter(3, -2, 8);
+  assert.deepEqual(s, { x: 0, y: 0, snapX: true, snapY: true });
+});
+
+test('perto só na horizontal, gruda só o x — a guia não pode mentir sobre o y', () => {
+  const s = snapToCenter(3, 50, 8);
+  assert.deepEqual(s, { x: 0, y: 50, snapX: true, snapY: false });
+});
+
+test('perto só na vertical, gruda só o y', () => {
+  const s = snapToCenter(50, -3, 8);
+  assert.deepEqual(s, { x: 50, y: 0, snapX: false, snapY: true });
+});
+
+test('longe dos dois eixos, nada gruda', () => {
+  const s = snapToCenter(50, 50, 8);
+  assert.deepEqual(s, { x: 50, y: 50, snapX: false, snapY: false });
+});
+
+test('exatamente na borda do raio ainda gruda', () => {
+  assert.equal(snapToCenter(8, 100, 8).snapX, true);
+  assert.equal(snapToCenter(8.01, 100, 8).snapX, false);
+});
+
+test('raio zero (ou negativo) desliga o ímã — é o Alt do gesto', () => {
+  const s = snapToCenter(2, -1, 0);
+  assert.deepEqual(s, { x: 2, y: -1, snapX: false, snapY: false });
 });
 
 // --- quinas -------------------------------------------------------------

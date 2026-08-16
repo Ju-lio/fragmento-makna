@@ -6,6 +6,7 @@ import { drawOrder } from '../engine/project.ts';
 import {
   layerBox, layerCenter, pickLayer,
   scaleFactor, rotationDelta, normalizeAngle, snapAngle,
+  snapToCenter, CENTER_SNAP_PX,
 } from '../engine/gizmo.ts';
 import type { Point } from '../engine/gizmo.ts';
 import type { LayerPatch, Project, VisualLayer } from '../engine/types.ts';
@@ -45,6 +46,14 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
   const [, bump] = useState(0);
   const projectRef = useRef(project);
   projectRef.current = project;
+
+  /**
+   * Qual guia de centro mostrar ENQUANTO um arrasto está grudado — `false`/
+   * `false` fora de arrasto. Não dá pra derivar isso de `layer.x === 0`: uma
+   * layer deixada exatamente no centro mostraria a guia pra sempre, parada,
+   * mesmo sem ninguém arrastando nada.
+   */
+  const [guide, setGuide] = useState({ x: false, y: false });
 
   // O cursor mexe na moldura (efeitos animam posição e escala), então ela
   // acompanha o relógio. Redesenha só quando o quadro é repintado.
@@ -98,14 +107,23 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     startMove(e, hit, point);
   };
 
+  /**
+   * Move a layer, grudando no centro da composição quando a mão chega perto.
+   *
+   * Alt desliga o ímã — mesmo gesto do arrasto na timeline — pra quando você
+   * QUER deixar 3px fora do centro e o ímã insiste em puxar de volta.
+   */
   const startMove = (e: React.PointerEvent, layer: VisualLayer, from: Point) => {
     const origin = { x: layer.x, y: layer.y };
-    drag(e, to => {
-      onChange(layer.id, {
-        x: Math.round(origin.x + (to.x - from.x)),
-        y: Math.round(origin.y + (to.y - from.y)),
-      });
-    });
+    drag(e, (to, ev) => {
+      const rawX = Math.round(origin.x + (to.x - from.x));
+      const rawY = Math.round(origin.y + (to.y - from.y));
+      const snap = ev.altKey
+        ? { x: rawX, y: rawY, snapX: false, snapY: false }
+        : snapToCenter(rawX, rawY, CENTER_SNAP_PX / viewport.zoom);
+      setGuide({ x: snap.snapX, y: snap.snapY });
+      onChange(layer.id, { x: snap.x, y: snap.y });
+    }, () => setGuide({ x: false, y: false }));
   };
 
   const startScale = (e: React.PointerEvent, layer: VisualLayer) => {
@@ -145,16 +163,21 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     });
   };
 
-  /** O laço de arrasto, comum aos três gestos. */
+  /**
+   * O laço de arrasto, comum aos três gestos. `onEnd` é só do `startMove`, pra
+   * apagar a guia de centro quando a mão solta.
+   */
   const drag = (
     e: React.PointerEvent,
     apply: (to: Point, ev: PointerEvent) => void,
+    onEnd?: () => void,
   ) => {
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const move = (ev: PointerEvent) => apply(toComposition(ev), ev);
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
+      onEnd?.();
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
@@ -168,9 +191,22 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     <div
       className="gizmo-root"
       ref={rootRef}
-      style={{ width: project.width, height: project.height }}
+      style={{
+        width: project.width,
+        height: project.height,
+        // Desfaz o zoom pra tudo aqui dentro — as alças do gizmo E as guias de
+        // centro: uma alça de 10px viraria 2px a 25%, e uma guia de 2px
+        // sumiria de vista no mesmo zoom.
+        ['--unzoom' as string]: 1 / viewport.zoom,
+      }}
       onPointerDown={onPointerDown}
     >
+      {guide.x && (
+        <div className="stage-guide stage-guide-v" style={{ left: project.width / 2 }} />
+      )}
+      {guide.y && (
+        <div className="stage-guide stage-guide-h" style={{ top: project.height / 2 }} />
+      )}
       {selected && st && box && center && box.w > 0 && box.h > 0 && (
         <div
           className="gizmo"
@@ -180,8 +216,6 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
             width: box.w * st.scale,
             height: box.h * st.scale,
             transform: `translate(-50%, -50%) rotate(${st.rotate}deg)`,
-            // Desfaz o zoom só nas alças: uma alça de 10px viraria 2px a 25%.
-            ['--unzoom' as string]: 1 / viewport.zoom,
           }}
         >
           {HANDLES.map(h => (

@@ -1,14 +1,80 @@
 /* =========================================================================
    APP LAYOUT
    ========================================================================= */
+/*
+  Grid, não flex-column: o modo `.foco` (ver abaixo) precisa que topo, stage,
+  sidebar e timeline sejam RECOLOCÁVEIS de forma independente — coisa que uma
+  pilha flex não faz sem embrulhar em containers extras. `grid-template-areas`
+  troca o layout inteiro com uma regra só, e os MESMOS componentes (nenhum é
+  duplicado) só mudam de posição.
+*/
 .app {
   position: relative;
   z-index: 1;
   height: 100%;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /*
+    A coluna do meio é a `.rail-resizer` — 8px, a mesma força do ímã da
+    timeline (`MAGNET_PX`): dá pra mirar sem esforço sem virar uma faixa
+    larga demais. `column-gap: 0` porque ELA já é o respiro entre o preview e
+    a coluna direita; um `gap` por cima duplicaria o espaço.
+  */
+  grid-template-columns: 1fr 8px var(--rail-w, 300px);
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "header header header"
+    "stage  handle sidebar"
+    "timeline timeline timeline";
   padding: 8px;
-  gap: 8px;
+  row-gap: 8px;
+  column-gap: 0;
+}
+
+/*
+  Modo foco: o preview vira a coluna esquerda inteira (as três linhas), e
+  topo/inspector/timeline empilham numa coluna estreita à direita — pensado
+  pra editar formato vertical (TikTok/Reels) sem o canvas espremido no meio.
+*/
+.app.foco {
+  grid-template-columns: 1fr 8px var(--rail-w, 340px);
+  grid-template-areas:
+    "stage handle header"
+    "stage handle sidebar"
+    "stage handle timeline";
+}
+/* A barra de topo não cabe numa coluna estreita com todos os botões numa
+   linha só — deixa quebrar em vez de vazar da coluna. */
+.app.foco .topbar { flex-wrap: wrap; }
+
+.topbar { grid-area: header; }
+.stage { grid-area: stage; }
+.sidebar { grid-area: sidebar; }
+.timeline { grid-area: timeline; }
+
+/*
+  A alça que redimensiona a coluna direita. Uma linha fina por padrão, gorda
+  e dourada no hover/arrasto — o mesmo sinal visual que os handles do gizmo
+  usam pra dizer "isto se agarra".
+*/
+.rail-resizer {
+  grid-area: handle;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.rail-resizer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--plum-lt);
+}
+.rail-resizer:hover::before,
+.rail-resizer:active::before {
+  background: var(--gold);
 }
 
 /* --- top bar --- */
@@ -135,17 +201,9 @@
   .save-blocked { animation: none; }
 }
 
-/* --- workspace --- */
-.workspace {
-  flex: 1;
-  display: flex;
-  gap: 8px;
-  min-height: 0;
-}
-
 .stage {
-  flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--void);
@@ -775,7 +833,8 @@
 .snap-guide.on { display: block; }
 
 @media (max-width: 900px) {
-  .sidebar { flex-basis: 240px; }
+  .app { grid-template-columns: 1fr 8px var(--rail-w, 240px); }
+  .app.foco { grid-template-columns: 1fr 8px var(--rail-w, 260px); }
 }
 
 /* --- controle deslizante (volume) --- */
@@ -961,6 +1020,30 @@
   cursor: grab;
 }
 .gizmo-rotate:active { cursor: grabbing; }
+
+/*
+  Guia de centro: aparece só enquanto o arrasto está grudado no meio da
+  composição (ver `snapToCenter`, `Gizmo.tsx`). `--coral` porque é a mesma cor
+  do playhead da timeline — outra régua de "você está exatamente aqui".
+*/
+.stage-guide {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  background: var(--coral);
+}
+.stage-guide-v {
+  top: 0;
+  bottom: 0;
+  width: calc(2px * var(--unzoom, 1));
+  margin-left: calc(-1px * var(--unzoom, 1));
+}
+.stage-guide-h {
+  left: 0;
+  right: 0;
+  height: calc(2px * var(--unzoom, 1));
+  margin-top: calc(-1px * var(--unzoom, 1));
+}
 
 /*
   --- o grupo do áudio ---

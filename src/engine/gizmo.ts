@@ -189,6 +189,40 @@ export function snapAngle(deg: number, snap: boolean): number {
   return snap ? Math.round(deg / SNAP_DEGREES) * SNAP_DEGREES : deg;
 }
 
+/**
+ * O ímã do palco: centralizar um elemento exatamente no meio da composição.
+ *
+ * Mesma ideia do ímã da timeline (`magnet.ts`), só que em duas dimensões e com
+ * um alvo só — o centro. Sem ele, "centralizar" arrastando é sorte: a mão
+ * pousa a 2px do meio e ninguém enxerga a diferença olhando, mas ela está lá —
+ * e num título de formato retrato é justamente o tipo de desalinho que salta
+ * aos olhos depois de exportado.
+ *
+ * Cada eixo gruda sozinho: um título perto do meio na horizontal mas ainda
+ * subindo na vertical mostra só a guia vertical, não as duas — é o que faz a
+ * guia dizer a verdade sobre qual eixo já chegou.
+ *
+ * O raio é passado já em pixels da COMPOSIÇÃO. Quem chama converte de pixels
+ * de TELA (`CENTER_SNAP_PX`), pelo mesmo motivo do `magnet.ts`: em pixels de
+ * tela o ímã tem sempre a mesma força na mão, em qualquer zoom.
+ */
+export interface CenterSnap {
+  x: number;
+  y: number;
+  /** Qual eixo grudou — decide se a guia desenhada é vertical, horizontal ou as duas. */
+  snapX: boolean;
+  snapY: boolean;
+}
+
+export function snapToCenter(x: number, y: number, radius: number): CenterSnap {
+  const snapX = radius > 0 && Math.abs(x) <= radius;
+  const snapY = radius > 0 && Math.abs(y) <= radius;
+  return { x: snapX ? 0 : x, y: snapY ? 0 : y, snapX, snapY };
+}
+
+/** A força do ímã do palco, em pixels de tela — mesmo raciocínio do `MAGNET_PX` da timeline. */
+export const CENTER_SNAP_PX = 8;
+
 /** As quatro quinas da caixa, no referencial da composição. Alimentam as alças. */
 export function boxCorners(center: Point, box: Box, rotateDeg: number, scale: number): Point[] {
   const a = rad(rotateDeg);

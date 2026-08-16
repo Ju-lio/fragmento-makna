@@ -1004,6 +1004,22 @@ rotação. Três detalhes que valem registro:
   efeitos — `rotate` é aditiva, então "deitado 15°" mais "balança ±3°" dá o que
   se espera.
 
+### Ímã do centro
+
+Arrastar até "bem no meio" a olho nunca é exato — a mão pousa a 2px do centro
+e ninguém enxerga a diferença olhando, mas ela está lá, e vira um título torto
+depois de exportado. `snapToCenter` (mesmo `gizmo.ts`) resolve isso com a
+mesma ideia do ímã da timeline (`magnet.ts`), só que em duas dimensões e com
+um alvo só: cada eixo gruda **sozinho**, então um título perto do meio na
+horizontal mas ainda subindo na vertical mostra só a guia vertical — a guia
+diz a verdade sobre qual eixo já chegou, nunca as duas por engano. Perto dos
+dois eixos, a guia vira uma cruz.
+
+O raio de atração é passado em pixels da **composição**, mas a constante
+(`CENTER_SNAP_PX`) é em pixels de **tela** — mesma razão do `MAGNET_PX` da
+timeline: em pixels de tela o ímã tem sempre a mesma força na mão, em
+qualquer zoom. `Alt` desliga, igual ao arrasto na timeline.
+
 ### Escalar segue o eixo que a mão andou
 
 A escala é uniforme (o modelo tem um tamanho só), então a quina **não pode**
@@ -1816,6 +1832,27 @@ barra avisa e sugere uma duração viável. Sem esse aviso o pré-render
 "terminaria com sucesso" e mesmo assim engasgaria, porque o começo teria sido
 descartado pra dar lugar ao fim.
 
+## Modo foco (layout vertical)
+
+Editar um projeto 1080×1920 no layout padrão deixa o canvas espremido no meio
+da tela, entre o inspector e a sobra de espaço horizontal que o formato
+vertical não usa — o preview real do screenshot ficava a **8% de zoom**.
+
+**▥ FOCO**, na topbar, resolve isso sem duplicar nenhum componente: `Stage`,
+`Timeline`, a topbar e o inspector continuam sendo os mesmos, só trocam de
+lugar. `.app` é um CSS Grid com `grid-template-areas`; o botão só troca a
+classe `foco` no container, e uma segunda regra reatribui as áreas — o preview
+vira a coluna esquerda inteira (as três linhas), o resto empilha numa coluna
+estreita à direita. Nenhum JSX é renderizado duas vezes.
+
+Liga por botão ou por `?layout=foco` na URL (persistido via
+`history.replaceState`, sem depender de um roteador) — dá pra recarregar ou
+compartilhar um link já no layout certo.
+
+A coluna direita tem largura arrastável (`.rail-resizer`, 8px — a mesma força
+do `MAGNET_PX` da timeline) e o valor escolhido fica no `localStorage`, não no
+projeto: é preferência de tela, não dado que devesse ir pro `.frag`.
+
 ## Status
 
 **Pronto:** layers de texto, imagem e vídeo com trim, timeline com arrasto,
@@ -1833,9 +1870,11 @@ de versões**, **preview fiel ao export** (relógio em quadros, som como relógi
 **quadro de vídeo por número** (um decodificador por clipe, armado antes do
 corte), **som por WebAudio** (uma fonte agendada por clipe, sem seek no corte —
 o remix reproduz a 99,2% do tempo real), **contador numérico animado**
-(`countUp`, campo dedicado do texto — não é um efeito), e atalhos de
-Delete/duplicar/copiar/colar. Base inteira em TypeScript `strict`, com 524
-testes.
+(`countUp`, campo dedicado do texto — não é um efeito), **modo foco** (preview
+em tela cheia à esquerda pra editar formato vertical, `?layout=foco` na URL,
+coluna direita redimensionável), **ímã do centro no palco** (guia de
+alinhamento ao arrastar, Alt desliga), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript
+`strict`, com 524 testes.
 
 ### O caminho até "usável"
 
