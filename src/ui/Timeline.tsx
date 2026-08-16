@@ -24,11 +24,14 @@ import {
 const hasSound = (layer: Layer): boolean =>
   (layer.type === 'video' || layer.type === 'audio') && effectiveGain(layer) > 0;
 import type { Layer, LayerPatch, Project } from '../engine/types.ts';
+import type { SelectMode } from '../engine/selection.ts';
 
 interface TimelineProps {
   project: Project;
-  selectedId: number | null;
-  onSelect: (id: number) => void;
+  /** Lista ordenada de seleção; o PRINCIPAL (gizmo/painéis) é o último. */
+  selectedIds: number[];
+  /** `id: null` desseleciona — é o clique em área vazia. `mode` segue Ctrl/Shift. */
+  onSelect: (id: number | null, mode?: SelectMode) => void;
   onChange: (id: number, patch: LayerPatch) => void;
   /** Aplica o resultado de um arrasto: posição no tempo e faixa, de uma vez. */
   onMoveClip: (id: number, to: { start: number; track: number; insert: boolean }) => void;
@@ -46,7 +49,7 @@ interface TimelineProps {
  * across a 60s project costs zero React renders.
  */
 export function Timeline({
-  project, selectedId, onSelect, onChange, onMoveClip, onSplit, onMessage,
+  project, selectedIds, onSelect, onChange, onMoveClip, onSplit, onMessage,
 }: TimelineProps) {
   const headRef = useRef<HTMLDivElement>(null);
   const tcRef = useRef<HTMLSpanElement>(null);
@@ -327,6 +330,21 @@ export function Timeline({
    * `timelineView.pxPerSecond` é a conversão que gerou a largura do conteúdo,
    * então usá-la direto tira a duração da conta e o erro deixa de ser possível.
    */
+  /**
+   * Clique na área vazia do conteúdo desseleciona.
+   *
+   * Morar no `.tl-content` (e não em cada vazio possível) é o que faz o gesto
+   * valer no fundo das faixas, nas faixas vazias e na pista de arrasto de uma
+   * vez. Clipe e régua já param a propagação nos próprios `pointerdown`, então
+   * nada chega aqui vindo deles; o teste por `closest` é o cinto de segurança
+   * caso algum caminho novo esqueça o `stopPropagation`.
+   */
+  const deselectOnEmpty = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('.clip, .ruler')) return;
+    onSelect(null);
+  };
+
   const scrub = (e: { clientX: number }) => {
     const ruler = rulerRef.current;
     if (!ruler) return;
@@ -338,6 +356,9 @@ export function Timeline({
     // Sem isto o navegador ainda inicia a seleção de texto por baixo do
     // arrasto, e num trackpad chega a rolar a página junto.
     e.preventDefault();
+    // O scrub também não pode desselecionar: a régua é filha do conteúdo, e o
+    // handler de área vazia mora lá. Ver `deselectOnEmpty`.
+    e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     scrub(e);
     const move = (ev: PointerEvent) => scrub(ev);
@@ -423,6 +444,8 @@ export function Timeline({
    */
   const startClipDrag = (e: React.PointerEvent, layer: Layer) => {
     e.preventDefault();
+    // O drag também não pode borbulhar pro handler de área vazia.
+    e.stopPropagation();
     onSelect(layer.id);
 
     const ruler = rulerRef.current;
@@ -679,7 +702,11 @@ export function Timeline({
         de verdade com `getBoundingClientRect`, que já cresce junto.
       */}
       <div className="tl-wrap" ref={wrapRef}>
-        <div className="tl-content" style={{ width: view.contentWidth }}>
+        <div
+          className="tl-content"
+          style={{ width: view.contentWidth }}
+          onPointerDown={deselectOnEmpty}
+        >
           <div className="ruler" ref={rulerRef} onPointerDown={startScrub}>
             {(range.in !== null || range.out !== null) && (
               <div
@@ -730,7 +757,7 @@ export function Timeline({
                     (layer.type === 'image' ? ' clip-img' : '') +
                     (layer.type === 'video' ? ' clip-video' : '') +
                     (layer.type === 'audio' ? ' clip-audio' : '') +
-                    (layer.id === selectedId ? ' clip-sel' : '')
+                    (selectedIds.includes(layer.id) ? ' clip-sel' : '')
                   }
                   style={{
                     left: `${(layer.start / rulerSpan) * 100}%`,

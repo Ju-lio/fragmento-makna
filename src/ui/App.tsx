@@ -21,6 +21,8 @@ import {
   DatabaseBlockedError,
 } from '../engine/mediaStore.ts';
 import { snapshotPlan, snapshotLabel } from '../engine/snapshots.ts';
+import { applySelection } from '../engine/selection.ts';
+import type { SelectMode } from '../engine/selection.ts';
 import { toFrag, fromFrag, fragFileName, mediaNeeded, FragFileError } from '../engine/fragFile.ts';
 import type { Layer, LayerPatch, MediaAsset, Project } from '../engine/types.ts';
 import { SCHEMA_DOC } from '../engine/presets.ts';
@@ -109,7 +111,7 @@ async function carregarElementos(): Promise<Map<string, MediaElement>> {
 
 export default function App() {
   const [project, setProject] = useState(defaultProject);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [tab, setTab] = useState<TabId>('media');
   const [toast, setToast] = useState('');
 
@@ -232,8 +234,8 @@ export default function App() {
 
   // O atalho de corte precisa enxergar a seleção atual sem religar o listener
   // de teclado a cada troca de layer.
-  const selectedIdRef = useRef(selectedId);
-  selectedIdRef.current = selectedId;
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -262,6 +264,34 @@ export default function App() {
     history.push(next, { mergeKey });
     setProject(next);
   }, [history]);
+
+  /**
+   * O funil ÚNICO da seleção. `mode` segue os modificadores do clique —
+   * ver `applySelection` em selection.ts.
+   */
+  const handleSelect = useCallback((
+    id: number | null, mode: SelectMode = 'replace',
+  ) => {
+    setSelectedIds(prev => {
+      const next = applySelection(prev, id, mode, projectRef.current.layers);
+      return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
+    });
+  }, []);
+
+  /**
+   * Poda ids que deixaram de existir no projeto.
+   *
+   * Fonte única: delete, undo, redo, restore do disco, `.frag` e versões
+   * passam TODOS por aqui, sem depender de cada operação lembrar de limpar a
+   * seleção. Devolve a mesma referência quando nada mudou — zero re-render.
+   */
+  useEffect(() => {
+    setSelectedIds(prev => {
+      const alive = new Set(project.layers.map(l => l.id));
+      const next = prev.filter(id => alive.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [project.layers]);
 
   const restore = useCallback((state: Project | null) => {
     if (!state) return;
@@ -334,7 +364,8 @@ export default function App() {
         projectRef.current = loaded;
         setProject(loaded);
         history.reset(loaded);
-        setSelectedId(loaded.layers[loaded.layers.length - 1]?.id ?? null);
+        const last = loaded.layers[loaded.layers.length - 1];
+        setSelectedIds(last ? [last.id] : []);
         player.invalidate();
 
         if (missingMedia.length) {
@@ -383,7 +414,7 @@ export default function App() {
 
   useEffect(() => {
     player.start();
-    setSelectedId(p => p ?? project.layers[0]?.id ?? null);
+    setSelectedIds(p => (p.length ? p : project.layers[0] ? [project.layers[0].id] : []));
 
     // The canvas font must be fetched explicitly; repaint once it lands.
     ensureDisplayFont().then(() => player.invalidate());
@@ -522,7 +553,7 @@ export default function App() {
       ...p,
       layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
-    setSelectedId(layer.id);
+    setSelectedIds([layer.id]);
     setTab('props');
   };
 
@@ -533,7 +564,7 @@ export default function App() {
       ...p,
       layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
-    setSelectedId(layer.id);
+    setSelectedIds([layer.id]);
     setTab('props');
   };
 
@@ -638,7 +669,7 @@ export default function App() {
     // A ÚLTIMA layer do lote é selecionada, igual a hoje quando é uma só —
     // deixa o Inspector aberto pronto pra ajustar o clipe que acabou de entrar.
     if (ultima) {
-      setSelectedId(ultima.id);
+      setSelectedIds([ultima.id]);
       setTab('props');
     }
   };
@@ -860,7 +891,7 @@ export default function App() {
    * do que cortar de novo.
    */
   const splitSelected = useCallback(() => {
-    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdsRef.current.at(-1));
     if (!layer) return flash('Selecione um clipe pra cortar');
 
     const halves = splitLayer(layer, player.t);
@@ -873,7 +904,7 @@ export default function App() {
     }));
     // Seleciona a metade nova: depois de cortar, o passo seguinte quase sempre
     // é mexer no que ficou pra frente.
-    setSelectedId(right.id);
+    setSelectedIds([right.id]);
   }, [commit]);
 
 
@@ -882,10 +913,8 @@ export default function App() {
     commit(p => {
       const layers = p.layers.filter(l => l.id !== id);
       if (layers.length === p.layers.length) return p;
-      // Nada é selecionado no lugar. Eleger a última da lista parecia gentileza
-      // e era chute: a próxima edição ia pra uma layer que você não escolheu, e
-      // um Delete seguido de outro apagava algo que não estava na mira.
-      setSelectedId(cur => (cur === id ? null : cur));
+      // A seleção é podada pelo efeito central de pruning — apagar aqui dentro
+      // do updater seria efeito colateral (StrictMode roda o updater duas vezes).
       return { ...p, layers: compactTracks(layers) };
     });
     // O <video> NÃO é destruído aqui: com undo, essa layer pode voltar, e um
@@ -901,7 +930,7 @@ export default function App() {
    * duplicar num lugar que você move em seguida.
    */
   const duplicateSelected = useCallback(() => {
-    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdsRef.current.at(-1));
     if (!layer) return flash('Selecione um clipe pra duplicar');
 
     const span = {
@@ -925,7 +954,7 @@ export default function App() {
         ...slot,
         effects: clone(layer.effects),
       };
-      setSelectedId(copy.id);
+      setSelectedIds([copy.id]);
       return { ...p, layers: [...p.layers, copy] };
     });
   }, [commit]);
@@ -942,7 +971,7 @@ export default function App() {
   const clipboardRef = useRef<Layer | null>(null);
 
   const copySelected = useCallback((cortar = false) => {
-    const layer = projectRef.current.layers.find(l => l.id === selectedIdRef.current);
+    const layer = projectRef.current.layers.find(l => l.id === selectedIdsRef.current.at(-1));
     if (!layer) return flash('Selecione um clipe primeiro');
 
     clipboardRef.current = { ...layer, effects: clone(layer.effects) };
@@ -971,7 +1000,7 @@ export default function App() {
     };
 
     commit(p => ({ ...p, layers: [...p.layers, copy] }));
-    setSelectedId(copy.id);
+    setSelectedIds([copy.id]);
   }, [commit]);
 
   /**
@@ -1015,7 +1044,7 @@ export default function App() {
         ],
       };
     });
-    setSelectedId(faixa.id);
+    setSelectedIds([faixa.id]);
   }, [commit, audioElementFor]);
 
   // Atalhos globais. Fora de campos de texto, onde o undo nativo do navegador
@@ -1027,7 +1056,7 @@ export default function App() {
 
       // Delete não usa modificador — é a tecla que todo editor usa pra apagar.
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const id = selectedIdRef.current;
+        const id = selectedIdsRef.current.at(-1) ?? null;
         if (id === null) return;
         e.preventDefault();
         deleteLayer(id);
@@ -1073,7 +1102,7 @@ export default function App() {
     projectRef.current = fresh;
     setProject(fresh);
     history.reset(fresh);
-    setSelectedId(fresh.layers[0]?.id ?? null);
+    setSelectedIds(fresh.layers[0] ? [fresh.layers[0].id] : []);
 
     // Aqui a mídia deixa de ser necessária de verdade: não há mais histórico
     // que possa trazer as layers de volta.
@@ -1112,7 +1141,8 @@ export default function App() {
     projectRef.current = loaded;
     setProject(loaded);
     history.reset(loaded);
-    setSelectedId(loaded.layers[loaded.layers.length - 1]?.id ?? null);
+    const last = loaded.layers[loaded.layers.length - 1];
+    setSelectedIds(last ? [last.id] : []);
     player.invalidate();
     // Abrir um projeto que funciona é o gesto que destrava a gravação: o que
     // está na tela agora é conhecido e bom. Ver `saveBlocked`.
@@ -1277,6 +1307,8 @@ export default function App() {
     commit(p => ({ ...p, width, height }), 'resize');
   }, [commit]);
 
+  // O PRINCIPAL é o último da lista — é ele que gizmo e painéis editam.
+  const selectedId = selectedIds.at(-1) ?? null;
   const selected = project.layers.find(l => l.id === selectedId) || null;
 
   return (
@@ -1359,7 +1391,7 @@ export default function App() {
         project={project}
         onResize={resizeProject}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={handleSelect}
         onChange={updateLayer}
       />
 
@@ -1478,8 +1510,8 @@ export default function App() {
 
       <Timeline
         project={project}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
+        selectedIds={selectedIds}
+        onSelect={handleSelect}
         onChange={updateLayer}
         onMoveClip={moveClip}
         onSplit={splitSelected}
