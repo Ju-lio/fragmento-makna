@@ -493,6 +493,10 @@ export function defaultProject(): Project {
         name: 'Subtítulo', track: 1, start: 0.75, duration: 4.2,
         text: '559.872 km rodados', size: 64, y: 70,
         color: '#f0c04a',
+        // Vitrine do contador: conta de 0 até o número que o texto já mostra,
+        // sem tocar no vocabulário de `effects` — os dois convivem na mesma
+        // layer. Ver `CountUp` em types.ts.
+        countUp: { from: 0, to: 559872, ease: 'outQuad', suffix: ' km rodados' },
         effects: [
           { ...preset('slide-track'), delay: 0.1 },
           preset('fade-out-down'),

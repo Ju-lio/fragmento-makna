@@ -7,6 +7,7 @@ import {
   clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer,
   topTrackOf, trackKind,
 } from '../engine/project.ts';
+import type { TrackKind } from '../engine/project.ts';
 import { openTrackAt } from '../engine/trackDrag.ts';
 import { History } from '../engine/history.ts';
 import {
@@ -460,31 +461,109 @@ export default function App() {
   };
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = [...(e.target.files ?? [])];
     e.target.value = '';
-    if (file) importFile(file);
+    if (files.length) void importFiles(files);
   };
 
-  const importFile = (file: File) => {
-    if (!/^(image|video|audio)\//.test(file.type)) {
-      return flash(`"${file.name}" não é imagem, vídeo nem áudio`);
+  /**
+   * Importa um arquivo, coloca a layer numa FAIXA e num INSTANTE já decididos
+   * por quem chama, e devolve a layer criada (ou `null`, se não abriu).
+   *
+   * Não usa `addLayer`: aquele escolhe faixa e instante sozinho (faixa nova,
+   * cursor do player), que é certo pra um arquivo isolado e errado pra um
+   * lote — um lote inteiro escolhendo faixa nova a cada arquivo é o que
+   * empilharia tudo em cima do playhead em vez de formar uma sequência. Ver
+   * `importFiles`.
+   */
+  const importOneAt = (file: File, start: number, track: number): Promise<Layer | null> => (
+    new Promise(resolve => {
+      // O arquivo vai pro armazenamento ANTES de virar layer: é isso que faz o
+      // projeto reabrir sozinho depois. Se a gravação falhar, a layer ainda
+      // entra — perder a mídia ao recarregar é ruim, não poder editar agora é
+      // pior.
+      const mediaId = newMediaId();
+      putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
+
+      const url = urlFor(mediaId, file);
+      // O decodificador de quadros lê desta mesma URL — nenhum byte a mais.
+      registerSource(mediaId, url);
+
+      attachMedia(file.type, url, mediaId, file.name, element => {
+        // Entra no acervo E na linha do tempo. Importar pra depois posicionar
+        // é um fluxo válido, mas o comum é querer ver na hora.
+        registerAsset({ id: mediaId, name: file.name, type: file.type, duration: durationOf(element) });
+
+        const layer = file.type.startsWith('audio/')
+          ? makeAudioLayer(element as HTMLAudioElement, mediaId, { name: file.name, start, track })
+          : file.type.startsWith('video/')
+            ? makeVideoLayer(element as HTMLVideoElement, mediaId, { name: file.name, start, track })
+            : makeImageLayer(element as HTMLImageElement, mediaId, { name: file.name, start, track });
+
+        commit(p => ({ ...p, layers: [...p.layers, layer] }));
+        if (file.type === '' || file.type.startsWith('video/')) player.invalidate();
+        resolve(layer);
+      }, () => resolve(null));
+    })
+  );
+
+  /**
+   * Importa um ou mais arquivos, em SEQUÊNCIA na timeline.
+   *
+   * Um arquivo só se comporta exatamente como sempre: faixa nova, no cursor.
+   * Vários de uma vez — selecionados juntos no diálogo, ou soltos juntos —
+   * formam uma SEQUÊNCIA: cada um começa onde o anterior do MESMO espaço de
+   * faixa (visual ou som — ver `trackKind`) termina, todos na mesma faixa
+   * nova. É o gesto de montar um corte a partir de vários clipes, não o de
+   * empilhar b-roll um em cima do outro no mesmo instante.
+   *
+   * A faixa de cada espaço é reservada UMA VEZ, no início do lote — e é por
+   * isso que isto não pode ser um `addLayer` chamado em laço: `addLayer`
+   * decide a faixa a cada commit, então o segundo arquivo já veria o primeiro
+   * e subiria pra faixa seguinte, e o resultado seria voltar a empilhar.
+   *
+   * Processado em SÉRIE, não em paralelo: a duração de um clipe só se conhece
+   * depois que os metadados chegam, e é dela que depende onde o PRÓXIMO
+   * começa. Paralelizar deixaria a ORDEM DE CHEGADA decidir a sequência, em
+   * vez da ordem em que os arquivos foram escolhidos — imprevisível, porque
+   * um arquivo maior decodifica os metadados mais devagar que um pequeno.
+   * Vídeo local (`blob:`) tem essa espera em milissegundos, então processar em
+   * série não se sente mais lento que em paralelo.
+   */
+  const importFiles = async (files: readonly File[]) => {
+    const validos = files.filter(f => /^(image|video|audio)\//.test(f.type));
+    const invalidos = files.length - validos.length;
+    if (invalidos > 0) {
+      flash(invalidos === files.length
+        ? 'Nenhum desses arquivos é imagem, vídeo ou áudio'
+        : `${invalidos} arquivo(s) ignorado(s) — não é imagem, vídeo nem áudio`);
+    }
+    if (!validos.length) return;
+
+    const base = projectRef.current;
+    const trilha: Record<TrackKind, number> = {
+      visual: topTrackOf(base.layers, 'visual') + 1,
+      audio: topTrackOf(base.layers, 'audio') + 1,
+    };
+    const cursor: Record<TrackKind, number> = { visual: player.t, audio: player.t };
+    let ultima: Layer | null = null;
+
+    for (const file of validos) {
+      const kind: TrackKind = file.type.startsWith('audio/') ? 'audio' : 'visual';
+      const layer = await importOneAt(file, +cursor[kind].toFixed(3), trilha[kind]);
+      // Falhou ao carregar: o cursor NÃO anda — um furo do tamanho de um
+      // arquivo que não existe deixaria um buraco mudo na sequência.
+      if (!layer) continue;
+      cursor[kind] += layer.duration;
+      ultima = layer;
     }
 
-    // O arquivo vai pro armazenamento ANTES de virar layer: é isso que faz o
-    // projeto reabrir sozinho depois. Se a gravação falhar, a layer ainda
-    // entra — perder a mídia ao recarregar é ruim, não poder editar agora é pior.
-    const mediaId = newMediaId();
-    putMedia(mediaId, file).catch(() => flash('Mídia não pôde ser guardada pra depois'));
-
-    const url = urlFor(mediaId, file);
-    // O decodificador de quadros lê desta mesma URL — nenhum byte a mais.
-    registerSource(mediaId, url);
-    attachMedia(file.type, url, mediaId, file.name, element => {
-      // Entra no acervo E na linha do tempo. Importar pra depois posicionar é
-      // um fluxo válido, mas o comum é querer ver na hora.
-      registerAsset({ id: mediaId, name: file.name, type: file.type, duration: durationOf(element) });
-      addLayerFor(mediaId, file.type, element, file.name);
-    });
+    // A ÚLTIMA layer do lote é selecionada, igual a hoje quando é uma só —
+    // deixa o Inspector aberto pronto pra ajustar o clipe que acabou de entrar.
+    if (ultima) {
+      setSelectedId(ultima.id);
+      setTab('props');
+    }
   };
 
   const durationOf = (el: HTMLImageElement | HTMLMediaElement) =>
@@ -581,14 +660,46 @@ export default function App() {
     e.preventDefault();
     dragDepth.current = 0;
     setDropping(false);
-    for (const file of e.dataTransfer.files) importFile(file);
+    // A ORDEM do `FileList` de um drop é a ordem em que o sistema operacional
+    // listou os arquivos selecionados — normalmente a mesma da seleção. É o
+    // que faz soltar 3 clipes formar a sequência esperada. Ver `importFiles`.
+    void importFiles([...e.dataTransfer.files]);
   };
+
+  /**
+   * Quanto esperar por `loadedmetadata`/`error` antes de desistir de um
+   * arquivo. Ver o comentário do timeout dentro de `attachMedia`.
+   */
+  const MEDIA_READY_TIMEOUT_MS = 10_000;
 
   /**
    * Cria o elemento de DOM pro arquivo e avisa quando ele estiver pronto.
    *
    * `ready` só dispara depois dos metadados: antes disso a duração é `NaN` e a
    * layer nasceria com tamanho inválido.
+   *
+   * `onError` é opcional e sempre some junto com o `flash` — quem importa um
+   * arquivo isolado (`+ MÍDIA` de um só, um drop de um só) só precisa do
+   * aviso. Quem importa um LOTE (`importFiles`) precisa também SABER que este
+   * arquivo não vai chegar, pra não esperar por ele pra sempre antes de
+   * colocar o próximo da fila no lugar certo.
+   *
+   * ## O TIMEOUT, e por que ele não é opcional
+   *
+   * Um arquivo com bytes malformados às vezes não dispara NENHUM dos dois
+   * eventos — nem `loadedmetadata`, nem `error`. Não é hipótese: um `.mp4`
+   * com só ruído no lugar dos átomos deixa o `<video>` do Chromium parado
+   * pra sempre, sem decidir se abriu ou falhou. Sem um limite de tempo, essa
+   * única promessa nunca resolve — e como `importFiles` processa em SÉRIE
+   * (ver o comentário lá), um arquivo assim trava o lote inteiro: nada depois
+   * dele na fila chega a ser tentado, e não há mensagem nenhuma explicando
+   * por quê. Foi o modo de falha que a verificação encontrou testando um
+   * arquivo corrompido no meio de um lote — o caminho feliz não usa isto.
+   *
+   * Dez segundos é folgado de propósito: ler metadados de um `blob:` local é
+   * questão de milissegundos mesmo em arquivos grandes (é cabeçalho, não
+   * decodificação), então qualquer arquivo que preste responde bem antes
+   * disso. O limite existe pro caso em que a resposta NUNCA vem.
    */
   const attachMedia = (
     type: string,
@@ -596,26 +707,40 @@ export default function App() {
     mediaId: string,
     name: string,
     ready: (el: MediaElement) => void,
+    onError?: () => void,
   ) => {
+    let resolvido = false;
+    const timer = setTimeout(() => falhou(), MEDIA_READY_TIMEOUT_MS);
+
     const remember = (el: MediaElement) => {
+      if (resolvido) return;
+      resolvido = true;
+      clearTimeout(timer);
       elementsRef.current.set(mediaId, el);
       ready(el);
+    };
+    const falhou = () => {
+      if (resolvido) return;
+      resolvido = true;
+      clearTimeout(timer);
+      flash(`Não consegui abrir "${name}"`);
+      onError?.();
     };
 
     if (type.startsWith('audio/')) {
       const audio = attachAudioElement(new Audio());
       audio.addEventListener('loadedmetadata', () => remember(audio), { once: true });
-      audio.addEventListener('error', () => flash(`Não consegui abrir "${name}"`), { once: true });
+      audio.addEventListener('error', falhou, { once: true });
       audio.src = url;
     } else if (type.startsWith('video/')) {
       const video = attachVideoElement(document.createElement('video'));
       video.addEventListener('loadedmetadata', () => remember(video), { once: true });
-      video.addEventListener('error', () => flash(`Não consegui abrir "${name}"`), { once: true });
+      video.addEventListener('error', falhou, { once: true });
       video.src = url;
     } else {
       const img = new Image();
       img.onload = () => remember(img);
-      img.onerror = () => flash(`Não consegui abrir "${name}"`);
+      img.onerror = falhou;
       img.src = url;
     }
   };
@@ -1093,7 +1218,14 @@ export default function App() {
 
         <button className="btn" onClick={addText}>+ TEXTO</button>
         <button className="btn" onClick={() => fileRef.current?.click()}>+ MÍDIA</button>
-        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={onFile} />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*,video/*,audio/*"
+          multiple
+          hidden
+          onChange={onFile}
+        />
 
         <span className="topbar-sep" />
         <button className="btn" onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)">↶</button>

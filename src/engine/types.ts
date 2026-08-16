@@ -29,15 +29,50 @@ export interface Track {
   ease?: EaseName;
 }
 
-export interface Effect {
-  name?: string;
-  /** Segundos. Ausente = 1. */
+/**
+ * O que `effectProgress` precisa pra achar a janela de tempo — nada sobre O
+ * QUE anima, só QUANDO. `Effect` e `CountUp` satisfazem os dois, e é isso que
+ * deixa a mesma conta de delay/anchor/loop servir animação de transformação e
+ * contador sem duplicar a lógica de janela em dois lugares que um dia
+ * divergiriam.
+ */
+export interface TimeWindow {
+  /** Segundos. Ausente = 1 (em `Effect`; `CountUp` usa outro padrão — ver lá). */
   duration?: number;
   /** `'end'` ancora no fim da layer — é como se escreve uma animação de saída. */
   anchor?: 'start' | 'end';
   delay?: number;
   loop?: boolean;
+}
+
+export interface Effect extends TimeWindow {
+  name?: string;
   tracks: Track[];
+}
+
+/**
+ * Contador numérico animado. Enquanto presente, SUBSTITUI `TextLayer.text`
+ * inteiro pro desenho e pra medição — nunca combina com ele. Ortogonal ao
+ * vocabulário de `effects`: aqui se decide QUAL texto mostrar; lá, como a
+ * layer se transforma ao redor dele — as duas coisas convivem na mesma layer
+ * sem conflito (ex: `zoom-punch` entrando enquanto o número conta).
+ *
+ * Fora do vocabulário de `AnimProp` de propósito: conteúdo de texto não
+ * "soma" nem "multiplica" como as 8 props de transformação, e forçar isso
+ * dentro de `resolveState` misturaria composição numérica com substituição de
+ * conteúdo — duas semânticas diferentes no único lugar do código que hoje é
+ * 100% "número entra, número compõe, número sai".
+ */
+export interface CountUp extends TimeWindow {
+  from: number;
+  to: number;
+  /** Casas decimais mostradas. Ausente = 0. */
+  decimals?: number;
+  /** Separador de milhar (padrão BR: ponto). Ausente = ligado. */
+  separator?: boolean;
+  ease?: EaseName;
+  prefix?: string;
+  suffix?: string;
 }
 
 // --- layers -------------------------------------------------------------
@@ -116,6 +151,8 @@ export interface TextLayer extends LayerBase, TextDecor {
   size: number;
   color: string;
   font: string;
+  /** Ver `CountUp`. Ausente = `text` estático, como sempre foi. */
+  countUp?: CountUp;
 }
 
 export interface ImageLayer extends LayerBase {

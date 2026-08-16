@@ -144,6 +144,10 @@ export function renderSignature(project: Project): string {
       return [
         ...common, l.text, l.size, l.color, l.font,
         l.stroke, l.strokeWidth, l.shadow, l.shadowBlur, l.shadowOffset,
+        // O contador muda o que aparece na tela sem tocar em `text` — editar
+        // `to`/`decimals`/`prefix` tem que invalidar os quadros guardados,
+        // senão o cache mostraria números velhos depois da edição.
+        l.countUp,
       ];
     }
     // `mediaId` e não `src`: o `blob:` é sorteado a cada sessão, então usá-lo

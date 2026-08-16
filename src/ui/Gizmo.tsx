@@ -88,7 +88,7 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     if (e.button !== 0) return;
     const point = toComposition(e);
     const hit = pickLayer(
-      visible, point, project, measure, l => resolveState(l, player.t), HIT_PAD,
+      visible, point, project, measure, l => resolveState(l, player.t), t, HIT_PAD,
     );
     if (!hit) return;   // vazio: deixa passar pro pan do viewport
 
@@ -161,7 +161,7 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
   };
 
   const st = selected ? resolveState(selected, t) : null;
-  const box = selected ? layerBox(selected, project, measure) : null;
+  const box = selected ? layerBox(selected, project, measure, t) : null;
   const center = selected && st ? layerCenter(project, st) : null;
 
   return (

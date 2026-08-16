@@ -1,5 +1,5 @@
 import { EASE, EASE_NAMES } from './easings.ts';
-import type { AnimProp, Effect, LayerState, TimeSpan, Track } from './types.ts';
+import type { AnimProp, Effect, LayerState, TimeSpan, TimeWindow, Track } from './types.ts';
 
 /**
  * The effect runtime.
@@ -48,8 +48,15 @@ export function sampleTrack(track: Track, p: number): number | null {
   return last[1];
 }
 
-/** Progress (0..1) of an effect at absolute time `t`, or null when inactive. */
-export function effectProgress(eff: Effect, layer: TimeSpan, t: number): number | null {
+/**
+ * Progress (0..1) of a time window at absolute time `t`, or null when inactive.
+ *
+ * Recebe `TimeWindow`, não `Effect`: esta conta só olha duration/delay/
+ * anchor/loop, nunca `tracks`. `Effect` continua servindo aqui de graça (é um
+ * `TimeWindow` mais `name`/`tracks`); `CountUp` também serve, sem precisar
+ * fingir um `Effect` com `tracks: []` só pra emprestar a matemática.
+ */
+export function effectProgress(eff: TimeWindow, layer: TimeSpan, t: number): number | null {
   const dur = eff.duration ?? 1;
   const delay = eff.delay ?? 0;
   const start = eff.anchor === 'end'

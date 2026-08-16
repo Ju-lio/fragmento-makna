@@ -33,6 +33,24 @@ test('mudar o que aparece na tela muda a assinatura', () => {
   );
 });
 
+test('ligar, desligar ou editar o contador muda a assinatura', () => {
+  // Sem isto, editar `to`/`decimals`/`prefix` do contador não jogaria fora os
+  // quadros já guardados, e o cache mostraria números velhos depois da edição.
+  const base = renderSignature(proj());
+  const comContador = renderSignature(proj({ countUp: { from: 0, to: 100 } }));
+  assert.notEqual(comContador, base, 'ligar o contador');
+  assert.notEqual(
+    renderSignature(proj({ countUp: { from: 0, to: 200 } })),
+    comContador,
+    'mudar o `to`',
+  );
+  assert.notEqual(
+    renderSignature(proj({ countUp: { from: 0, to: 100, decimals: 2 } })),
+    comContador,
+    'mudar as casas decimais',
+  );
+});
+
 test('o trim de um vídeo muda a assinatura', () => {
   // Trocar qual pedaço do arquivo aparece troca os pixels, então o trecho já
   // preparado não vale mais.

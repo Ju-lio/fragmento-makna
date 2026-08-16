@@ -285,6 +285,53 @@ test('largura de contorno negativa é recusada', () => {
   assert.equal((back.layers[0] as TextLayer).strokeWidth, 0);
 });
 
+// --- contador numérico (countUp) -----------------------------------------
+
+test('countUp sobrevive à ida e volta, com todos os campos', () => {
+  const layer = textLayer({
+    countUp: {
+      from: 10, to: 1000, duration: 3, delay: 0.5, anchor: 'end', loop: false,
+      decimals: 2, separator: true, ease: 'outExpo', prefix: 'R$ ', suffix: ' reais',
+    },
+  });
+  const { project: back } = deserializeProject(serializeProject(project([layer])), () => null);
+  const t = back.layers[0] as TextLayer;
+  assert.deepEqual(t.countUp, layer.countUp);
+});
+
+test('projeto do formato 6 (sem countUp) abre com o campo AUSENTE, não `undefined`', () => {
+  // Não é só "o valor bate" — a CHAVE não pode existir, senão uma layer lida
+  // do disco deixa de bater com uma construída na hora (`assert.deepEqual`
+  // distingue `{countUp: undefined}` de `{}`).
+  const antigo = serializeProject(project([textLayer()])) as unknown as {
+    format: number; layers: Record<string, unknown>[];
+  };
+  antigo.format = 6;
+
+  const { project: back } = deserializeProject(antigo as never, () => null);
+  const t = back.layers[0] as TextLayer;
+  assert.deepEqual(t, textLayer({ id: t.id }), 'idêntica a uma layer sem contador nenhum');
+  assert.equal('countUp' in t, false, 'a chave não pode existir');
+});
+
+test('countUp com from/to não numéricos é descartado, não contamina a engine', () => {
+  const ruim = serializeProject(project([textLayer()])) as unknown as {
+    layers: Record<string, unknown>[];
+  };
+  (ruim.layers[0] as Record<string, unknown>).countUp = { from: 'zero', to: 100 };
+  const { project: back } = deserializeProject(ruim as never, () => null);
+  assert.equal((back.layers[0] as TextLayer).countUp, undefined);
+});
+
+test('countUp com decimals negativo é saneado pra 0, não propagado', () => {
+  const ruim = serializeProject(project([textLayer()])) as unknown as {
+    layers: Record<string, unknown>[];
+  };
+  (ruim.layers[0] as Record<string, unknown>).countUp = { from: 0, to: 100, decimals: -4 };
+  const { project: back } = deserializeProject(ruim as never, () => null);
+  assert.equal((back.layers[0] as TextLayer).countUp?.decimals, 0);
+});
+
 // --- migração 5 → 6: espaços de faixa separados -------------------------
 
 test('projeto antigo: a faixa do áudio deixa de depender das de vídeo', () => {

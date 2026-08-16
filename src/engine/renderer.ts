@@ -1,6 +1,7 @@
 import { resolveState } from './effects.ts';
 import { drawOrder } from './project.ts';
 import { coversAt } from './timeSpan.ts';
+import { displayText } from './countUp.ts';
 import type { ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
 
 /** Um quadro já decodificado. `VideoFrame` e `ImageBitmap` servem os dois. */
@@ -121,7 +122,7 @@ export function drawFrame(
 
     // Escala total até o pixel físico: a do canvas vezes a da própria layer.
     // Só a sombra precisa disto — ver `drawText`.
-    if (layer.type === 'text') drawText(ctx, layer, st, (ctx.canvas.width / W) * st.scale);
+    if (layer.type === 'text') drawText(ctx, layer, st, (ctx.canvas.width / W) * st.scale, t);
     else if (layer.type === 'image' && layer.img) drawSource(ctx, layer, layer.img, W, H);
     else if (layer.type === 'video') {
       if (!drawVideo(ctx, layer, W, H, frameFor?.(layer) ?? null)) degraded = true;
@@ -161,6 +162,7 @@ function drawText(
   layer: Extract<Layer, { type: 'text' }>,
   st: LayerState,
   shadowScale: number,
+  t: number,
 ) {
   ctx.font = `${layer.size}px ${layer.font || DISPLAY_FONT}`;
   ctx.textAlign = 'center';
@@ -172,7 +174,11 @@ function drawText(
   const canSpace = 'letterSpacing' in ctx;
   if (canSpace) ctx.letterSpacing = `${st.letterSpacing.toFixed(2)}px`;
 
-  const lines = String(layer.text).split('\n');
+  // `displayText`, não `layer.text` direto: com um contador ligado, o
+  // conteúdo muda a cada quadro. Ver `countUp.ts` — é o ÚNICO lugar que
+  // decide isso, compartilhado com `layerBox` pra moldura de seleção nunca
+  // divergir do que está desenhado.
+  const lines = displayText(layer, t).split('\n');
   const lh = layer.size * 1.12;
   const y0 = -((lines.length - 1) * lh) / 2;
   const eachLine = (draw: (line: string, y: number) => void) =>
