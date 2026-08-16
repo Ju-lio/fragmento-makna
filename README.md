@@ -1321,6 +1321,33 @@ permanente e pulsando, não como toast: é o único estado do editor em que
 continuar trabalhando custa o trabalho, e um aviso que some deixaria você editar
 uma hora achando que está salvando.
 
+### O clipe que importava grudado em outro
+
+O sintoma era bizarro e consistente: importa um arquivo novo, e dois clipes
+ficam **interligados**. Seleciona um, o outro acende junto; arrasta um, os dois
+andam; apaga um, os dois somem — como se um clipe fantasma copiasse cada gesto.
+
+A causa não estava na importação, e sim no id. Os ids de layer vêm de um
+contador de módulo, e uma página que acabou de nascer tem esse contador em 1. O
+problema é que a página nasce toda hora: cada recarga restaura o projeto do
+autosave — com as layers e os ids que elas já tinham — e o contador, não. O
+primeiro id que a sessão nova entrega é 1, que já é de uma layer restaurada. E
+seleção, edição e remoção são todas por id: duas layers com o mesmo id são a
+mesma layer pra elas.
+
+A correção mora na leitura, e tem duas metades porque o bug tem dois tempos:
+
+- **Ressincronizar o contador** acima do maior id lido, pra layer nova nunca
+  nascer com um id em uso.
+- **Renumerar ids repetidos** num projeto que o bug antigo já tinha **salvo**
+  com duas layers do mesmo id — sem isso, reabrir perpetuaria o clipe fantasma
+  pra sempre. A primeira mantém o id; as seguintes ganham um novo.
+
+Ela fica no `deserializeProject`, que é o único funil de entrada de projeto —
+autosave e `.frag` passam os dois por ali. Nada fora das layers aponta pra esses
+ids, então renumerar é seguro. E não é enfeite: sem a cura, o autosave
+regravava a duplicata a cada 600ms, e o projeto nunca mais se separava.
+
 ### O arquivo `.frag`
 
 O autosave mora no IndexedDB da aba: some se você limpar os dados do site, não
@@ -1874,7 +1901,7 @@ o remix reproduz a 99,2% do tempo real), **contador numérico animado**
 em tela cheia à esquerda pra editar formato vertical, `?layout=foco` na URL,
 coluna direita redimensionável), **ímã do centro no palco** (guia de
 alinhamento ao arrastar, Alt desliga), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript
-`strict`, com 524 testes.
+`strict`, com 532 testes.
 
 ### O caminho até "usável"
 

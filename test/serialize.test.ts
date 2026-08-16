@@ -4,6 +4,7 @@ import {
   serializeProject, deserializeProject, mediaIdsOf, ProjectFormatError, PROJECT_FORMAT,
 } from '../src/engine/serialize.ts';
 import { project, textLayer, videoLayer, imageLayer, fakeVideo, fakeImage } from './fixtures.ts';
+import { makeTextLayer } from '../src/engine/project.ts';
 import type { TextLayer, VideoLayer } from '../src/engine/types.ts';
 
 /** Resolve qualquer id — o caso em que toda a mídia continua disponível. */
@@ -366,4 +367,40 @@ test('a migração não move clipe nenhum no tempo', () => {
 
   assert.deepEqual(p.layers.map(l => l.start), [2.5, 1.25]);
   assert.deepEqual(p.layers.map(l => l.duration), [4, 9]);
+});
+
+// --- ids de layer ---------------------------------------------------------
+
+test('restaurar um projeto deixa o contador acima dos ids existentes', () => {
+  // O bug dos clipes "interligados": a página nasce com o contador em 1, o
+  // projeto restaurado traz layers com ids 1..N, e a primeira layer nova da
+  // sessão ganhava um id que já era de outra. Seleção, edição e remoção são
+  // por id — tudo tocava as duas de uma vez.
+  const original = project([textLayer({ id: 1, name: 'A' }), textLayer({ id: 2, name: 'B' })]);
+
+  const { project: back } = deserializeProject(serializeProject(original), anyMedia);
+  const nova = makeTextLayer();
+
+  assert.ok(
+    back.layers.every(l => l.id !== nova.id),
+    `a layer nova nasceu com id ${nova.id}, que já é de uma layer restaurada`,
+  );
+});
+
+test('projeto salvo com ids duplicados é curado na leitura', () => {
+  // Quem passou pelo bug acima pode ter o projeto SALVO com duas layers do
+  // mesmo id. Reabrir tem que separar as duas, senão o autosave perpetua o
+  // clipe fantasma pra sempre.
+  const serialized = serializeProject(project([textLayer({ id: 7, name: 'A' })]));
+  const raw = {
+    ...serialized,
+    layers: [serialized.layers[0], { ...serialized.layers[0], name: 'B' }],
+  };
+
+  const { project: back } = deserializeProject(raw, () => null);
+
+  assert.equal(back.layers.length, 2);
+  assert.equal(back.layers[0]?.id, 7, 'a primeira mantém o id original');
+  assert.notEqual(back.layers[1]?.id, 7, 'a repetida ganha um id próprio');
+  assert.notEqual(back.layers[0]?.id, back.layers[1]?.id, 'as duas deixam de ser a mesma layer');
 });

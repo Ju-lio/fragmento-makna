@@ -36,6 +36,35 @@ export const RESOLUTIONS: Resolution[] = [
 let _id = 1;
 export const nextId = () => _id++;
 
+/**
+ * Cura os ids de um projeto que acabou de ser lido do disco.
+ *
+ * Duas correções, um lugar só, porque as duas nascem do mesmo esquecimento: o
+ * contador de ids é estado do MÓDULO, e a página que abre um projeto salvo
+ * nasce com ele em 1. Sem o resseed, o primeiro `nextId` da sessão devolveria
+ * o id de uma layer que já existe — e como seleção, edição e remoção são todas
+ * por id, as duas layers ficavam "interligadas": mexia numa, mexia nas duas.
+ *
+ * E um projeto salvo por uma build com esse bug pode ter as duas layers já
+ * com o mesmo id no arquivo: a segunda correção renumera as repetidas,
+ * mantendo a primeira. Nada fora das layers aponta pra esses ids, então
+ * renumerar é seguro.
+ */
+export function healLayerIds(layers: readonly Layer[]): Layer[] {
+  let max = 0;
+  for (const l of layers) max = Math.max(max, l.id);
+  if (max >= _id) _id = max + 1;
+
+  const seen = new Set<number>();
+  return layers.map(l => {
+    if (!seen.has(l.id)) {
+      seen.add(l.id);
+      return l;
+    }
+    return { ...l, id: nextId() };
+  });
+}
+
 export function makeTextLayer(overrides: Partial<TextLayer> = {}): TextLayer {
   return {
     id: nextId(),

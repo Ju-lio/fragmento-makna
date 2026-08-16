@@ -18,7 +18,7 @@
  */
 
 import { BASE_STATE } from './effects.ts';
-import { compactTracks } from './project.ts';
+import { compactTracks, healLayerIds } from './project.ts';
 import type {
   AnimProp, AudioLayer, CountUp, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
   TextLayer, Track, VideoLayer,
@@ -268,7 +268,10 @@ export function deserializeProject(raw: unknown, resolve: MediaResolver): LoadRe
       fps: num(data.fps, 30),
       background: str(data.background, '#151021'),
       media: readMedia(data.media, tracked),
-      layers: tracked,
+      // Última etapa da leitura: ids únicos, e o contador acima do maior deles.
+      // Ver `healLayerIds` — sem isto, a primeira layer nova da sessão podia
+      // nascer com o id de uma layer restaurada e ficar "interligada" a ela.
+      layers: healLayerIds(tracked),
     },
     missingMedia,
   };
