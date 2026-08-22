@@ -94,7 +94,7 @@ test('schema inválido não descarta a layer — só os controles', () => {
   // Perder o efeito inteiro por causa de um descritor errado seria pior que
   // ficar sem os campos: o CSS não precisa do schema pra desenhar.
   const raw = serializeProject(project([overlay()]));
-  (raw.layers[0] as { schema: unknown }).schema = { 'nome invalido': { tipo: 'num', padrao: 1 } };
+  (raw.layers[0] as unknown as { schema: unknown }).schema = { 'nome invalido': { tipo: 'num', padrao: 1 } };
   const { project: back } = deserializeProject(raw, anyMedia);
   const l = back.layers[0] as OverlayLayer;
   assert.equal(l.type, 'overlay');
@@ -104,7 +104,7 @@ test('schema inválido não descarta a layer — só os controles', () => {
 
 test('campos ausentes viram vazio em vez de derrubar a abertura', () => {
   const raw = serializeProject(project([overlay()]));
-  const cru = raw.layers[0] as Record<string, unknown>;
+  const cru = raw.layers[0] as unknown as Record<string, unknown>;
   delete cru.html; delete cru.css; delete cru.values; delete cru.schema;
   const { project: back } = deserializeProject(raw, anyMedia);
   const l = back.layers[0] as OverlayLayer;

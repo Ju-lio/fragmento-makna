@@ -2,7 +2,7 @@ import { resolveState } from './effects.ts';
 import { drawOrder } from './project.ts';
 import { coversAt } from './timeSpan.ts';
 import { displayText } from './countUp.ts';
-import type { ImageLayer, Layer, LayerState, Project, VideoLayer } from './types.ts';
+import type { ImageLayer, Layer, LayerState, OverlayLayer, Project, VideoLayer } from './types.ts';
 
 /** Um quadro já decodificado. `VideoFrame` e `ImageBitmap` servem os dois. */
 export type FrameSource = CanvasImageSource & {
@@ -12,6 +12,16 @@ export type FrameSource = CanvasImageSource & {
 
 /** De onde sai o quadro de uma layer de vídeo. Ver `videoFrames.ts`. */
 export type FrameLookup = (layer: VideoLayer) => FrameSource | null;
+
+/**
+ * De onde sai o quadro de um overlay. Ver `overlayFrames.ts`.
+ *
+ * Recebe `t` porque, ao contrário do vídeo, o instante faz parte da consulta:
+ * o armazém guarda o quadro de UM instante por layer e recusa entregar o de
+ * outro — pintar o vizinho seria a mesma mentira que `drawVideo` se recusa a
+ * contar.
+ */
+export type OverlayLookup = (layer: OverlayLayer, t: number) => CanvasImageSource | null;
 
 export interface DrawOptions {
   /** Pula o desfoque (a conta mais cara do quadro). Ver `degraded` no retorno. */
@@ -29,15 +39,18 @@ export interface DrawOptions {
    * daquela layer não pôde ser desenhada como o arquivo final a terá.
    */
   frameFor?: FrameLookup;
+  /** O quadro já rasterizado de cada overlay. Ausente = nenhum desenha. */
+  overlayFor?: OverlayLookup;
 }
 
 export interface DrawResult {
   /**
    * Este quadro saiu abaixo do que o export produziria.
    *
-   * Duas causas: desfoque pulado pelo modo rápido, ou layer de vídeo sem o
-   * quadro decodificado em mãos. Nos dois casos o frame pode ser reexibido,
-   * mas não pode ser tomado por definitivo — é o que impede o cache de mentir.
+   * Três causas: desfoque pulado pelo modo rápido, layer de vídeo sem o quadro
+   * decodificado em mãos, ou overlay ainda não rasterizado. Nos três casos o
+   * frame pode ser reexibido, mas não pode ser tomado por definitivo — é o que
+   * impede o cache de mentir.
    */
   degraded: boolean;
 }
@@ -67,7 +80,7 @@ export function drawFrame(
   t: number,
   opts: DrawOptions = {},
 ): DrawResult {
-  const { fastPreview = false, frameFor } = opts;
+  const { fastPreview = false, frameFor, overlayFor } = opts;
   const W = project.width;
   const H = project.height;
 
@@ -126,6 +139,15 @@ export function drawFrame(
     else if (layer.type === 'image' && layer.img) drawSource(ctx, layer, layer.img, W, H);
     else if (layer.type === 'video') {
       if (!drawVideo(ctx, layer, W, H, frameFor?.(layer) ?? null)) degraded = true;
+    }
+    else if (layer.type === 'overlay') {
+      // O overlay é rasterizado no tamanho da composição, então desenha
+      // centrado e do tamanho dela — a transformação da layer (posição,
+      // escala, rotação, opacidade dos efeitos) já foi aplicada acima, como
+      // pra qualquer outra.
+      const quadro = overlayFor?.(layer, t) ?? null;
+      if (quadro) ctx.drawImage(quadro, -W / 2, -H / 2, W, H);
+      else degraded = true;
     }
 
     ctx.restore();

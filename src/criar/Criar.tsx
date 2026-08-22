@@ -22,6 +22,7 @@ import { TIPOS, validarManifesto, padroes, variaveisCss, normalizar } from './ap
 import { Overlay } from './overlay.ts';
 import { recursosExternos, temStyleInline } from './svg.ts';
 import { SEMENTES, ROTULO, ONDE_APARECE } from './sementes.ts';
+import { guardar } from './bandeja.ts';
 import type { Esquema, Tipo } from './api.ts';
 
 /** `criar.html?tipo=filtro` abre direto no tipo, pra servir de link. */
@@ -41,6 +42,7 @@ export function Criar() {
   const [t, setT] = useState(0.35);
   const [erroRender, setErroRender] = useState('');
   const [ms, setMs] = useState(0);
+  const [enviado, setEnviado] = useState(false);
 
   const telaRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<Overlay | null>(null);
@@ -226,11 +228,38 @@ export function Criar() {
         </Win>
       </div>
 
+      <div className="criar-enviar">
+        <button
+          className="btn btn-gold"
+          disabled={Boolean(problema)}
+          onClick={() => {
+            guardar({
+              nome: manifesto?.meta?.nome ?? 'Efeito',
+              html: fonte.html,
+              css: fonte.css,
+              schema: esquema,
+              values: normalizar(esquema, atuais) as Record<string, unknown>,
+            });
+            setEnviado(true);
+            setTimeout(() => setEnviado(false), 2600);
+          }}
+          title={problema ? 'Corrija o manifesto primeiro' : 'Deixa o efeito pronto pro editor pegar'}
+        >
+          ▶ USAR NO EDITOR
+        </button>
+        {enviado && (
+          <span className="criar-enviado">
+            pronto — no editor, clique em <b>+ EFEITO</b>
+          </span>
+        )}
+      </div>
+
       <footer className="criar-rodape">
         Arraste o tempo e veja o quadro exato — é o mesmo <code>Overlay</code> que o
         editor usa, então o que aparece aqui é o que vai pro vídeo.{' '}
-        <b>Ainda não dá pra salvar nem aplicar numa layer.</b> O que dá e o que não dá
-        pra fazer com CSS está no <code>LIMITES.md</code>.
+        <b>Ainda não dá pra salvar seus efeitos numa biblioteca</b> — o botão acima
+        deixa UM efeito na bandeja, e o editor pega. O que dá e o que não dá pra
+        fazer com CSS está no <code>LIMITES.md</code>.
       </footer>
     </div>
   );

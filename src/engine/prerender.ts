@@ -1,4 +1,5 @@
 import { drawFrame } from './renderer.ts';
+import { overlayFrames } from './overlayFrames.ts';
 import {
   frameCache, signatureOf, frameIndexAt, lastFrameIndex, timeAtFrameIndex, CACHE_FPS,
 } from './frameCache.ts';
@@ -168,7 +169,16 @@ export async function prerenderRange(project: Project, {
       if (frames) await frames.stage(project, t);
       if (token.cancelled) return { rendered, cancelled: true };
 
-      drawFrame(ctx, project, t, { fastPreview: false, frameFor: frames?.frameFor(project, t) });
+      // Espera igual ao export: o pré-render guarda o quadro como DEFINITIVO
+      // (`degraded: false`), então servir um sem o overlay envenenaria o cache
+      // com uma composição incompleta.
+      await overlayFrames.preparar(project, t, project.width, project.height);
+
+      drawFrame(ctx, project, t, {
+        fastPreview: false,
+        frameFor: frames?.frameFor(project, t),
+        overlayFor: (layer, quando) => overlayFrames.quadroDe(layer, quando),
+      });
 
       const bitmap = await createImageBitmap(canvas);
       // Pré-render é sempre qualidade cheia — por isso `degraded: false`, e por

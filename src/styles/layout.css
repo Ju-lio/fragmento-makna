@@ -1249,3 +1249,6 @@
   line-height: 1.5;
   margin-top: 4px;
 }
+
+.criar-enviar { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.criar-enviado { color: var(--mint); font-size: 9px; }

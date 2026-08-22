@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { player } from '../engine/player.ts';
 import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
+  makeOverlayLayer,
 } from '../engine/project.ts';
+import { espiar, limpar } from '../criar/bandeja.ts';
+import { SEMENTES } from '../criar/sementes.ts';
+import type { Esquema } from '../criar/api.ts';
 import {
   clone, compactTracks, nextId, pasteSlot, projectDuration, semArquivo, splitLayer,
   topTrackOf, trackKind,
@@ -553,6 +557,42 @@ export default function App() {
       ...p,
       layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
     }));
+    setSelectedIds([layer.id]);
+    setTab('props');
+  };
+
+  /**
+   * Põe um efeito em HTML+CSS na linha do tempo.
+   *
+   * Se houver algo na bandeja do `/criar`, é ele; senão, a semente do raio —
+   * porque um botão que adiciona uma layer VAZIA não ensina nada, e a primeira
+   * coisa que a pessoa quer é ver alguma coisa acontecer.
+   */
+  const addEfeito = () => {
+    const daBandeja = espiar();
+    const fonte = daBandeja ?? {
+      nome: 'Raio',
+      html: SEMENTES.efeito.html,
+      css: SEMENTES.efeito.css,
+      schema: (JSON.parse(SEMENTES.efeito.manifesto) as { params: Esquema }).params,
+      values: {},
+    };
+    const layer = makeOverlayLayer({
+      name: fonte.nome,
+      start: +player.t.toFixed(2),
+      duration: 3,
+      html: fonte.html,
+      css: fonte.css,
+      schema: fonte.schema,
+      values: fonte.values,
+    });
+    commit(p => ({
+      ...p,
+      layers: [...p.layers, { ...layer, track: topTrackOf(p.layers, trackKind(layer)) + 1 }],
+    }));
+    // Consome: a bandeja é um slot só, e deixar o efeito lá faria o próximo
+    // "+ EFEITO" repetir o mesmo sem a pessoa entender por quê.
+    if (daBandeja) limpar();
     setSelectedIds([layer.id]);
     setTab('props');
   };
@@ -1332,6 +1372,9 @@ export default function App() {
         </div>
 
         <button className="btn" onClick={addText}>+ TEXTO</button>
+        <button className="btn" onClick={addEfeito} title="Um efeito em HTML+CSS na linha do tempo">
+          + EFEITO
+        </button>
         <button className="btn" onClick={() => fileRef.current?.click()}>+ MÍDIA</button>
         <input
           ref={fileRef}

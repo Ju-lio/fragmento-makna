@@ -1,4 +1,5 @@
 import { NumField, TextField, Field } from './Win.tsx';
+import { CamposDeParams } from './CamposDeParams.tsx';
 import { maxDuration } from '../engine/project.ts';
 import { seedCountUpFromText } from '../engine/countUp.ts';
 import { EASE_NAMES } from '../engine/easings.ts';
@@ -161,9 +162,38 @@ export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) 
             />
           </div>
         </>
+      ) : layer.type === 'overlay' ? (
+        <>
+          {/*
+            Os controles vêm do SCHEMA que veio junto com o efeito, não de
+            campos escritos aqui — é o mesmo `CamposDeParams` do /criar. É o
+            ponto do editor em que um efeito de terceiro ganha painel sem uma
+            linha de React nossa.
+          */}
+          {Object.keys(layer.schema).length > 0 ? (
+            <CamposDeParams
+              esquema={layer.schema}
+              valores={layer.values}
+              onChange={values => set({ values })}
+              onChangeDiscreta={values => set({ values })}
+            />
+          ) : (
+            <div className="hint">Este efeito não declarou controles.</div>
+          )}
+
+          <Field label="Editar">
+            <a className="btn btn-sm" href="/criar.html?tipo=efeito" target="_blank" rel="noreferrer">
+              ✎ ABRIR NO /CRIAR
+            </a>
+          </Field>
+          <div className="hint">
+            O HTML e o CSS deste efeito estão salvos no projeto. Edite no /criar e
+            mande de volta com <b>USAR NO EDITOR</b>.
+          </div>
+        </>
       ) : (
         <>
-          {layer.type !== 'audio' && layer.type !== 'overlay' && (
+          {layer.type !== 'audio' && (
             <NumField label="Escala base" value={layer.fit} step={0.05} onChange={v => set({ fit: v })} />
           )}
 

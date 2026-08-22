@@ -52,3 +52,4 @@ código.
 - [chroma-key.md](chroma-key.md) — planejado · recortar fundo verde
 - [efeitos.md](efeitos.md) — parcial · o painel de efeitos e os controles gerados
 - [criar.md](criar.md) — parcial · a página de criar efeito
+- [efeitos-html-css.md](efeitos-html-css.md) — parcial · efeito da comunidade na linha do tempo

@@ -64,12 +64,14 @@ export const SEMENTES: Record<Tipo, Semente> = {
   mix-blend-mode: screen;
   animation: piscar 1.6s infinite steps(1);
 }
+/* Começa ACESO. Um raio que nasce invisível é mais fiel a um raio de
+   verdade, e é péssima primeira impressão: quem acabou de adicionar o
+   efeito veria uma tela vazia e concluiria que não funcionou. */
 @keyframes piscar {
-  0%   { opacity: 0 }
-  6%   { opacity: 1 }
-  11%  { opacity: .15 }
-  17%  { opacity: 1 }
-  27%, 100% { opacity: 0 }
+  0%   { opacity: 1 }
+  5%   { opacity: .15 }
+  12%  { opacity: 1 }
+  24%, 100% { opacity: 0 }
 }
 
 .brilho {
@@ -79,10 +81,10 @@ export const SEMENTES: Record<Tipo, Semente> = {
   animation: clarao 1.6s infinite steps(1);
 }
 @keyframes clarao {
-  0%, 27%, 100% { opacity: 0 }
-  6%  { opacity: .9 }
-  11% { opacity: .1 }
-  17% { opacity: .7 }
+  0%  { opacity: .9 }
+  5%  { opacity: .1 }
+  12% { opacity: .7 }
+  24%, 100% { opacity: 0 }
 }`,
   },
 

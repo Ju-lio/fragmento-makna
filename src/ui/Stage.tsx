@@ -4,6 +4,7 @@ import { viewport, renderScale } from '../engine/viewport.ts';
 import { previewStatus } from '../engine/previewStatus.ts';
 import { aimAt, frameFor, framesReadyAt } from '../engine/videoFrames.ts';
 import { drawFrame } from '../engine/renderer.ts';
+import { overlayFrames } from '../engine/overlayFrames.ts';
 import { videoElementsOwner } from '../engine/videoSync.ts';
 import { frameCache, signatureOf, frameIndexAt } from '../engine/frameCache.ts';
 import { pickFrameSource, PREVIEW_CACHE_ENABLED } from '../engine/frameSource.ts';
@@ -209,7 +210,28 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
         holdT = -1;
       }
 
-      const { degraded } = drawFrame(ctx, project, t, { fastPreview, frameFor: frameFor(project, t) });
+      /**
+       * O overlay é pedido, não esperado.
+       *
+       * Rasterizar HTML+CSS leva dezenas de milissegundos, e o laço de pintura
+       * não pode ficar preso nisso. `preparar` dispara o trabalho; `quadroDe`
+       * responde na hora com o que já existe. Enquanto não existe, a layer não
+       * desenha e `drawFrame` marca degradado — a mesma regra do vídeo, e pela
+       * mesma razão: pintar o quadro do instante vizinho seria mentir.
+       *
+       * O `invalidate` no fim é o que traz o laço de volta quando o quadro
+       * fica pronto: sem ele, um preview parado esperaria pra sempre, porque
+       * nada mais suja o frame.
+       */
+      overlayFrames.preparar(project, t, project.width, project.height).then(pronto => {
+        if (pronto) player.invalidate();
+      });
+
+      const { degraded } = drawFrame(ctx, project, t, {
+        fastPreview,
+        frameFor: frameFor(project, t),
+        overlayFor: (layer, quando) => overlayFrames.quadroDe(layer, quando),
+      });
 
       /**
        * A captura agora é fiel: o quadro veio decodificado pelo número daquele

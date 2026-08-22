@@ -21,6 +21,7 @@ import { frameIndexAt, lastFrameIndex, timeAtFrameIndex, CACHE_FPS } from './fra
 import { claimVideoElements, releaseVideoElements, pauseAllVideo } from './videoSync.ts';
 import { stageVideosAt } from './prerender.ts';
 import { frameProvider } from './videoFrames.ts';
+import { overlayFrames } from './overlayFrames.ts';
 import type { CancelToken } from './prerender.ts';
 import { ensureDisplayFont } from './fonts.ts';
 import { Progress } from './progress.ts';
@@ -388,9 +389,16 @@ export async function exportVideo(
 
       const t = timeAtFrameIndex(i, fps);
       await stageVideosAt(frameProvider, project, t);
+      // Aqui se ESPERA, ao contrário do preview: o arquivo final não pode sair
+      // com uma layer faltando porque a rasterização não tinha terminado.
+      await overlayFrames.preparar(project, t, project.width, project.height);
       if (token.cancelled) return null;
 
-      drawFrame(ctx, project, t, { fastPreview: false, frameFor: frameProvider.frameFor(project, t) });
+      drawFrame(ctx, project, t, {
+        fastPreview: false,
+        frameFor: frameProvider.frameFor(project, t),
+        overlayFor: (layer, quando) => overlayFrames.quadroDe(layer, quando),
+      });
 
       const frame = new VideoFrame(canvas, {
         timestamp: frameTimestamp(i, first, fps),

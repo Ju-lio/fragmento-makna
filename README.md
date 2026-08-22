@@ -69,13 +69,17 @@ src/
     mediaStore.ts      blobs e projeto em IndexedDB
     autoPrerender.ts   o interruptor ⚙ AUTO PRÉ-RENDER
     previewStatus.ts   sinal da barra de atividade
+    overlayFrames.ts   de onde vem o quadro de um overlay (o par de videoFrames)
   criar/             <- o formato de efeito da comunidade (ver LIMITES.md)
     api.ts             meta + params tipados: o contrato autor ↔ editor
     janela.ts          a janela de tempo do efeito como esquema de params
+    bandeja.ts         o slot em localStorage entre /criar e o editor
+    bandeja.ts         o slot em localStorage entre /criar e o editor
     svg.ts             monta o SVG do overlay (puro, testável em node)
     overlay.ts         HTML+CSS do autor → bitmap de um instante
     sementes.ts        os efeitos de partida do /criar
     Criar.tsx          a página /criar (entry próprio, ver criar.html)
+    main.tsx           monta o React do /criar
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
 public/

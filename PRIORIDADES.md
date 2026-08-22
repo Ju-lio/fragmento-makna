@@ -29,8 +29,9 @@ medido em Chrome 151. As três coisas que sustentam o desenho:
 - o overlay **nunca** vai ler os pixels do vídeo (44,8 ms e 168 kB por quadro) —
   por isso existem slots
 
-**Pronto:** [`src/criar/api.ts`](src/criar/api.ts) — `meta` + `params` tipados,
-28 testes. Nada tocou o caminho de render ainda.
+**Pronto:** fases **A**, **B** e o grosso da **C**. Um efeito escrito em HTML+CSS
+já vai do `/criar` até a linha do tempo, com controles gerados do próprio
+efeito, sobrevive ao autosave e entra no export. 621 testes.
 
 ---
 
@@ -41,14 +42,14 @@ fase C** — até lá, dá pra parar em qualquer ponto sem deixar o editor pior.
 
 ### Fase A — o contrato (não toca o render)
 
-**A1. PropsPanel gera campos a partir do esquema** ← *próximo*
+**A1. PropsPanel gera campos a partir do esquema** ✅ *feito*
 O painel passa a desenhar controles percorrendo `params` em vez de ter campos
 fixos. Cobaia: os efeitos JSON que já existem.
 *Toca:* [`PropsPanel.tsx`](src/ui/PropsPanel.tsx), [`EffectsPanel.tsx`](src/ui/EffectsPanel.tsx).
 *Risco:* baixo, e confinado à UI.
 *Valida quando:* mudar um slider muda o efeito na tela, e o undo/redo continua com a granularidade certa.
 
-**A2. `criar.html` — a rota `/criar`**
+**A2. `criar.html` — a rota `/criar`** ✅ *feito*
 Entry point separado do Vite, não um router. Isola do editor, não contamina o
 estado do App, e importa o mesmo runtime. Quatro botões: efeito, filtro,
 transição, texto.
@@ -57,7 +58,7 @@ transição, texto.
 
 ### Fase B — o runtime do overlay (código novo, isolado)
 
-**B1. `criar/overlay.ts`** — DOM vivo → seek → `foreignObject` → bitmap.
+**B1. `criar/overlay.ts`** ✅ *feito* — DOM vivo → seek → `foreignObject` → bitmap.
 Inclui, todos já resolvidos nos spikes:
 - conserto do `animation-delay` do autor (ler uma vez, reescrever como `orig - t`) — custa +1 ms
 - empacotar o CSS em `CDATA` (senão `<` quebra a serialização)
@@ -67,14 +68,22 @@ Inclui, todos já resolvidos nos spikes:
 
 ### Fase C — o overlay entra no quadro (**aqui toca o render**)
 
-**C1. Tipo `efeito` numa layer.** O compositor desenha o bitmap do overlay.
-**C2. Preview ao vivo mostra DOM real** e marca o quadro como `degraded` — o
-mecanismo já existe em [`renderer.ts:37`](src/engine/renderer.ts#L37).
-**C3. `renderSignature` passa a incluir o hash do efeito e dos params.**
-*Sem isto o cache serve pixels velhos depois de editar um efeito.* Não é
-opcional e não pode vir depois.
-*Toca:* [`renderer.ts`](src/engine/renderer.ts), [`frameCache.ts`](src/engine/frameCache.ts), [`types.ts`](src/engine/types.ts), [`serialize.ts`](src/engine/serialize.ts).
-*Risco:* **alto.** É o caminho quente e o cache. Rodar a suíte inteira e o smoke test de export a cada passo.
+**C1. Tipo `overlay` como LAYER própria.** ✅ *feito* — e aqui o plano mudou:
+em vez de o efeito decorar uma layer existente, ele virou um tipo de layer.
+Risco muito menor (nenhum tipo existente foi tocado) e prova o caminho inteiro
+— modelo, arquivo, assinatura, desenho, preview e export. Decorar outra layer
+fica como passo seguinte, agora com o encanamento já validado.
+**C2. `degraded` quando o quadro ainda não existe.** ✅ *feito* — o mecanismo já
+existia em [`renderer.ts`](src/engine/renderer.ts) e ganhou a terceira causa.
+**C3. `renderSignature` inclui html, css e valores.** ✅ *feito* — com teste
+pros dois lados: CSS/HTML/valores invalidam, nome e schema não.
+
+*O que apareceu no caminho:* `drawFrame` é síncrona e rasterizar HTML+CSS é
+assíncrono. A saída já estava no projeto — o quadro entra por PARÂMETRO, como o
+do vídeo. Preview não espera (desenha degradado); export e pré-render esperam.
+
+**Falta em C:** aplicar um overlay SOBRE uma layer existente, em vez de ele ser
+uma layer própria.
 
 ### Fase D — slots (destrava a metade interessante)
 
