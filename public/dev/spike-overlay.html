@@ -1,0 +1,246 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fragmento — spike: overlay DOM rasterizável</title>
+<!--
+  Mede se um efeito escrito em HTML+CSS pode virar frame de export.
+
+  Rode com `npm run dev` e abra /dev/spike-overlay.html NO CHROME — é o
+  navegador que o export usa (WebCodecs). Os números do Firefox estão no
+  rodapé pra comparação.
+
+  A pergunta que este arquivo responde: o caminho
+      DOM -> SVG <foreignObject> -> <img> -> drawImage
+  serve pra exportar vídeo? Custo, fidelidade, determinismo e taint.
+-->
+<style>
+  body { margin:0; background:#0b0c10; color:#e8e8ea; font:13px/1.6 ui-monospace,SFMono-Regular,monospace; padding:20px; }
+  h1 { font-size:15px; color:#ffd479; margin:0 0 4px; }
+  h2 { font-size:13px; color:#ffd479; margin:22px 0 6px; border-bottom:1px solid #26282f; padding-bottom:4px; }
+  .linha { white-space:pre; }
+  .ok { color:#7ddc8a; } .ruim { color:#ff8080; } .nota { color:#8a8d98; }
+  canvas { border:1px solid #26282f; max-width:100%; margin-top:8px; }
+  #status { color:#ffd479; }
+</style>
+
+<h1>Fragmento — overlay DOM rasterizável</h1>
+<div class="nota">Rode no Chrome. O export usa WebCodecs, então é o número do Chrome que decide.</div>
+<div id="status">medindo…</div>
+<div id="saida"></div>
+<h2>folha de contato — o mesmo efeito em 6 instantes</h2>
+<canvas id="folha"></canvas>
+
+<script type="module">
+const saida = document.getElementById('saida');
+const status = document.getElementById('status');
+const p = (s, cls = '') => saida.insertAdjacentHTML('beforeend', `<div class="linha ${cls}">${s}</div>`);
+const ord = xs => [...xs].sort((a, b) => a - b);
+const med = xs => ord(xs)[xs.length >> 1];
+
+const W = 1920, H = 1080;
+const cv = document.createElement('canvas');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d', { willReadFrequently: true });
+
+const palco = document.createElement('div');
+palco.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px`;
+document.body.appendChild(palco);
+
+// --- a fonte precisa ir INLINE: superfície fora do DOM não busca @font-face --
+let CSS_FONTE = '';
+try {
+  const b = new Uint8Array(await (await fetch('/src/fonts/InterBlack.ttf')).arrayBuffer());
+  let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  CSS_FONTE = `@font-face{font-family:'InterBlack';src:url(data:font/ttf;base64,${btoa(s)}) format('truetype')}`;
+} catch { p('(fonte local não encontrada — o teste de texto usa a do sistema)', 'nota'); }
+
+/**
+ * Um frame pelo caminho DOM.
+ *
+ * O seek: `animation-play-state:paused` + `animation-delay` negativo faz o
+ * navegador desenhar o instante `t` de um @keyframes comum, estático. É isso
+ * que permite o autor escrever CSS normal e o editor ainda assim pedir
+ * "me dá o frame de 12,4s".
+ */
+async function viaDom(css, html, t, w = W, h = H) {
+  palco.style.width = w + 'px'; palco.style.height = h + 'px';
+  palco.innerHTML = `<div class="cena">${html}</div>`;
+  const corpo = new XMLSerializer().serializeToString(palco.firstElementChild);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`
+    + `<foreignObject x="0" y="0" width="${w}" height="${h}">`
+    + `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px">`
+    + `<style>.cena{position:relative;width:100%;height:100%}${CSS_FONTE}${css}`
+    + `.cena *,.cena{animation-play-state:paused!important;animation-delay:-${t}s!important}`
+    + `</style>${corpo}</div></foreignObject></svg>`;
+  const img = new Image();
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  await img.decode();
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  return svg.length;
+}
+
+/** O MESMO desenho direto em canvas 2D — o caminho que o renderer.ts usa hoje. */
+function viaCanvas(filtro, t) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.filter = filtro || 'none';
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate(t * Math.PI);
+  ctx.fillStyle = '#4a7cff';
+  ctx.fillRect(-W * 0.2, -H * 0.3, W * 0.4, H * 0.6);
+  ctx.restore();
+  ctx.filter = 'none';
+}
+
+// custo do próprio getImageData, descontado de todas as medidas
+let leitura = 0;
+{ const a = []; for (let i = 0; i < 12; i++) { const t0 = performance.now(); ctx.getImageData(0, 0, W, H); a.push(performance.now() - t0); } leitura = med(a); }
+
+const R = { navegador: navigator.userAgent, leitura: +leitura.toFixed(1) };
+
+// ===== 1. taint ============================================================
+status.textContent = 'medindo… (1/5 taint)';
+await viaDom('.a{position:absolute;inset:20%;background:#4a7cff}', '<div class="a"></div>', 0);
+try { ctx.getImageData(0, 0, 4, 4); R.taint = false; } catch { R.taint = true; }
+p('');
+p(`taint do canvas .......... ${R.taint ? 'SIM — export impossível' : 'não — os pixels são legíveis'}`, R.taint ? 'ruim' : 'ok');
+
+// ===== 2. o seek é exato? ==================================================
+status.textContent = 'medindo… (2/5 seek)';
+const CSS_SEEK = `.cena{background:#000}.r{position:absolute;left:30%;top:0;width:40%;height:100%;background:#fff;
+  animation:pisca 1.6s infinite steps(1)}
+  @keyframes pisca{0%{opacity:0}6%{opacity:1}11%{opacity:.15}17%{opacity:1}27%,100%{opacity:0}}`;
+const esperado = t => { const f = (t / 1.6) % 1 * 100; return f < 6 ? 0 : f < 11 ? 1 : f < 17 ? .15 : f < 27 ? 1 : 0; };
+let seekOk = true;
+R.seek = [];
+for (const t of [0, 0.05, 0.12, 0.20, 0.30, 0.45, 0.80, 1.55, 1.70, 3.32]) {
+  await viaDom(CSS_SEEK, '<div class="r"></div>', t, 480, 270);
+  const d = ctx.getImageData(216, 108, 48, 54).data;
+  let soma = 0; for (let i = 0; i < d.length; i += 4) soma += d[i];
+  const m = +(soma / (d.length / 4) / 255).toFixed(3);
+  const e = esperado(t), ok = Math.abs(m - e) < 0.06;
+  if (!ok) seekOk = false;
+  R.seek.push({ t, esperado: e, medido: m, ok });
+}
+R.seekExato = seekOk;
+p(`seek por delay negativo .. ${seekOk ? 'EXATO nos 10 instantes (inclusive após o 1º ciclo)' : 'IMPRECISO'}`, seekOk ? 'ok' : 'ruim');
+
+// ===== 3. determinismo =====================================================
+const impressao = () => { const d = ctx.getImageData(0, 0, 480, 270).data; let h = 2166136261;
+  for (let i = 0; i < d.length; i += 4) { h ^= d[i] + d[i+1]*3 + d[i+2]*7; h = Math.imul(h, 16777619); } return (h>>>0).toString(16); };
+await viaDom(CSS_SEEK, '<div class="r"></div>', 0.13, 480, 270); const h1 = impressao();
+await viaDom(CSS_SEEK, '<div class="r"></div>', 0.13, 480, 270); const h2 = impressao();
+R.determinista = h1 === h2;
+p(`determinismo ............. ${R.determinista ? 'mesmo t → mesmos pixels' : 'FALHOU'}`, R.determinista ? 'ok' : 'ruim');
+
+// ===== 4. DOM vs canvas, o mesmo desenho ===================================
+status.textContent = 'medindo… (3/5 DOM vs canvas)';
+const gira = `@keyframes gira{to{transform:rotate(180deg)}}`;
+const alvo = extra => `.a{position:absolute;left:30%;top:20%;width:40%;height:60%;background:#4a7cff;animation:gira 2s infinite linear;${extra}}${gira}`;
+p(''); p(`custo por frame em ${W}×${H} — mediana de 18, t distinto a cada volta`);
+p(`(o getImageData de ${leitura.toFixed(1)}ms já está descontado)`, 'nota');
+p('');
+p('  efeito                          DOM        canvas 2D');
+R.pares = [];
+for (const [nome, css, filtro] of [
+  ['sem filtro', '', ''],
+  ['blur(12px)', 'filter:blur(12px)', 'blur(12px)'],
+  ['blur(40px)', 'filter:blur(40px)', 'blur(40px)'],
+  ['brightness(1.6)', 'filter:brightness(1.6)', 'brightness(1.6)'],
+  ['drop-shadow(0 0 34px)', 'filter:drop-shadow(0 0 34px #2d5bff)', 'drop-shadow(0 0 34px #2d5bff)'],
+]) {
+  const aD = [], aC = [];
+  for (let i = 0; i < 24; i++) {
+    const t = 0.017 * i;   // t ANDA: sem isso o browser serve do cache e a medida vira ficção
+    let t0 = performance.now(); await viaDom(alvo(css), '<div class="a"></div>', t); ctx.getImageData(0,0,W,H); aD.push(performance.now()-t0);
+    t0 = performance.now(); viaCanvas(filtro, t); ctx.getImageData(0,0,W,H); aC.push(performance.now()-t0);
+  }
+  const dom = +(med(aD.slice(6)) - leitura).toFixed(1);
+  const can = +(med(aC.slice(6)) - leitura).toFixed(1);
+  R.pares.push({ nome, dom, canvas: can });
+  const cls = dom <= can ? 'ok' : '';
+  p(`  ${nome.padEnd(28)} ${String(dom).padStart(6)} ms   ${String(can).padStart(6)} ms`, cls);
+}
+
+// ===== 5. escala em nº de nós ==============================================
+status.textContent = 'medindo… (4/5 escala)';
+p(''); p('escala em nº de nós (partículas animadas, sem filtro):');
+R.escala = [];
+for (const n of [100, 500, 2000]) {
+  let html = '';
+  for (let i = 0; i < n; i++) html += `<div class="pt" style="left:${(i*97)%W}px;top:${(i*53)%H}px;animation-delay:${-(i%20)/10}s"></div>`;
+  const css = `.pt{position:absolute;width:8px;height:8px;background:#9fd4ff;border-radius:50%;animation:pu 2s infinite}@keyframes pu{50%{transform:scale(2)}}`;
+  const a = [];
+  for (let i = 0; i < 12; i++) { const t0 = performance.now(); await viaDom(css, html, 0.017*i); ctx.getImageData(0,0,W,H); a.push(performance.now()-t0); }
+  const ms = +(med(a.slice(4)) - leitura).toFixed(1);
+  R.escala.push({ nos: n, ms });
+  p(`  ${String(n).padStart(5)} nós ................... ${String(ms).padStart(6)} ms`);
+}
+
+// ===== 6. o overlay consegue tocar nos pixels do vídeo? ====================
+const src = document.createElement('canvas'); src.width = 1920; src.height = 1080;
+const s2 = src.getContext('2d');
+s2.fillStyle = '#c33'; s2.fillRect(0, 0, 1920, 1080);
+for (let i = 0; i < 400; i++) { s2.fillStyle = `hsl(${i*7},70%,50%)`; s2.fillRect((i*37)%1920, (i*53)%1080, 40, 40); }
+const t0 = performance.now(); const durl = src.toDataURL('image/jpeg', 0.8); const custoFrame = performance.now() - t0;
+R.frameParaOverlay = { ms: +custoFrame.toFixed(1), kb: Math.round(durl.length/1024) };
+p('');
+p(`frame 1080p → data URI ... ${R.frameParaOverlay.ms} ms e ${R.frameParaOverlay.kb} kb POR FRAME`, 'ruim');
+p('  (é o que custaria só pra o vídeo ENTRAR num overlay DOM — por isso', 'nota');
+p('   efeito que lê os pixels de baixo é canvas/WebGL, não DOM)', 'nota');
+
+// ===== 7. folha de contato =================================================
+status.textContent = 'medindo… (5/5 folha de contato)';
+const CENA = `.cena{background:radial-gradient(ellipse at 50% 120%,#1b2740 0%,#05060a 70%);overflow:hidden}
+  .raio{position:absolute;left:50%;top:-10%;width:7%;height:120%;margin-left:-3.5%;
+    background:linear-gradient(180deg,#fff 0%,#9fd4ff 35%,#4a7cff 70%,rgba(74,124,255,0) 100%);
+    clip-path:polygon(52% 0,32% 42%,48% 42%,26% 100%,58% 46%,42% 46%,64% 0);
+    filter:drop-shadow(0 0 12px #6aa8ff) drop-shadow(0 0 34px #2d5bff);mix-blend-mode:screen;
+    animation:pisca 1.6s infinite steps(1)}
+  @keyframes pisca{0%{opacity:0}6%{opacity:1}11%{opacity:.15}17%{opacity:1}27%,100%{opacity:0}}
+  .brilho{position:absolute;inset:0;mix-blend-mode:screen;
+    background:radial-gradient(circle at 50% 30%,rgba(120,170,255,.55),transparent 55%);
+    animation:clarao 1.6s infinite steps(1)}
+  @keyframes clarao{0%,27%,100%{opacity:0}6%{opacity:.9}11%{opacity:.1}17%{opacity:.7}}
+  .tit{position:absolute;left:0;right:0;bottom:8%;text-align:center;font-size:64px;color:#fff;
+    font-family:'InterBlack',system-ui,sans-serif;text-shadow:0 0 18px #4a7cff,0 4px 0 #12203f;
+    animation:sobe 1.6s infinite ease-out}
+  @keyframes sobe{0%{opacity:0;transform:translateY(34px)}22%,88%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-14px)}}`;
+const HTML = `<div class="brilho"></div><div class="raio"></div><div class="tit">TEMPESTADE</div>`;
+const folha = document.getElementById('folha');
+const fw = 480, fh = 270;
+folha.width = fw * 3; folha.height = fh * 2;
+const fc = folha.getContext('2d');
+fc.fillStyle = '#000'; fc.fillRect(0, 0, folha.width, folha.height);
+const instantes = [0.00, 0.10, 0.13, 0.20, 0.30, 0.80];
+for (let i = 0; i < instantes.length; i++) {
+  await viaDom(CENA, HTML, instantes[i], fw, fh);
+  fc.drawImage(cv, 0, 0, fw, fh, (i % 3) * fw, Math.floor(i / 3) * fh, fw, fh);
+  fc.fillStyle = '#ffd479'; fc.font = 'bold 14px monospace';
+  fc.fillText(`t=${instantes[i].toFixed(2)}s`, (i % 3) * fw + 8, Math.floor(i / 3) * fh + 20);
+}
+
+// ===== veredito ============================================================
+const semFiltro = R.pares.find(x => x.nome === 'sem filtro');
+const dsh = R.pares.find(x => x.nome === 'drop-shadow(0 0 34px)');
+R.sobretaxaDom = +(semFiltro.dom - semFiltro.canvas).toFixed(1);
+p('');
+p(`sobretaxa do caminho DOM (mesmo desenho, sem filtro): ${R.sobretaxaDom} ms/frame`);
+p(`custo de um drop-shadow grande: DOM ${dsh.dom}ms vs canvas ${dsh.canvas}ms`);
+p('');
+p('orçamento de export a 30fps, 1080p:');
+for (const seg of [30, 60, 180]) {
+  const f = seg * 30;
+  p(`  ${String(seg).padStart(3)}s (${String(f).padStart(5)} frames): `
+    + `+${(f * semFiltro.dom / 60000).toFixed(1)} min (efeito leve)   `
+    + `+${(f * dsh.dom / 60000).toFixed(1)} min (efeito com glow pesado)`);
+}
+p('');
+p('referência — Firefox 152 nesta mesma máquina:', 'nota');
+p('  sem filtro DOM 2ms / canvas 2ms · blur(40px) DOM 98ms / canvas 152ms', 'nota');
+p('  drop-shadow(34px) DOM 109ms / canvas 175ms · 2000 nós 111ms', 'nota');
+
+status.textContent = 'pronto.';
+window.RESULTADO = R;
+console.log(R);
+</script>
