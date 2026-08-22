@@ -59,6 +59,7 @@ src/
     audioRender.ts     mixagem offline pro export
     waveform.ts        envelope de picos e recorte pra desenho (puro)
     waveformStore.ts   decodifica uma vez por arquivo e guarda o envelope
+    selection.ts       as regras da seleção: clique, Ctrl+clique, Shift+clique
     trackDrag.ts       para onde vai um clipe arrastado na timeline
     magnet.ts          o ímã: encostar um clipe exatamente onde o outro acaba
     history.ts         pilha de undo/redo, genérica
@@ -68,8 +69,13 @@ src/
     mediaStore.ts      blobs e projeto em IndexedDB
     autoPrerender.ts   o interruptor ⚙ AUTO PRÉ-RENDER
     previewStatus.ts   sinal da barra de atividade
+  criar/             <- o formato de efeito da comunidade (ver LIMITES.md)
+    api.ts             meta + params tipados: o contrato autor ↔ editor
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
+public/
+  dev/
+    spike-overlay.html   harness de medição do caminho DOM → canvas
 ```
 
 `types.ts` fica separado de propósito: `effects.ts` precisa saber o que é uma
@@ -184,6 +190,53 @@ Verificado exportando o projeto de exemplo pelo botão real: no mesmo
 instante (t=2,85s), preview e MP4 exportado mostram exatamente
 "422.117 km rodados" — o mesmo número, porque os dois vêm do mesmo
 `drawFrame`.
+
+## Efeitos escritos em HTML e CSS
+
+O runtime de efeito acima é JSON com oito props. É seguro e é pouco: quem
+sabe CSS não consegue fazer um raio, um vidro ou um texto se dividindo em
+partículas com `x`, `y`, `scale` e mais cinco. O objetivo é que a pessoa use
+o que ela já sabe.
+
+O obstáculo é o parágrafo "Preview = Export" deste arquivo: `drawFrame`
+desenha em canvas 2D, e é o mesmo canvas que alimenta o `VideoEncoder`. **DOM
+não entra em canvas.** Não existe API pra capturar um elemento em bitmap —
+`captureStream()` só funciona em canvas, e `getDisplayMedia()` grava em tempo
+real, com perda.
+
+**O caminho descartado:** navegador headless capturando quadro a quadro, que é
+como Remotion e HyperFrames fazem. Funciona, e custa um servidor (ou um
+Chromium empacotado). Trocaria a decisão tomada no primeiro commit — codificar
+no próprio navegador, sem servidor — pela decisão oposta.
+
+**O que sobrou, e foi medido:** serializar o DOM num SVG `<foreignObject>` e
+desenhar como imagem. Três achados sustentam a escolha:
+
+- **O caminho DOM cobra 7,3 ms por quadro** em 1920×1080 (Chrome 151, GPU
+  integrada antiga). Em filtro ele *ganha* do canvas: `blur(40px)` custou
+  45,3 ms pelo DOM contra 53,1 ms desenhado direto em canvas 2D. Desfoque
+  grande é caro em qualquer superfície — o `fastPreview` do `drawFrame` já
+  existia por isso.
+- **`@keyframes` puro vira seekable.** Injetando `animation-play-state: paused`
+  e `animation-delay: <o do autor> - <t>s`, o navegador desenha o instante
+  exato — exato em 26 de 26 instantes testados, inclusive depois do primeiro
+  ciclo do loop. O autor escreve CSS comum; o editor pede "o quadro de 12,4 s"
+  e recebe. É justamente o que a documentação do Remotion diz pra **não**
+  fazer, porque no pipeline deles a transição CSS pula direto pro estado
+  final.
+- **O overlay não enxerga o vídeo.** Colocar um quadro 1080p dentro dele
+  custaria 44,8 ms e 168 kB **por quadro**. Então efeito que precisa dos pixels
+  de baixo não é overlay: o CSS declara um **slot**, e o compositor desenha o
+  vídeo naquela geometria. É assim que vidro, transição entre dois clipes e
+  vídeo se dividindo em partículas funcionam.
+
+`criar/api.ts` é o contrato: `meta.tipo` diz o que é (efeito, filtro,
+transição, texto) e `params` é fonte única — o mesmo objeto gera os campos do
+painel e tipa `p` no código do autor, sem schema duplicado.
+
+O que dá, o que não dá e quanto custa cada recurso de CSS está em
+**[LIMITES.md](LIMITES.md)**, com cada item marcado como medido ou não
+verificado. A §6 de lá é a especificação do validador que ainda não existe.
 
 ## Viewport
 
@@ -1901,7 +1954,15 @@ o remix reproduz a 99,2% do tempo real), **contador numérico animado**
 em tela cheia à esquerda pra editar formato vertical, `?layout=foco` na URL,
 coluna direita redimensionável), **ímã do centro no palco** (guia de
 alinhamento ao arrastar, Alt desliga), e atalhos de Delete/duplicar/copiar/colar. Base inteira em TypeScript
-`strict`, com 532 testes.
+`strict`, com 573 testes.
+
+Este conjunto está marcado como **`v0.1.0`** — o ponto conhecido-bom antes de o
+sistema de efeitos em HTML/CSS mexer no caminho de render.
+
+**Em andamento:** o formato de efeito da comunidade. O contrato
+(`criar/api.ts`) e o levantamento do que o navegador aguenta
+([LIMITES.md](LIMITES.md)) estão prontos; o caminho de render ainda não foi
+tocado.
 
 ### O caminho até "usável"
 
