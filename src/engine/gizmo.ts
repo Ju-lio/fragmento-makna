@@ -51,6 +51,11 @@ export function layerBox(
     return { w, h: (lines.length - 1) * layer.size * LINE_HEIGHT + layer.size };
   }
 
+  // O overlay é desenhado do tamanho da composição, então a moldura é ela
+  // mesma — mesma regra do resto do arquivo: a caixa sai da MESMA conta que o
+  // desenho usa, senão a seleção não bate com o que está na tela.
+  if (layer.type === 'overlay') return { w: project.width, h: project.height };
+
   const source = layer.type === 'image' ? layer.img : layer.video;
   const srcW = layer.type === 'image' ? source?.width : (source as HTMLVideoElement)?.videoWidth;
   const srcH = layer.type === 'image' ? source?.height : (source as HTMLVideoElement)?.videoHeight;

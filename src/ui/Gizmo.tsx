@@ -134,6 +134,10 @@ export function Gizmo({ project, selectedId, onSelect, onChange }: GizmoProps) {
     const from = toComposition(e);
     // O tamanho de base, não o resolvido: escalar tem que escrever no campo do
     // modelo, e o que os efeitos somam por cima continua sendo deles.
+    // O overlay não tem tamanho próprio: ele é desenhado do tamanho da
+    // composição. Escalar mexe no `scale` dos efeitos, não num campo do
+    // modelo — então aqui ele não entra.
+    if (layer.type === 'overlay') return;
     const base = layer.type === 'text' ? layer.size : layer.fit;
 
     drag(e, to => {

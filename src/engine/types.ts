@@ -9,6 +9,7 @@
  */
 
 import type { EaseName } from './easings.ts';
+import type { Esquema } from '../criar/api.ts';
 
 // --- efeitos ------------------------------------------------------------
 
@@ -77,7 +78,7 @@ export interface CountUp extends TimeWindow {
 
 // --- layers -------------------------------------------------------------
 
-export type LayerType = 'text' | 'image' | 'video' | 'audio';
+export type LayerType = 'text' | 'image' | 'video' | 'audio' | 'overlay';
 
 /**
  * O que uma layer com som carrega.
@@ -155,6 +156,40 @@ export interface TextLayer extends LayerBase, TextDecor {
   countUp?: CountUp;
 }
 
+/**
+ * Um efeito escrito em HTML+CSS, ocupando tempo e faixa como qualquer outra.
+ *
+ * O tipo se chama `overlay` e não `efeito` de propósito: o MODELO descreve o
+ * que a coisa é no caminho de render — uma camada rasterizada por cima —, e o
+ * AUTOR chama de efeito (`meta.tipo`, em `criar/api.ts`). São vocabulários
+ * diferentes servindo leitores diferentes, e forçar um só deixaria um dos dois
+ * pior.
+ *
+ * `html`, `css` e `schema` vêm JUNTO no projeto, e não por referência a um
+ * efeito instalado. É a mesma escolha do acervo de mídia levada até o fim:
+ * abrir um `.frag` na máquina de outra pessoa não pode depender de ela ter o
+ * mesmo efeito. O custo é alguns kB de texto por layer; o benefício é o
+ * projeto continuar abrindo daqui a um ano.
+ *
+ * Herda `effects` de `LayerBase`, e isso é útil: o vocabulário de oito props
+ * continua valendo POR CIMA do overlay — dá pra fazer um raio em CSS e ainda
+ * aplicar `zoom-punch` nele.
+ */
+export interface OverlayLayer extends LayerBase {
+  type: 'overlay';
+  /** O HTML do autor, como ele escreveu. */
+  html: string;
+  /** O CSS do autor, como ele escreveu. */
+  css: string;
+  /**
+   * Os controles que o painel desenha. Guardado no projeto pra ele ser
+   * autossuficiente — ver a nota acima.
+   */
+  schema: Esquema;
+  /** Valores atuais dos controles. Chaves ausentes caem no padrão do schema. */
+  values: Record<string, unknown>;
+}
+
 export interface ImageLayer extends LayerBase {
   type: 'image';
   /** Fração da composição que a mídia ocupa antes dos efeitos. */
@@ -194,10 +229,10 @@ export interface AudioLayer extends LayerBase, Audible {
   sourceDuration: number;
 }
 
-export type Layer = TextLayer | ImageLayer | VideoLayer | AudioLayer;
+export type Layer = TextLayer | ImageLayer | VideoLayer | AudioLayer | OverlayLayer;
 
 /** Layers que desenham pixels. O que sobra é áudio. */
-export type VisualLayer = TextLayer | ImageLayer | VideoLayer;
+export type VisualLayer = TextLayer | ImageLayer | VideoLayer | OverlayLayer;
 
 /** Layers que produzem som. */
 export type SoundLayer = VideoLayer | AudioLayer;
@@ -209,7 +244,8 @@ export type MediaLayer = ImageLayer | VideoLayer | AudioLayer;
 export type LayerPatch = Partial<Omit<TextLayer, 'id' | 'type'>>
   & Partial<Omit<ImageLayer, 'id' | 'type'>>
   & Partial<Omit<VideoLayer, 'id' | 'type'>>
-  & Partial<Omit<AudioLayer, 'id' | 'type'>>;
+  & Partial<Omit<AudioLayer, 'id' | 'type'>>
+  & Partial<Omit<OverlayLayer, 'id' | 'type'>>;
 
 /**
  * Um arquivo importado no projeto.

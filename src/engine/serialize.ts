@@ -18,10 +18,12 @@
  */
 
 import { BASE_STATE } from './effects.ts';
+import { validarEsquema } from '../criar/api.ts';
+import type { Esquema } from '../criar/api.ts';
 import { compactTracks, healLayerIds } from './project.ts';
 import type {
-  AnimProp, AudioLayer, CountUp, Effect, ImageLayer, Layer, LayerType, MediaAsset, Project,
-  TextLayer, Track, VideoLayer,
+  AnimProp, AudioLayer, CountUp, Effect, ImageLayer, Layer, LayerType, MediaAsset,
+  OverlayLayer, Project, TextLayer, Track, VideoLayer,
 } from './types.ts';
 
 /**
@@ -60,7 +62,14 @@ import type {
  * mais velha e perca a animação sem aviso — `deserializeProject` já recusa
  * formato futuro com mensagem explícita.
  */
-export const PROJECT_FORMAT = 7;
+/**
+ * 7 → 8: existe o tipo `overlay` — um efeito em HTML+CSS ocupando faixa e
+ * tempo. Nada a migrar: um projeto do formato 7 simplesmente não tem nenhum.
+ * O bump é pelo mesmo motivo dos anteriores — abrir um `.frag` com overlay
+ * numa build antiga descartaria a layer em silêncio, porque `readLayer` de lá
+ * devolve `null` pra tipo que não conhece.
+ */
+export const PROJECT_FORMAT = 8;
 
 export interface SerializedProject {
   format: number;
@@ -97,6 +106,10 @@ export type SerializedLayer =
     type: 'text'; text: string; size: number; color: string; font: string; countUp?: CountUp;
   })
   | (SerializedBase & { type: 'image'; fit: number; mediaId: string })
+  | (SerializedBase & {
+    type: 'overlay'; html: string; css: string;
+    schema: Record<string, unknown>; values: Record<string, unknown>;
+  })
   | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
   | (SerializedBase & SerializedSound & { type: 'audio' });
 
@@ -172,6 +185,17 @@ function serializeLayer(l: Layer): SerializedLayer {
   }
   if (l.type === 'image') {
     return { ...base, type: 'image', fit: l.fit, mediaId: l.mediaId };
+  }
+  if (l.type === 'overlay') {
+    // O pacote inteiro vai pro arquivo — ver a nota em `OverlayLayer`. Sem
+    // isso, abrir o projeto noutra máquina dependeria de o efeito estar
+    // instalado lá, e a layer sumiria em silêncio.
+    return {
+      ...base, type: 'overlay',
+      html: l.html, css: l.css,
+      schema: l.schema as Record<string, unknown>,
+      values: l.values,
+    };
   }
 
   const sound: SerializedSound = {
@@ -302,7 +326,10 @@ function readMedia(raw: unknown, layers: readonly Layer[]): MediaAsset[] {
 
   const seen = new Map<string, MediaAsset>();
   for (const l of layers) {
-    if (l.type === 'text') continue;
+    // Layers sem arquivo. A lista precisa ser explícita: o `continue` só pra
+    // texto deixava qualquer tipo novo cair no acesso a `mediaId` logo abaixo
+    // e registrar uma mídia fantasma, com id vazio.
+    if (l.type === 'text' || l.type === 'overlay') continue;
     if (seen.has(l.mediaId)) continue;
     seen.set(l.mediaId, {
       id: l.mediaId,
@@ -356,6 +383,22 @@ function readLayer(
       // layer que nunca tocou no campo, não com uma chave `undefined` a mais.
       ...(countUp ? { countUp } : {}),
     } satisfies TextLayer;
+  }
+
+  if (l.type === 'overlay') {
+    // Schema inválido não descarta a layer: o CSS não precisa dele pra
+    // desenhar, só o painel precisa pra montar os campos. Perder o efeito
+    // inteiro por causa de um descritor errado seria pior que ficar sem os
+    // controles — e `normalizar` já aguenta valores órfãos.
+    const schemaBruto = (typeof l.schema === 'object' && l.schema) ? l.schema as Esquema : {};
+    const schema = validarEsquema(schemaBruto) === null ? schemaBruto : {};
+    return {
+      ...base, type: 'overlay',
+      html: str(l.html, ''),
+      css: str(l.css, ''),
+      schema,
+      values: (typeof l.values === 'object' && l.values) ? l.values as Record<string, unknown> : {},
+    } satisfies OverlayLayer;
   }
 
   if (l.type !== 'image' && l.type !== 'video' && l.type !== 'audio') return null;

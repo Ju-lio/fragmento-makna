@@ -2,7 +2,7 @@ import { PRESETS } from './presets.ts';
 import { DISPLAY_FONT } from './renderer.ts';
 import type {
   AudioLayer, Effect, ImageLayer, Layer, LayerPatch, LayerType, Project, TextLayer,
-  TimeSpan, VideoLayer, VisualLayer,
+  TimeSpan, VideoLayer, VisualLayer, OverlayLayer,
 } from './types.ts';
 
 export type { MediaAsset } from './types.ts';
@@ -225,6 +225,46 @@ export type TrackKind = 'visual' | 'audio';
 
 export const trackKind = (layer: { type: LayerType }): TrackKind =>
   (layer.type === 'audio' ? 'audio' : 'visual');
+
+/**
+ * Uma layer de overlay — um efeito em HTML+CSS ocupando tempo na linha.
+ *
+ * Nasce SEM efeitos de transformação (`effects: []`), ao contrário da layer de
+ * texto: um overlay já traz a própria animação escrita em `@keyframes`, e
+ * empilhar um `fade-up` por cima disso na criação seria o editor discordando do
+ * autor logo de saída. Adicionar continua possível — e útil.
+ */
+export function makeOverlayLayer(overrides: Partial<OverlayLayer> = {}): OverlayLayer {
+  return {
+    id: nextId(),
+    type: 'overlay',
+    name: 'Efeito',
+    start: 0,
+    duration: 3,
+    x: 0,
+    y: 0,
+    rotate: 0,
+    track: 0,
+    effects: [],
+    html: '',
+    css: '',
+    schema: {},
+    values: {},
+    ...overrides,
+  };
+}
+
+/**
+ * Esta layer NÃO referencia um arquivo importado.
+ *
+ * Existe pra que a pergunta seja feita uma vez só. Antes, os lugares que
+ * varriam layers atrás de `mediaId` escreviam `l.type !== 'text'` — o que era
+ * verdade quando texto era o único tipo sem arquivo, e virou armadilha
+ * silenciosa no dia em que o overlay entrou: ler `mediaId` num overlay devolve
+ * `undefined`, que "funciona" em algumas comparações e não em outras.
+ */
+export const semArquivo = (layer: Layer): layer is TextLayer | OverlayLayer =>
+  layer.type === 'text' || layer.type === 'overlay';
 
 /** Só as layers que dividem espaço de faixa com esta. */
 export function layersOfKind(layers: readonly Layer[], kind: TrackKind): Layer[] {

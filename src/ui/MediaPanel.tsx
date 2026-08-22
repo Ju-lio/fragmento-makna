@@ -1,3 +1,4 @@
+import { semArquivo } from '../engine/project.ts';
 import type { MediaAsset, Project } from '../engine/types.ts';
 
 /**
@@ -41,7 +42,7 @@ export function MediaPanel({ project, onUse, onRemove }: MediaPanelProps) {
         // Quantas layers usam este arquivo. Zero é normal e não é problema:
         // importar e ainda não ter colocado na linha é um estado legítimo.
         const uses = project.layers.filter(
-          l => l.type !== 'text' && l.mediaId === asset.id,
+          l => !semArquivo(l) && l.mediaId === asset.id,
         ).length;
 
         return (

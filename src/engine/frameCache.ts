@@ -154,6 +154,11 @@ export function renderSignature(project: Project): string {
     // faria um projeto reaberto nunca reaproveitar nada — e dois clipes do
     // mesmo arquivo pareceriam mídias diferentes.
     if (l.type === 'image') return [...common, l.fit, l.mediaId];
+    // O overlay: o pacote INTEIRO entra. Editar o CSS de um efeito muda cada
+    // pixel dele, e sem isto o cache continuaria servindo os quadros do CSS
+    // antigo — o modo de falha mais desagradável que um cache tem, porque a
+    // tela mostra uma coisa e o arquivo salvo tem outra.
+    if (l.type === 'overlay') return [...common, l.html, l.css, l.values];
     return [...common, l.fit, l.trimStart, l.mediaId];
   });
 

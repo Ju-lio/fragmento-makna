@@ -163,7 +163,7 @@ export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) 
         </>
       ) : (
         <>
-          {layer.type !== 'audio' && (
+          {layer.type !== 'audio' && layer.type !== 'overlay' && (
             <NumField label="Escala base" value={layer.fit} step={0.05} onChange={v => set({ fit: v })} />
           )}
 

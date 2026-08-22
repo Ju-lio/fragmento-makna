@@ -4,7 +4,7 @@ import {
   defaultProject, makeTextLayer, makeImageLayer, makeVideoLayer, makeAudioLayer,
 } from '../engine/project.ts';
 import {
-  clone, compactTracks, nextId, pasteSlot, projectDuration, splitLayer,
+  clone, compactTracks, nextId, pasteSlot, projectDuration, semArquivo, splitLayer,
   topTrackOf, trackKind,
 } from '../engine/project.ts';
 import type { TrackKind } from '../engine/project.ts';
@@ -728,7 +728,11 @@ export default function App() {
       ...p,
       media: p.media.filter(m => m.id !== asset.id),
       layers: compactTracks(
-        p.layers.filter(l => l.type === 'text' || l.mediaId !== asset.id),
+        // `semArquivo` em vez de `!== 'text'`: um overlay também não tem
+        // `mediaId`, e ler o campo nele devolveria `undefined !== id` — verdade
+        // por acidente. Funcionaria, e pararia de funcionar no dia em que
+        // alguém invertesse a comparação.
+        p.layers.filter(l => semArquivo(l) || l.mediaId !== asset.id),
       ),
     }));
   };
