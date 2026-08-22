@@ -92,9 +92,21 @@ function viaCanvas(filtro, t) {
   ctx.filter = 'none';
 }
 
-// custo do próprio getImageData, descontado de todas as medidas
+/**
+ * Custo do próprio getImageData, descontado de todas as medidas.
+ *
+ * Medido com o canvas JÁ PINTADO de propósito: o Chrome tem caminho rápido
+ * pra canvas nunca desenhado e devolvia 0,1ms pra uma leitura de 8MB, o que
+ * fazia esta linha subtrair quase nada e inflar todo o resto.
+ */
 let leitura = 0;
-{ const a = []; for (let i = 0; i < 12; i++) { const t0 = performance.now(); ctx.getImageData(0, 0, W, H); a.push(performance.now() - t0); } leitura = med(a); }
+{
+  ctx.fillStyle = '#345'; ctx.fillRect(0, 0, W, H);
+  const a = [];
+  for (let i = 0; i < 12; i++) { const t0 = performance.now(); ctx.getImageData(0, 0, W, H); a.push(performance.now() - t0); }
+  leitura = med(a);
+  ctx.clearRect(0, 0, W, H);
+}
 
 const R = { navegador: navigator.userAgent, leitura: +leitura.toFixed(1) };
 
@@ -236,9 +248,17 @@ for (const seg of [30, 60, 180]) {
     + `+${(f * dsh.dom / 60000).toFixed(1)} min (efeito com glow pesado)`);
 }
 p('');
-p('referência — Firefox 152 nesta mesma máquina:', 'nota');
-p('  sem filtro DOM 2ms / canvas 2ms · blur(40px) DOM 98ms / canvas 152ms', 'nota');
-p('  drop-shadow(34px) DOM 109ms / canvas 175ms · 2000 nós 111ms', 'nota');
+p('referência — medido em 22/08/2026, mesma máquina:', 'nota');
+p('  Chrome 151   sem filtro DOM 16.8 / canvas  9.5   -> sobretaxa DOM 7.3ms', 'nota');
+p('               blur(40px) DOM 45.3 / canvas 53.1', 'nota');
+p('               drop-shadow(34px) DOM 42.8 / canvas 58.2', 'nota');
+p('               100/500/2000 nós: 27 / 45 / 143 ms', 'nota');
+p('  Firefox 152  sem filtro DOM  2   / canvas  2', 'nota');
+p('               blur(40px) DOM 98   / canvas 152', 'nota');
+p('               drop-shadow(34px) DOM 109 / canvas 175', 'nota');
+p('', 'nota');
+p('  Nos dois navegadores o DOM sai MAIS BARATO que o canvas 2D nos filtros.', 'nota');
+p('  O que escala mal é nº de nós — por isso partícula de vídeo é WebGL.', 'nota');
 
 status.textContent = 'pronto.';
 window.RESULTADO = R;
