@@ -20,7 +20,7 @@ import { Win } from '../ui/Win.tsx';
 import { CamposDeParams } from '../ui/CamposDeParams.tsx';
 import { TIPOS, validarManifesto, padroes, variaveisCss, normalizar } from './api.ts';
 import { Overlay } from './overlay.ts';
-import { recursosExternos, temStyleInline } from './svg.ts';
+import { analisar, podeCarregar } from './validador.ts';
 import { SEMENTES, ROTULO, ONDE_APARECE } from './sementes.ts';
 import { guardar } from './bandeja.ts';
 import type { Esquema, Tipo } from './api.ts';
@@ -84,12 +84,16 @@ export function Criar() {
    */
   const chaveDosVars = JSON.stringify(vars);
 
-  // Avisos que não impedem de rodar — a §6 do LIMITES.md é a lista completa;
-  // estes dois são os que já dá pra detectar sem o pacote inteiro.
-  const avisos = [
-    ...recursosExternos(fonte.css).map(u => `Recurso externo não carrega no quadro final: ${u}`),
-    ...(temStyleInline(fonte.html) ? ['<style> dentro do HTML não passa pelo CDATA — mova pro CSS.'] : []),
-  ];
+  /**
+   * O mesmo validador que a importação de um pacote de terceiro vai usar.
+   *
+   * Ao vivo, enquanto se digita: o valor de cada checagem está em ela aparecer
+   * ANTES de o efeito sair daqui. Um `Math.random()` só se manifesta como
+   * tremeliques no MP4 de outra pessoa.
+   */
+  const problemas = manifesto
+    ? analisar({ meta: manifesto.meta, params: manifesto.params, html: fonte.html, css: fonte.css })
+    : [];
 
   // --- render ------------------------------------------------------------
   // O Overlay é remontado só quando HTML ou CSS mudam; mexer num slider ou no
@@ -175,10 +179,16 @@ export function Criar() {
             value={textoDaAba}
             onChange={e => editar(aba, e.target.value)}
           />
-          {aba === 'manifesto' && (problema
-            ? <div className="err">{problema}</div>
-            : <div className="criar-ok">✓ manifesto válido</div>)}
-          {avisos.map((a, i) => <div className="criar-aviso" key={i}>⚠ {a}</div>)}
+          {problema && <div className="err">{problema}</div>}
+          {!problema && problemas.length === 0 && (
+            <div className="criar-ok">✓ sem problemas — pode usar</div>
+          )}
+          {problemas.map((pb, i) => (
+            <div className={`criar-nota criar-nota-${pb.nivel}`} key={i}>
+              <b>{pb.nivel === 'erro' ? '✕' : pb.nivel === 'aviso' ? '⚠' : '⏱'}</b> {pb.mensagem}
+              {pb.saida && <div className="criar-saida">→ {pb.saida}</div>}
+            </div>
+          ))}
           {erroRender && <div className="err">Não deu pra desenhar: {erroRender}</div>}
         </Win>
 
@@ -231,7 +241,7 @@ export function Criar() {
       <div className="criar-enviar">
         <button
           className="btn btn-gold"
-          disabled={Boolean(problema)}
+          disabled={Boolean(problema) || !podeCarregar(problemas)}
           onClick={() => {
             guardar({
               nome: manifesto?.meta?.nome ?? 'Efeito',
@@ -243,7 +253,9 @@ export function Criar() {
             setEnviado(true);
             setTimeout(() => setEnviado(false), 2600);
           }}
-          title={problema ? 'Corrija o manifesto primeiro' : 'Deixa o efeito pronto pro editor pegar'}
+          title={problema || !podeCarregar(problemas)
+            ? 'Corrija os erros primeiro'
+            : 'Deixa o efeito pronto pro editor pegar'}
         >
           ▶ USAR NO EDITOR
         </button>

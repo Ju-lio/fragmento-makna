@@ -1252,3 +1252,18 @@
 
 .criar-enviar { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .criar-enviado { color: var(--mint); font-size: 9px; }
+
+/* As notas do validador. Três níveis, três cores — e a saída ("→ faça isso")
+   recuada, porque ela é a parte que a pessoa vai reler. */
+.criar-nota {
+  font-size: 9px;
+  line-height: 1.6;
+  margin-top: 4px;
+  padding: 3px 5px;
+  border-left: 3px solid;
+  background: rgba(0, 0, 0, .1);
+}
+.criar-nota-erro  { border-color: var(--coral); color: var(--coral-d); }
+.criar-nota-aviso { border-color: var(--gold);  color: var(--gold-d); }
+.criar-nota-custo { border-color: var(--sky);   color: var(--ink-soft); }
+.criar-saida { color: var(--ink-mute); padding-left: 12px; }

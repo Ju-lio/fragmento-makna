@@ -29,7 +29,7 @@ medido em Chrome 151. As três coisas que sustentam o desenho:
 - o overlay **nunca** vai ler os pixels do vídeo (44,8 ms e 168 kB por quadro) —
   por isso existem slots
 
-**Pronto:** fases **A**, **B** e o grosso da **C**. Um efeito escrito em HTML+CSS
+**Pronto:** fases **A**, **B**, o grosso da **C**, e o **F1** (validador). Um efeito escrito em HTML+CSS
 já vai do `/criar` até a linha do tempo, com controles gerados do próprio
 efeito, sobrevive ao autosave e entra no export. 621 testes.
 
@@ -139,8 +139,12 @@ isso é `animation-delay: calc(var(--i) * .05s)`, medido funcionando.
 
 ### Fase F — abrir pra comunidade
 
-**F1. Validador** — a §6 do [LIMITES.md](LIMITES.md) já é a especificação: 4
-erros que recusam a carga, 6 avisos amarelos, 4 avisos de custo.
+**F1. Validador** ✅ *feito* — implementa a §6 do [LIMITES.md](LIMITES.md): 4
+erros que recusam a carga, 7 avisos, 3 avisos de custo. Roda ao vivo no
+`/criar` enquanto se digita, e é o mesmo módulo que a importação vai usar. Puro,
+27 testes — incluindo o que garante que **as quatro sementes passam limpas**,
+senão a primeira coisa que a pessoa vê ao abrir a página é uma reclamação sobre
+o nosso próprio código.
 **F2. Sandbox** — `OffscreenCanvas` em Worker pro pixel, `iframe` isolado pro DOM.
 *Importar código de terceiro sem isolamento dá acesso à aba inteira e ao
 IndexedDB do projeto.* Precisa entrar no desenho antes de existir importação, não

@@ -74,7 +74,9 @@ src/
     api.ts             meta + params tipados: o contrato autor ↔ editor
     janela.ts          a janela de tempo do efeito como esquema de params
     bandeja.ts         o slot em localStorage entre /criar e o editor
+    validador.ts       o que está errado num efeito, antes de estragar um vídeo
     bandeja.ts         o slot em localStorage entre /criar e o editor
+    validador.ts       o que está errado num efeito, antes de estragar um vídeo
     svg.ts             monta o SVG do overlay (puro, testável em node)
     overlay.ts         HTML+CSS do autor → bitmap de um instante
     sementes.ts        os efeitos de partida do /criar

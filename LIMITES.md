@@ -287,32 +287,46 @@ no pacote e repetida com `background-repeat`.
 
 ---
 
-## 6. Avisos que o editor deve dar
+## 6. Avisos que o editor dá
 
-Esta seção é a especificação do validador. Cada item é detectável
-automaticamente, na hora de escrever ou de importar.
+Esta seção era a especificação do validador; agora ela é a lista do que ele
+**já checa**, ao vivo enquanto você digita no `/criar` e na hora de importar um
+pacote. O código é [`src/criar/validador.ts`](src/criar/validador.ts).
 
-### Recusar a carga (erro)
+Três níveis, e a diferença importa: **erro** não carrega, **aviso** carrega mas
+provavelmente não faz o que você quis, **custo** funciona e vai doer no export.
+
+### Recusa a carga (erro)
 1. Falta `meta.tipo` no manifesto, ou tipo desconhecido.
-2. `params` declara tipo que não existe.
-3. CSS não parseia depois do empacotamento em `CDATA`.
-4. Referência a `url()` de host externo.
+2. `params` declara tipo que não existe, ou nome de param que quebraria a
+   variável CSS.
+3. Chaves `{}` desbalanceadas no CSS.
+4. `url()` ou `@import` de host externo.
 
-### Avisar em amarelo (carrega, mas provavelmente quebrado)
-5. `Math.random()`, `Date.now()`, `new Date()`, `performance.now()` no código.
-6. `<canvas>`, `WebGLRenderingContext`, `THREE.` no código.
+### Avisa em amarelo (carrega, mas provavelmente não faz o que você quis)
+5. `Math.random()`, `Date.now()`, `new Date()`, `performance.now()`.
+6. `<canvas>`, `WebGL`, `THREE.`.
 7. `font-family` sem nenhuma fonte do pacote na lista.
 8. `backdrop-filter` sem nenhum slot declarado — sinal quase certo de que a
    pessoa espera desfocar o vídeo e não vai.
-9. `@import`, `fetch(`, `XMLHttpRequest`.
+9. `fetch(`, `XMLHttpRequest`, `import()`.
 10. `<style>` dentro do HTML do efeito (não passa pelo `CDATA`).
+11. **Handler inline** (`onclick=`, `onload=`…). Nunca dispara: o palco é um
+    iframe com sandbox sem `allow-scripts`, e o quadro é imagem estática. O
+    navegador ainda reclama no console, o que faz o autor procurar defeito no
+    lugar errado.
 
-### Avisar em cinza (funciona, mas custa)
-11. Mais de ~500 elementos no DOM do efeito.
-12. `blur`/`drop-shadow` com raio acima de ~30px.
-13. Efeito que cobre o quadro inteiro por mais de ~20% da duração do projeto.
-14. `position: fixed`, `overflow: scroll`, `iframe` — **[não verificado]**,
-    comportamento dentro do `foreignObject` ainda não testado.
+### Avisa em cinza (funciona, mas custa)
+12. Mais de 500 elementos no HTML do efeito.
+13. `blur`/`drop-shadow` com raio acima de 30px.
+14. Efeito que cobre mais de 20% da duração do projeto.
+
+**Ainda não checado:** `position: fixed`, `overflow: scroll`, `iframe` — o
+comportamento deles dentro do `foreignObject` não foi testado, e avisar sobre o
+que não se mediu seria adivinhação.
+
+Cada aviso vem com uma **saída**, não só a regra: "é proibido" não ensina, "o
+vídeo exportado vai tremer — use `rng()`" ensina.
 
 ---
 
