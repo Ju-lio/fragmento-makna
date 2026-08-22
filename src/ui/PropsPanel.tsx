@@ -1,5 +1,6 @@
 import { NumField, TextField, Field } from './Win.tsx';
 import { CamposDeParams } from './CamposDeParams.tsx';
+import { MISTURAS } from '../criar/api.ts';
 import { maxDuration } from '../engine/project.ts';
 import { seedCountUpFromText } from '../engine/countUp.ts';
 import { EASE_NAMES } from '../engine/easings.ts';
@@ -180,6 +181,26 @@ export function PropsPanel({ layer, onChange, onDetachAudio }: PropsPanelProps) 
           ) : (
             <div className="hint">Este efeito não declarou controles.</div>
           )}
+
+          {/*
+            A mistura fica no painel e não só no manifesto porque quem monta o
+            vídeo também tem direito de decidir: o mesmo efeito de brilho serve
+            como `screen` sobre um clipe escuro e `overlay` sobre um claro.
+          */}
+          <Field label="Mistura">
+            <div className="misturas">
+              {MISTURAS.map(m => (
+                <button
+                  key={m}
+                  className={`btn btn-sm${(layer.blend ?? 'normal') === m ? ' on' : ''}`}
+                  onClick={() => set({ blend: m })}
+                  title={m === 'normal' ? 'Desenha por cima, sem misturar' : `mix-blend-mode: ${m}`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </Field>
 
           <Field label="Editar">
             <a className="btn btn-sm" href="/criar.html?tipo=efeito" target="_blank" rel="noreferrer">

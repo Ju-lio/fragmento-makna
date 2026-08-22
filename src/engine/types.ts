@@ -9,7 +9,7 @@
  */
 
 import type { EaseName } from './easings.ts';
-import type { Esquema } from '../criar/api.ts';
+import type { Esquema, Mistura } from '../criar/api.ts';
 
 // --- efeitos ------------------------------------------------------------
 
@@ -188,6 +188,15 @@ export interface OverlayLayer extends LayerBase {
   schema: Esquema;
   /** Valores atuais dos controles. Chaves ausentes caem no padrão do schema. */
   values: Record<string, unknown>;
+  /**
+   * Como este efeito se mistura com o que está embaixo. Ausente = `normal`.
+   *
+   * Fica na LAYER e não só no `meta` porque quem monta o vídeo também tem
+   * direito de decidir: o mesmo efeito de brilho serve como `screen` sobre um
+   * clipe escuro e como `overlay` sobre um claro, e obrigar a editar o CSS pra
+   * isso seria absurdo. O autor escolhe o padrão; o usuário troca.
+   */
+  blend?: Mistura;
 }
 
 export interface ImageLayer extends LayerBase {

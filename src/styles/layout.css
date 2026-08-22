@@ -1145,6 +1145,15 @@
    /CRIAR — o playground de efeito (entry separado, ver criar.html)
    ========================================================================= */
 .criar {
+  /*
+    `position: relative; z-index: 1` NÃO é decoração: o `body::before` é o
+    papel de parede pontilhado, e ele pinta em `z-index: 0` por cima de tudo
+    que estiver no fluxo normal. O `.app` do editor sempre teve esta mesma
+    linha; a página de criar nasceu sem, e os pontos apareciam SOBRE os
+    painéis em vez de atrás.
+  */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1267,3 +1276,14 @@
 .criar-nota-aviso { border-color: var(--gold);  color: var(--gold-d); }
 .criar-nota-custo { border-color: var(--sky);   color: var(--ink-soft); }
 .criar-saida { color: var(--ink-mute); padding-left: 12px; }
+
+/* Os modos de mistura: grade de dois, porque são oito nomes curtos e uma
+   fileira só espremeria cada um em três letras. */
+.misturas { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.misturas .btn { justify-content: flex-start; text-transform: none; font-size: 9px; }
+
+.criar-fundos { align-items: center; margin-bottom: 5px; }
+.criar-fundos .btn { flex: 0 0 auto; }
+.criar-rotulo-fundo { flex: 1; color: var(--ink-mute); font-size: 9px; }
+/* Com amostra opaca por baixo, o xadrez só atrapalharia a leitura da cor. */
+.criar-tela-caixa.liso { background-image: none; background-color: #000; }

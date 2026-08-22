@@ -2,6 +2,7 @@ import { resolveState } from './effects.ts';
 import { drawOrder } from './project.ts';
 import { coversAt } from './timeSpan.ts';
 import { displayText } from './countUp.ts';
+import { composicaoDe } from '../criar/api.ts';
 import type { ImageLayer, Layer, LayerState, OverlayLayer, Project, VideoLayer } from './types.ts';
 
 /** Um quadro já decodificado. `VideoFrame` e `ImageBitmap` servem os dois. */
@@ -146,8 +147,15 @@ export function drawFrame(
       // escala, rotação, opacidade dos efeitos) já foi aplicada acima, como
       // pra qualquer outra.
       const quadro = overlayFor?.(layer, t) ?? null;
-      if (quadro) ctx.drawImage(quadro, -W / 2, -H / 2, W, H);
-      else degraded = true;
+      if (quadro) {
+        // A mistura é do COMPOSITOR, não do CSS: `mix-blend-mode` dentro do
+        // efeito só enxerga o próprio fundo (transparente), nunca o vídeo.
+        // Sem esta linha, grão de filme é impossível — `feTurbulence` gera
+        // ruído opaco e cobriria o quadro com uma chapa cinza.
+        ctx.globalCompositeOperation = composicaoDe(layer.blend);
+        ctx.drawImage(quadro, -W / 2, -H / 2, W, H);
+        ctx.globalCompositeOperation = 'source-over';
+      } else degraded = true;
     }
 
     ctx.restore();

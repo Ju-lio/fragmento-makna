@@ -178,7 +178,22 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
        */
       aimAt(project, t);
 
-      const pronto = framesReadyAt(project, t);
+      /**
+       * O overlay entra na MESMA pergunta que o vídeo.
+       *
+       * Ele estava fora, e o resultado era o efeito piscando: quando o quadro
+       * do overlay não estava pronto, o laço repintava mesmo assim e a layer
+       * simplesmente não aparecia. Segurar a imagem anterior por alguns
+       * milissegundos transforma isso num congelamento que não se percebe —
+       * exatamente o que o vídeo já fazia.
+       *
+       * `preparar` vem ANTES da pergunta: é ele que põe o trabalho na fila.
+       */
+      overlayFrames.preparar(project, t, project.width, project.height).then(feito => {
+        if (feito) player.invalidate();
+      });
+
+      const pronto = framesReadyAt(project, t) && overlayFrames.prontosEm(project, t);
 
       /**
        * Desenhar sem o quadro deixa uma DÍVIDA: quando ele chegar, alguém tem
@@ -209,23 +224,6 @@ export function Stage({ project, onResize, selectedId, onSelect, onChange }: Sta
       } else {
         holdT = -1;
       }
-
-      /**
-       * O overlay é pedido, não esperado.
-       *
-       * Rasterizar HTML+CSS leva dezenas de milissegundos, e o laço de pintura
-       * não pode ficar preso nisso. `preparar` dispara o trabalho; `quadroDe`
-       * responde na hora com o que já existe. Enquanto não existe, a layer não
-       * desenha e `drawFrame` marca degradado — a mesma regra do vídeo, e pela
-       * mesma razão: pintar o quadro do instante vizinho seria mentir.
-       *
-       * O `invalidate` no fim é o que traz o laço de volta quando o quadro
-       * fica pronto: sem ele, um preview parado esperaria pra sempre, porque
-       * nada mais suja o frame.
-       */
-      overlayFrames.preparar(project, t, project.width, project.height).then(pronto => {
-        if (pronto) player.invalidate();
-      });
 
       const { degraded } = drawFrame(ctx, project, t, {
         fastPreview,

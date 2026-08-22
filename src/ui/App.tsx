@@ -6,7 +6,7 @@ import {
 } from '../engine/project.ts';
 import { espiar, limpar } from '../criar/bandeja.ts';
 import { SEMENTES } from '../criar/sementes.ts';
-import type { Esquema } from '../criar/api.ts';
+import type { Esquema, Meta } from '../criar/api.ts';
 import {
   clone, compactTracks, nextId, pasteSlot, projectDuration, semArquivo, splitLayer,
   topTrackOf, trackKind,
@@ -570,12 +570,14 @@ export default function App() {
    */
   const addEfeito = () => {
     const daBandeja = espiar();
+    const semente = JSON.parse(SEMENTES.efeito.manifesto) as { meta: Meta; params: Esquema };
     const fonte = daBandeja ?? {
       nome: 'Raio',
       html: SEMENTES.efeito.html,
       css: SEMENTES.efeito.css,
-      schema: (JSON.parse(SEMENTES.efeito.manifesto) as { params: Esquema }).params,
+      schema: semente.params,
       values: {},
+      mistura: semente.meta.mistura,
     };
     const layer = makeOverlayLayer({
       name: fonte.nome,
@@ -585,6 +587,7 @@ export default function App() {
       css: fonte.css,
       schema: fonte.schema,
       values: fonte.values,
+      ...(fonte.mistura ? { blend: fonte.mistura } : {}),
     });
     commit(p => ({
       ...p,

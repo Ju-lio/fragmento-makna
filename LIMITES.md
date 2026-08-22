@@ -208,6 +208,36 @@ O vídeo **não está no DOM**. Consequências:
 **[medido]** Colocar um quadro 1080p dentro do overlay custaria **44,8ms e
 168kb por quadro** — inviável.
 
+### 4.1b Misturar com o que está embaixo é do MANIFESTO, não do CSS
+
+`mix-blend-mode` dentro do seu efeito funciona — mas só enxerga o fundo do
+**próprio efeito**, que é transparente. Ele nunca alcança o vídeo.
+
+Para misturar com o que está embaixo, declare no manifesto:
+
+```json
+{ "meta": { "tipo": "filtro", "nome": "Granulado", "mistura": "overlay" } }
+```
+
+Os valores são os mesmos nomes do `mix-blend-mode`: `normal`, `screen`,
+`multiply`, `overlay`, `soft-light`, `lighten`, `darken`, `difference`. Quem
+compõe é o canvas, não o CSS. No editor, quem monta o vídeo pode trocar isso no
+painel — o autor escolhe o padrão.
+
+**Por que isso importa:** sem mistura, **grão de filme é impossível**.
+`feTurbulence` **gera** ruído — ele não recebe o que está embaixo —, então
+sozinho ele cobre o quadro com uma chapa cinza opaca em vez de granular.
+
+Duas armadilhas relacionadas, as duas medidas:
+
+- **`feTurbulence` também sorteia o alpha.** Boa parte do ruído sai
+  transparente e some na mistura. Force `alpha = 1` com
+  `<feComponentTransfer><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>`.
+- **Em `overlay`, pixel transparente não muda nada e cinza médio também não.**
+  Uma vinheta que precise escurecer as bordas deve ter o centro
+  **transparente** — um cinza opaco ali cobriria o que estiver abaixo dele
+  dentro do próprio efeito.
+
 **Como fazer mesmo assim:** declare um **slot**. Você marca o elemento, o CSS
 posiciona e anima, e o **compositor desenha o vídeo ali**:
 

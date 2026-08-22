@@ -56,6 +56,11 @@ vídeo".
 pode sair com uma layer faltando, e o pré-render guarda quadros como
 definitivos — servir um sem o overlay envenenaria o cache.
 
+**A mistura fica na LAYER, não só no manifesto.** O autor escolhe o padrão
+(`meta.mistura`); quem monta o vídeo troca no painel. O mesmo efeito de brilho
+serve como `screen` sobre um clipe escuro e `overlay` sobre um claro, e obrigar
+a editar o CSS pra isso seria absurdo.
+
 **A bandeja é deliberadamente burra:** um slot em `localStorage`, sobrescrito a
 cada envio e consumido na chegada. Não é biblioteca de efeitos — isso é a fase
 F, e vai precisar de decisões (versão, atualização, conflito) que não cabem num
@@ -92,3 +97,8 @@ importação de terceiros vai exigir.
 - **Custo real.** Um overlay cobrindo o quadro inteiro o tempo todo é o pior
   caso de export medido: ~231 ms/quadro em 1080p. Ver
   [LIMITES.md](../LIMITES.md) §5.
+- **O efeito segura a imagem enquanto rasteriza.** Se o quadro do overlay não
+  ficar pronto a tempo, o preview mantém a imagem anterior por alguns
+  milissegundos em vez de repintar sem ele — a mesma regra do vídeo. Sem isso o
+  efeito PISCAVA durante o scrub. O export não usa esse atalho: lá se espera de
+  verdade.

@@ -158,7 +158,7 @@ export function renderSignature(project: Project): string {
     // pixel dele, e sem isto o cache continuaria servindo os quadros do CSS
     // antigo — o modo de falha mais desagradável que um cache tem, porque a
     // tela mostra uma coisa e o arquivo salvo tem outra.
-    if (l.type === 'overlay') return [...common, l.html, l.css, l.values];
+    if (l.type === 'overlay') return [...common, l.html, l.css, l.values, l.blend];
     return [...common, l.fit, l.trimStart, l.mediaId];
   });
 

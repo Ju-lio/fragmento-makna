@@ -138,7 +138,7 @@ export const SEMENTES: Record<Tipo, Semente> = {
 
   filtro: {
     manifesto: `{
-  "meta": { "tipo": "filtro", "nome": "Granulado", "autor": "voce" },
+  "meta": { "tipo": "filtro", "nome": "Granulado", "autor": "voce", "mistura": "overlay" },
   "params": {
     "quantidade": { "tipo": "num", "padrao": 0.22, "min": 0, "max": 1, "passo": 0.01,
                     "rotulo": "Quantidade" },
@@ -151,13 +151,27 @@ export const SEMENTES: Record<Tipo, Semente> = {
     html: `<svg width="0" height="0">
   <filter id="grao">
     <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" seed="5"/>
+    <!-- Cinza, e OPACO. O feTurbulence também sorteia o alpha, e sem forçar
+         alpha=1 boa parte do ruído sai transparente — some na mistura e o
+         grão vira nada. -->
     <feColorMatrix type="saturate" values="0"/>
+    <feComponentTransfer>
+      <feFuncA type="discrete" tableValues="1"/>
+    </feComponentTransfer>
   </filter>
 </svg>
 <div class="grao"></div>
 <div class="vinheta"></div>`,
-    css: `/* Grão de filme. feTurbulence é ruído procedural e tem seed,
-   então o mesmo instante dá sempre o mesmo grão — sem isso o vídeo
+    css: `/* Grão de filme.
+
+   ATENÇÃO ao que este efeito ensina: feTurbulence GERA ruído — ele não
+   recebe o que está embaixo. Sozinho, ele cobre o quadro com uma chapa
+   cinza opaca. Quem faz o grão granular em vez de cobrir é a MISTURA,
+   declarada no manifesto ("mistura": "overlay"): ela é aplicada na
+   composição, pelo canvas, porque mix-blend-mode aqui dentro só enxerga
+   o fundo do próprio efeito. Ver LIMITES.md §4.1.
+
+   O seed fixo é o que mantém o grão determinístico: sem ele o vídeo
    sairia fervendo. Ver LIMITES.md §2.1. */
 
 .grao {
@@ -168,11 +182,14 @@ export const SEMENTES: Record<Tipo, Semente> = {
   transform-origin: center;
 }
 
+/* A vinheta escurece as bordas. Em overlay, pixel TRANSPARENTE não muda nada
+   e escuro escurece — então o centro fica transparente de propósito. Um
+   cinza opaco no centro cobriria o grão que está logo abaixo. */
 .vinheta {
   position: absolute; inset: 0;
   background: radial-gradient(ellipse at 50% 50%,
               transparent 42%,
-              rgba(0,0,0, calc(var(--p-vinheta) * 0.85)) 100%);
+              rgba(0,0,0, calc(0.2 + var(--p-vinheta) * 0.6)) 100%);
 }`,
   },
 

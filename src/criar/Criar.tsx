@@ -18,12 +18,37 @@
 import { useEffect, useRef, useState } from 'react';
 import { Win } from '../ui/Win.tsx';
 import { CamposDeParams } from '../ui/CamposDeParams.tsx';
-import { TIPOS, validarManifesto, padroes, variaveisCss, normalizar } from './api.ts';
+import { TIPOS, validarManifesto, padroes, variaveisCss, normalizar, composicaoDe } from './api.ts';
 import { Overlay } from './overlay.ts';
 import { analisar, podeCarregar } from './validador.ts';
 import { SEMENTES, ROTULO, ONDE_APARECE } from './sementes.ts';
 import { guardar } from './bandeja.ts';
-import type { Esquema, Tipo } from './api.ts';
+import type { Esquema, Mistura, Tipo } from './api.ts';
+
+/**
+ * Um "quadro de vídeo" pra compor por cima.
+ *
+ * Não é enfeite: sem alguma coisa embaixo, `screen`, `multiply` e `overlay`
+ * não mostram nada, e quem escreve um granulado não tem como julgar o
+ * resultado. Tem claro, escuro e cor saturada de propósito — os três lugares
+ * onde uma mistura se comporta diferente.
+ */
+function desenharAmostra(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const g = ctx.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#123b63');
+  g.addColorStop(0.55, '#6f7f95');
+  g.addColorStop(1, '#0d1622');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 14; i++) {
+    ctx.fillStyle = `hsl(${i * 26}, 70%, ${28 + (i % 5) * 12}%)`;
+    ctx.fillRect((i * 137) % w, (i * 83) % h, w * 0.07, h * 0.12);
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = `700 ${Math.round(h * 0.09)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('VÍDEO', w / 2, h * 0.55);
+}
 
 /** `criar.html?tipo=filtro` abre direto no tipo, pra servir de link. */
 function tipoDaUrl(): Tipo {
@@ -43,6 +68,15 @@ export function Criar() {
   const [erroRender, setErroRender] = useState('');
   const [ms, setMs] = useState(0);
   const [enviado, setEnviado] = useState(false);
+  /**
+   * Compor sobre o quê.
+   *
+   * O xadrez mostra a transparência, e era o único fundo — o que fazia um
+   * efeito de MISTURA ser impossível de julgar: `screen` sobre o nada não
+   * mostra nada. A amostra é o padrão porque, num projeto de verdade, o efeito
+   * está sempre por cima de alguma coisa.
+   */
+  const [fundo, setFundo] = useState<'amostra' | 'xadrez'>('amostra');
 
   const telaRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<Overlay | null>(null);
@@ -61,7 +95,7 @@ export function Criar() {
   };
 
   // --- validação ---------------------------------------------------------
-  let manifesto: { meta?: { nome?: string }; params?: Esquema } | null = null;
+  let manifesto: { meta?: { nome?: string; mistura?: Mistura }; params?: Esquema } | null = null;
   let problema: string | null = null;
   try {
     manifesto = JSON.parse(fonte.manifesto);
@@ -125,7 +159,12 @@ export function Criar() {
         if (cancelado) return;
         const ctx = tela.getContext('2d')!;
         ctx.clearRect(0, 0, tela.width, tela.height);
+        if (fundo === 'amostra') desenharAmostra(ctx, tela.width, tela.height);
+        // A mistura vem do `meta`, e é a MESMA conta que o editor faz — se
+        // divergissem, o preview mentiria.
+        ctx.globalCompositeOperation = composicaoDe(manifesto?.meta?.mistura);
         ctx.drawImage(img, 0, 0, tela.width, tela.height);
+        ctx.globalCompositeOperation = 'source-over';
         setErroRender('');
         setMs(Math.round(performance.now() - inicio));
       } catch (e) {
@@ -137,7 +176,8 @@ export function Criar() {
     // `vars` fora do array de propósito: quem representa ele aqui é
     // `chaveDosVars` — ver a nota na declaração.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonte.html, fonte.css, t, chaveDosVars]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonte.html, fonte.css, t, chaveDosVars, fundo, manifesto?.meta?.mistura]);
 
   const textoDaAba = fonte[aba];
 
@@ -195,7 +235,15 @@ export function Criar() {
         <Win title="COMO FICA" className="criar-col">
           {/* Xadrez por baixo: o overlay é transparente, e sem isso não dá pra
               distinguir "fundo preto" de "nada desenhado". */}
-          <div className="criar-tela-caixa">
+          <div className="row criar-fundos">
+            <span className="criar-rotulo-fundo">compor sobre:</span>
+            {(['amostra', 'xadrez'] as const).map(f => (
+              <button key={f} className={`btn btn-sm${fundo === f ? ' on' : ''}`} onClick={() => setFundo(f)}>
+                {f}
+              </button>
+            ))}
+          </div>
+          <div className={`criar-tela-caixa${fundo === 'amostra' ? ' liso' : ''}`}>
             {/*
               Renderiza em 1280x720 e mostra reduzido, em vez de renderizar no
               tamanho da caixa. Se o preview fosse 640 de largura, quem escreve

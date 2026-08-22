@@ -18,8 +18,8 @@
  */
 
 import { BASE_STATE } from './effects.ts';
-import { validarEsquema } from '../criar/api.ts';
-import type { Esquema } from '../criar/api.ts';
+import { validarEsquema, MISTURAS } from '../criar/api.ts';
+import type { Esquema, Mistura } from '../criar/api.ts';
 import { compactTracks, healLayerIds } from './project.ts';
 import type {
   AnimProp, AudioLayer, CountUp, Effect, ImageLayer, Layer, LayerType, MediaAsset,
@@ -109,6 +109,7 @@ export type SerializedLayer =
   | (SerializedBase & {
     type: 'overlay'; html: string; css: string;
     schema: Record<string, unknown>; values: Record<string, unknown>;
+    blend?: Mistura;
   })
   | (SerializedBase & SerializedSound & { type: 'video'; fit: number })
   | (SerializedBase & SerializedSound & { type: 'audio' });
@@ -195,6 +196,9 @@ function serializeLayer(l: Layer): SerializedLayer {
       html: l.html, css: l.css,
       schema: l.schema as Record<string, unknown>,
       values: l.values,
+      // Condicional, como o `countUp`: `blend: undefined` sai igual no JSON
+      // mas NÃO é `deepEqual` a uma layer construída sem tocar no campo.
+      ...(l.blend && l.blend !== 'normal' ? { blend: l.blend } : {}),
     };
   }
 
@@ -398,6 +402,7 @@ function readLayer(
       css: str(l.css, ''),
       schema,
       values: (typeof l.values === 'object' && l.values) ? l.values as Record<string, unknown> : {},
+      ...(MISTURAS.includes(l.blend as Mistura) ? { blend: l.blend as Mistura } : {}),
     } satisfies OverlayLayer;
   }
 

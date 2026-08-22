@@ -32,12 +32,40 @@
 export const TIPOS = ['efeito', 'filtro', 'transicao', 'texto'] as const;
 export type Tipo = (typeof TIPOS)[number];
 
+/**
+ * Como o efeito se mistura com o que está EMBAIXO dele na composição.
+ *
+ * Os nomes são os do `mix-blend-mode` de propósito: quem escreve CSS já os
+ * conhece, e inventar um vocabulário nosso só criaria uma tradução a mais pra
+ * errar. O canvas aceita exatamente os mesmos, com `normal` virando
+ * `source-over`.
+ *
+ * Existe porque `mix-blend-mode` DENTRO do efeito não alcança o vídeo — o
+ * overlay é rasterizado à parte, e o "fundo" que ele enxerga é transparente.
+ * É a mesma limitação do `backdrop-filter` (LIMITES.md §4.1), e a mistura é a
+ * saída: quem compõe é o canvas, não o CSS.
+ *
+ * Sem isto, grão de filme era impossível: `feTurbulence` GERA ruído opaco, e
+ * sem mistura ele cobre o quadro com uma chapa cinza em vez de granular.
+ */
+export const MISTURAS = [
+  'normal', 'screen', 'multiply', 'overlay', 'soft-light',
+  'lighten', 'darken', 'difference',
+] as const;
+export type Mistura = (typeof MISTURAS)[number];
+
+/** O nome que o canvas usa. Só `normal` diverge. */
+export const composicaoDe = (m: Mistura | undefined): GlobalCompositeOperation =>
+  (!m || m === 'normal' ? 'source-over' : m as GlobalCompositeOperation);
+
 export interface Meta {
   tipo: Tipo;
   nome: string;
   autor?: string;
   /** Versão do efeito, do autor. Não confundir com a do formato. */
   versao?: string;
+  /** Como o efeito se mistura com o que está embaixo. Ausente = `normal`. */
+  mistura?: Mistura;
 }
 
 // --- descritores de parâmetro -------------------------------------------
@@ -296,6 +324,9 @@ export function validarMeta(bruto: unknown): string | null {
     return `meta.tipo inválido: "${m.tipo}". Use: ${TIPOS.join(', ')}.`;
   }
   if (typeof m.nome !== 'string' || !m.nome.trim()) return 'meta.nome não pode ficar vazio.';
+  if (m.mistura !== undefined && !MISTURAS.includes(m.mistura)) {
+    return `meta.mistura inválida: "${m.mistura}". Use: ${MISTURAS.join(', ')}.`;
+  }
   return null;
 }
 

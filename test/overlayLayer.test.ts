@@ -5,6 +5,7 @@ import { renderSignature } from '../src/engine/frameCache.ts';
 import { makeOverlayLayer, semArquivo, drawOrder, trackKind } from '../src/engine/project.ts';
 import { layerBox } from '../src/engine/gizmo.ts';
 import { project, textLayer, videoLayer, fakeVideo } from './fixtures.ts';
+import { composicaoDe, validarMeta } from '../src/criar/api.ts';
 import type { OverlayLayer } from '../src/engine/types.ts';
 
 const overlay = (o: Partial<OverlayLayer> = {}) => makeOverlayLayer({
@@ -111,6 +112,42 @@ test('campos ausentes viram vazio em vez de derrubar a abertura', () => {
   assert.deepEqual([l.html, l.css, l.schema, l.values], ['', '', {}, {}]);
 });
 
+// --- mistura ------------------------------------------------------------
+
+test('a mistura sobrevive à ida e volta', () => {
+  const original = project([overlay({ blend: 'overlay' })]);
+  const { project: back } = deserializeProject(serializeProject(original), anyMedia);
+  assert.deepEqual(back.layers, original.layers);
+});
+
+test('mistura "normal" é OMITIDA do arquivo', () => {
+  // Mesmo cuidado do countUp: `blend: undefined` sai igual no JSON, mas não é
+  // deepEqual a uma layer construída sem tocar no campo.
+  const raw = serializeProject(project([overlay({ blend: 'normal' })]));
+  assert.equal('blend' in (raw.layers[0] as object), false);
+  const semNada = serializeProject(project([overlay()]));
+  assert.equal('blend' in (semNada.layers[0] as object), false);
+});
+
+test('mistura inválida no arquivo é descartada, não propagada pro canvas', () => {
+  const raw = serializeProject(project([overlay({ blend: 'overlay' })]));
+  (raw.layers[0] as unknown as { blend: unknown }).blend = 'nao-existe';
+  const { project: back } = deserializeProject(raw, anyMedia);
+  assert.equal((back.layers[0] as OverlayLayer).blend, undefined);
+});
+
+test('composicaoDe traduz pro vocabulário do canvas', () => {
+  assert.equal(composicaoDe(undefined), 'source-over');
+  assert.equal(composicaoDe('normal'), 'source-over');
+  assert.equal(composicaoDe('overlay'), 'overlay');
+  assert.equal(composicaoDe('screen'), 'screen');
+});
+
+test('meta.mistura inválida é recusada na carga', () => {
+  assert.equal(validarMeta({ tipo: 'filtro', nome: 'x', mistura: 'overlay' }), null);
+  assert.match(String(validarMeta({ tipo: 'filtro', nome: 'x', mistura: 'xis' })), /mistura inválida/);
+});
+
 // --- assinatura do cache ------------------------------------------------
 
 test('editar o CSS invalida os quadros guardados', () => {
@@ -137,6 +174,12 @@ test('mudar o NOME não invalida — nome não desenha pixel', () => {
   const a = renderSignature(project([overlay()]));
   const b = renderSignature(project([overlay({ name: 'Outro nome' })]));
   assert.equal(a, b);
+});
+
+test('trocar a mistura invalida — ela muda cada pixel do quadro', () => {
+  const a = renderSignature(project([overlay({ blend: 'normal' })]));
+  const b = renderSignature(project([overlay({ blend: 'screen' })]));
+  assert.notEqual(a, b);
 });
 
 test('o schema sozinho não invalida — ele descreve o painel, não o desenho', () => {

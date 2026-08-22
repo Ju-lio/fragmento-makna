@@ -12,8 +12,8 @@
  * atualização, conflito) que não cabem num `localStorage.setItem`.
  */
 
-import { validarEsquema } from './api.ts';
-import type { Esquema } from './api.ts';
+import { validarEsquema, MISTURAS } from './api.ts';
+import type { Esquema, Mistura } from './api.ts';
 
 const CHAVE = 'fragmento:bandeja-efeito';
 
@@ -23,6 +23,8 @@ export interface EfeitoNaBandeja {
   css: string;
   schema: Esquema;
   values: Record<string, unknown>;
+  /** O padrão que o autor escolheu. O usuário pode trocar depois. */
+  mistura?: Mistura;
 }
 
 /** Deixa um efeito na bandeja. Sobrescreve o que estava lá. */
@@ -62,6 +64,7 @@ export function espiar(): EfeitoNaBandeja | null {
       css: o.css,
       schema,
       values: (typeof o.values === 'object' && o.values) ? o.values : {},
+      ...(MISTURAS.includes(o.mistura as Mistura) ? { mistura: o.mistura as Mistura } : {}),
     };
   } catch {
     return null;
