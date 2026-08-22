@@ -2,6 +2,12 @@
 
 Atualizado em 22/08/2026.
 
+> **Retomando o trabalho?** Leia esta seção e a "Onde estamos" logo abaixo. O
+> resto do contexto está em [LIMITES.md](LIMITES.md) (o que o navegador
+> aguenta, medido), [nativos/](nativos/) (o que o editor faz e por quê) e
+> [ideias/](ideias/) (o que foi adiado, com o motivo). Nada de importante
+> mora só na cabeça de quem escreveu.
+
 ## O critério desta fase
 
 Igual ao critério de "usável" que fechou a v0.1.0, este precisa ser uma frase
@@ -29,9 +35,32 @@ medido em Chrome 151. As três coisas que sustentam o desenho:
 - o overlay **nunca** vai ler os pixels do vídeo (44,8 ms e 168 kB por quadro) —
   por isso existem slots
 
-**Pronto:** fases **A**, **B**, o grosso da **C**, e o **F1** (validador). Um efeito escrito em HTML+CSS
-já vai do `/criar` até a linha do tempo, com controles gerados do próprio
-efeito, sobrevive ao autosave e entra no export. 621 testes.
+**Pronto e testado em uso real:** fases **A**, **B**, o grosso da **C**, e o
+**F1** (validador). Um efeito escrito em CSS vai do `/criar` até o MP4: entra na
+linha do tempo, tem controles gerados do próprio efeito, sobrevive ao autosave,
+e sai no arquivo final. 659 testes.
+
+**Três bugs do primeiro uso real, todos corrigidos** (os commits guardam o
+diagnóstico): os pontos do papel de parede pintando por cima do `/criar`; o
+efeito piscando no scrub porque o overlay ficava fora do *hold* que o vídeo já
+usava; e o grão que virava chapa cinza — `feTurbulence` GERA ruído, e sem
+mistura na composição ele cobre em vez de granular. Daí nasceu a **mistura**
+(`meta.mistura` → `globalCompositeOperation`).
+
+**Mais dois, do export:** macrobloco do H.264 em conteúdo com grão (a qualidade
+virou escolha, e o padrão subiu de ~6 pra ~9,3 Mbps em 1080p30); e o overlay
+sumindo de parte dos quadros porque o preview atropelava o armazém no meio do
+export — hoje quem exporta desenha os quadros que ele mesmo preparou.
+
+**Próximo passo recomendado: D1 (slots).** É a única mudança que transforma
+"uma camada por cima" no que o produto se propõe: vidro, vídeo em partículas e
+máscara pelo alpha, todos já medidos funcionando em spike. E é a mesma máquina
+que a transição (E1) vai precisar — fazer agora barateia o item de maior risco
+do plano.
+
+**Junto, num commit separado: o fps do projeto.** É o único item da lista que é
+CONSERTO e não funcionalidade — ver
+[ideias/configuracoes-de-projeto-e-export.md](ideias/configuracoes-de-projeto-e-export.md).
 
 ---
 
@@ -87,9 +116,19 @@ uma layer própria.
 
 ### Fase D — slots (destrava a metade interessante)
 
-**D1. `data-frag="video1"` com geometria lida via matriz de `transform`**
+**D1. `data-frag="video1"` com geometria lida via matriz de `transform`** ← *o próximo*
 (`offsetLeft`/`offsetTop` sozinhos ignoram transform — foi o bug do spike do vidro).
 Destrava de uma vez: **vidro**, **vídeo em partículas**, **máscara pelo alpha do overlay**.
+
+*Escopo fechado:* três marcas de slot — `video1` (desenha o clipe naquela
+geometria), `vidro` (desfoca a região do que está atrás) e o alpha do overlay
+podendo recortar o vídeo. Não mexe em nenhum tipo de layer existente, que é a
+mesma estratégia que fez a fase C sair sem regressão.
+
+*Ferramenta:* `public/dev/rasterizar.html` já rasteriza no tamanho real do
+projeto e simula o laço do export. Foi ela que separou "defeito do render" de
+"defeito do codificador" no bug do grão — use antes de suspeitar do lugar
+errado.
 **D2. Tipo `filtro`** — `ctx.filter = 'url(#…)'` nos pixels do vídeo: noise,
 aberração cromática, distorção. Todos medidos funcionando.
 
