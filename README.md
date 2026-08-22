@@ -1962,7 +1962,9 @@ sistema de efeitos em HTML/CSS mexer no caminho de render.
 **Em andamento:** o formato de efeito da comunidade. O contrato
 (`criar/api.ts`) e o levantamento do que o navegador aguenta
 ([LIMITES.md](LIMITES.md)) estão prontos; o caminho de render ainda não foi
-tocado.
+tocado. O plano, em ordem de risco, está em
+[PRIORIDADES.md](PRIORIDADES.md) — e o que foi adiado *por decisão*, com o
+motivo, em [ideias/](ideias/).
 
 ### O caminho até "usável"
 
