@@ -1140,3 +1140,76 @@
 }
 /* `label` como botão precisa se comportar como um. */
 .versoes-lista label.btn { cursor: pointer; }
+
+/* =========================================================================
+   /CRIAR — o playground de efeito (entry separado, ver criar.html)
+   ========================================================================= */
+.criar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px;
+  gap: 8px;
+  overflow: auto;
+}
+.criar-topo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.criar-marca { color: var(--gold); font-size: 14px; letter-spacing: 1px; }
+.criar-sub { color: var(--ink-mute); font-size: 10px; }
+
+.criar-tipos { display: flex; gap: 6px; flex: 0 0 auto; }
+.criar-tipo { flex: 1; }
+.criar-onde { color: var(--cream-dd); font-size: 9px; flex: 0 0 auto; }
+
+/* Duas colunas: o que se escreve à esquerda, o que sai à direita. Empilha em
+   tela estreita — a página é usável no notebook e no monitor. */
+.criar-corpo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+@media (max-width: 900px) { .criar-corpo { grid-template-columns: 1fr; } }
+.criar-col { min-height: 0; }
+.criar-col .win-body { overflow: auto; }
+
+.criar-fonte {
+  height: 320px;
+  font-size: 9.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.criar-ok { color: var(--mint); font-size: 9px; margin-top: 4px; }
+
+/* O bloco de variáveis é pra COPIAR: fundo escuro, seleção fácil, sem quebra
+   de linha que confunda um valor com dois. */
+.criar-css {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--void);
+  color: var(--mint);
+  border: 2px solid var(--ink);
+  font-size: 9.5px;
+  line-height: 1.7;
+  overflow-x: auto;
+  user-select: text;
+}
+.criar-rodape {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  background: var(--plum);
+  border: 2px solid var(--plum-hi);
+  color: var(--cream-d);
+  font-size: 9px;
+  line-height: 1.7;
+}
+.criar code {
+  background: var(--void);
+  color: var(--gold);
+  padding: 0 3px;
+}

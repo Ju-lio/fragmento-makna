@@ -72,6 +72,7 @@ src/
   criar/             <- o formato de efeito da comunidade (ver LIMITES.md)
     api.ts             meta + params tipados: o contrato autor ↔ editor
     janela.ts          a janela de tempo do efeito como esquema de params
+    Criar.tsx          a página /criar (entry próprio, ver criar.html)
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
 public/
