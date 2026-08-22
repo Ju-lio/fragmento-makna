@@ -72,6 +72,9 @@ src/
   criar/             <- o formato de efeito da comunidade (ver LIMITES.md)
     api.ts             meta + params tipados: o contrato autor ↔ editor
     janela.ts          a janela de tempo do efeito como esquema de params
+    svg.ts             monta o SVG do overlay (puro, testável em node)
+    overlay.ts         HTML+CSS do autor → bitmap de um instante
+    sementes.ts        os efeitos de partida do /criar
     Criar.tsx          a página /criar (entry próprio, ver criar.html)
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel

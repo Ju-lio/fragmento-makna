@@ -1,91 +1,28 @@
 /**
  * O playground de criação de efeito.
  *
- * O que ele faz HOJE: fecha o laço entre declarar `params` e ver os controles
- * que o editor vai desenhar. É a metade do contrato que já existe — a outra
- * metade (o efeito virando pixel) é a fase B do PRIORIDADES.md, e a página diz
- * isso na cara em vez de fingir.
+ * Fecha os dois laços que importam:
  *
- * Por que isso já vale sozinho: o painel é a parte do contrato mais fácil de
- * errar em silêncio. Um `min` esquecido vira campo sem slider, um nome de
- * param inválido vira CSS quebrado longe da causa. Ver o resultado enquanto se
- * escreve é o que impede publicar um efeito que "parece certo".
+ *   1. declarar `params` → ver os controles que o editor vai desenhar
+ *   2. escrever HTML+CSS → ver o quadro que o export vai produzir
+ *
+ * O segundo usa o MESMO `Overlay` que o editor vai usar. Se fossem caminhos
+ * diferentes, o preview mentiria — que é exatamente o que esta página existe
+ * pra evitar.
  *
  * O manifesto entra como JSON, e não TS, porque ainda não há compilador no
- * navegador. Os descritores de `api.ts` são objetos simples de propósito —
- * `num(0.5, { max: 2 })` e `{"tipo":"num","padrao":0.5,"max":2}` são o mesmo
- * objeto —, então o que se testa aqui é exatamente o que o TS vai produzir.
+ * navegador. Os descritores de `api.ts` são objetos simples de propósito, então
+ * o que se testa aqui é exatamente o que o TS vai produzir.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Win } from '../ui/Win.tsx';
 import { CamposDeParams } from '../ui/CamposDeParams.tsx';
 import { TIPOS, validarManifesto, padroes, variaveisCss, normalizar } from './api.ts';
+import { Overlay } from './overlay.ts';
+import { recursosExternos, temStyleInline } from './svg.ts';
+import { SEMENTES, ROTULO, ONDE_APARECE } from './sementes.ts';
 import type { Esquema, Tipo } from './api.ts';
-
-/**
- * Um manifesto de partida por tipo.
- *
- * Cada um usa params DIFERENTES de propósito: quem abre em "filtro" precisa ver
- * que o vocabulário é o mesmo do "efeito", e quem abre em "texto" precisa ver
- * `texto()` existindo — senão a pessoa supõe que só dá pra declarar número.
- */
-const SEMENTES: Record<Tipo, string> = {
-  efeito: `{
-  "meta": { "tipo": "efeito", "nome": "Raio", "autor": "voce" },
-  "params": {
-    "intensidade": { "tipo": "num", "padrao": 1, "min": 0, "max": 3, "passo": 0.05,
-                     "rotulo": "Intensidade" },
-    "brilho":      { "tipo": "num", "padrao": 34, "min": 0, "max": 80, "unidade": "px",
-                     "rotulo": "Brilho" },
-    "cor":         { "tipo": "cor", "padrao": "#6ba9d6", "rotulo": "Cor" }
-  }
-}`,
-  filtro: `{
-  "meta": { "tipo": "filtro", "nome": "Granulado", "autor": "voce" },
-  "params": {
-    "quantidade": { "tipo": "num", "padrao": 0.2, "min": 0, "max": 1, "passo": 0.01,
-                    "rotulo": "Quantidade" },
-    "escala":     { "tipo": "num", "padrao": 0.8, "min": 0.1, "max": 2, "passo": 0.05,
-                    "rotulo": "Escala do grão" },
-    "colorido":   { "tipo": "bool", "padrao": false, "rotulo": "Grão colorido" }
-  }
-}`,
-  transicao: `{
-  "meta": { "tipo": "transicao", "nome": "Empurrar", "autor": "voce" },
-  "params": {
-    "direcao": { "tipo": "opcao", "valores": ["esquerda", "direita", "cima", "baixo"],
-                 "padrao": "esquerda", "rotulo": "Direção" },
-    "suavizar": { "tipo": "num", "padrao": 0.5, "min": 0, "max": 1, "passo": 0.05,
-                  "rotulo": "Suavizar" }
-  }
-}`,
-  texto: `{
-  "meta": { "tipo": "texto", "nome": "Retrô empilhado", "autor": "voce" },
-  "params": {
-    "conteudo": { "tipo": "texto", "padrao": "FRAGMENTO", "rotulo": "Texto" },
-    "camadas":  { "tipo": "num", "padrao": 5, "min": 1, "max": 8, "passo": 1,
-                  "rotulo": "Camadas" },
-    "desloc":   { "tipo": "num", "padrao": 3, "min": 1, "max": 12, "unidade": "px",
-                  "rotulo": "Deslocamento" },
-    "corBase":  { "tipo": "cor", "padrao": "#0b0b2a", "rotulo": "Cor da frente" }
-  }
-}`,
-};
-
-const ROTULO: Record<Tipo, string> = {
-  efeito: 'EFEITO',
-  filtro: 'FILTRO',
-  transicao: 'TRANSIÇÃO',
-  texto: 'TEXTO',
-};
-
-const ONDE_APARECE: Record<Tipo, string> = {
-  efeito: 'Aplicado numa layer, na aba EFEITOS.',
-  filtro: 'Aplicado nos pixels de uma layer, na aba FILTROS.',
-  transicao: 'Entre dois clipes vizinhos — ou entre o nada e o primeiro.',
-  texto: 'Uma layer de texto com aparência e animação prontas.',
-};
 
 /** `criar.html?tipo=filtro` abre direto no tipo, pra servir de link. */
 function tipoDaUrl(): Tipo {
@@ -93,24 +30,39 @@ function tipoDaUrl(): Tipo {
   return TIPOS.includes(t as Tipo) ? (t as Tipo) : 'efeito';
 }
 
-export function Criar() {
-  const [tipo, setTipo] = useState<Tipo>(tipoDaUrl);
-  const [fonte, setFonte] = useState(() => SEMENTES[tipoDaUrl()]);
-  /** Os valores que a pessoa mexeu no painel de teste. */
-  const [valores, setValores] = useState<Record<string, unknown>>({});
+type Aba = 'manifesto' | 'html' | 'css';
 
-  const trocarTipo = (t: Tipo) => {
-    setTipo(t);
-    setFonte(SEMENTES[t]);
+export function Criar() {
+  const inicial = tipoDaUrl();
+  const [tipo, setTipo] = useState<Tipo>(inicial);
+  const [aba, setAba] = useState<Aba>('css');
+  const [fonte, setFonte] = useState(() => SEMENTES[inicial]);
+  const [valores, setValores] = useState<Record<string, unknown>>({});
+  const [t, setT] = useState(0.35);
+  const [erroRender, setErroRender] = useState('');
+  const [ms, setMs] = useState(0);
+
+  const telaRef = useRef<HTMLCanvasElement>(null);
+  const overlayRef = useRef<Overlay | null>(null);
+
+  const trocarTipo = (novo: Tipo) => {
+    setTipo(novo);
+    setFonte(SEMENTES[novo]);
     setValores({});
-    // Mantém a URL contando a verdade, pra F5 e link não mentirem.
-    history.replaceState(null, '', `?tipo=${t}`);
+    setT(0.35);
+    history.replaceState(null, '', `?tipo=${novo}`);
   };
 
+  const editar = (parte: keyof typeof fonte, texto: string) => {
+    setFonte({ ...fonte, [parte]: texto });
+    if (parte === 'manifesto') setValores({});
+  };
+
+  // --- validação ---------------------------------------------------------
   let manifesto: { meta?: { nome?: string }; params?: Esquema } | null = null;
   let problema: string | null = null;
   try {
-    manifesto = JSON.parse(fonte);
+    manifesto = JSON.parse(fonte.manifesto);
   } catch (e) {
     problema = 'JSON inválido: ' + (e instanceof Error ? e.message : String(e));
   }
@@ -118,9 +70,70 @@ export function Criar() {
 
   const esquema: Esquema = (!problema && manifesto?.params) || {};
   const temParams = Object.keys(esquema).length > 0;
-  // `padroes` como base: o painel precisa desenhar algo antes de a pessoa mexer.
   const atuais = temParams ? { ...padroes(esquema), ...valores } : {};
-  const css = temParams ? variaveisCss(esquema, normalizar(esquema, atuais)) : {};
+  const vars = temParams ? variaveisCss(esquema, normalizar(esquema, atuais)) : {};
+  /**
+   * A chave de dependência do render.
+   *
+   * `vars` é um objeto novo a cada render, então pô-lo no array de
+   * dependências redesenharia sempre — inclusive ao digitar no textarea do
+   * manifesto, que não muda um pixel. O que importa é o CONTEÚDO, e é ele que
+   * esta string carrega.
+   */
+  const chaveDosVars = JSON.stringify(vars);
+
+  // Avisos que não impedem de rodar — a §6 do LIMITES.md é a lista completa;
+  // estes dois são os que já dá pra detectar sem o pacote inteiro.
+  const avisos = [
+    ...recursosExternos(fonte.css).map(u => `Recurso externo não carrega no quadro final: ${u}`),
+    ...(temStyleInline(fonte.html) ? ['<style> dentro do HTML não passa pelo CDATA — mova pro CSS.'] : []),
+  ];
+
+  // --- render ------------------------------------------------------------
+  // O Overlay é remontado só quando HTML ou CSS mudam; mexer num slider ou no
+  // tempo reaproveita o palco, que é o caso comum e o que precisa ser rápido.
+  useEffect(() => {
+    overlayRef.current?.destruir();
+    overlayRef.current = new Overlay({
+      meta: { tipo, nome: manifesto?.meta?.nome ?? 'sem nome' },
+      html: fonte.html,
+      css: fonte.css,
+    });
+    return () => { overlayRef.current?.destruir(); overlayRef.current = null; };
+    // `manifesto.meta.nome` de propósito fora: mudar o nome não muda um pixel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonte.html, fonte.css, tipo]);
+
+  useEffect(() => {
+    let cancelado = false;
+    const tela = telaRef.current;
+    const ov = overlayRef.current;
+    if (!tela || !ov) return;
+
+    (async () => {
+      const inicio = performance.now();
+      try {
+        const img = await ov.quadro({
+          largura: tela.width, altura: tela.height, t, duracao: 2, params: vars,
+        });
+        if (cancelado) return;
+        const ctx = tela.getContext('2d')!;
+        ctx.clearRect(0, 0, tela.width, tela.height);
+        ctx.drawImage(img, 0, 0, tela.width, tela.height);
+        setErroRender('');
+        setMs(Math.round(performance.now() - inicio));
+      } catch (e) {
+        if (!cancelado) setErroRender(e instanceof Error ? e.message : String(e));
+      }
+    })();
+
+    return () => { cancelado = true; };
+    // `vars` fora do array de propósito: quem representa ele aqui é
+    // `chaveDosVars` — ver a nota na declaração.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonte.html, fonte.css, t, chaveDosVars]);
+
+  const textoDaAba = fonte[aba];
 
   return (
     <div className="criar">
@@ -132,81 +145,92 @@ export function Criar() {
       </header>
 
       <div className="criar-tipos">
-        {TIPOS.map(t => (
-          <button
-            key={t}
-            className={`btn criar-tipo${tipo === t ? ' on' : ''}`}
-            onClick={() => trocarTipo(t)}
-          >
-            {ROTULO[t]}
+        {TIPOS.map(x => (
+          <button key={x} className={`btn criar-tipo${tipo === x ? ' on' : ''}`} onClick={() => trocarTipo(x)}>
+            {ROTULO[x]}
           </button>
         ))}
       </div>
       <div className="criar-onde">{ONDE_APARECE[tipo]}</div>
 
       <div className="criar-corpo">
-        <Win title="MANIFESTO" className="criar-col">
-          <div className="hint">
-            O que o editor precisa saber sobre o seu efeito: o que ele é, e quais
-            controles desenhar.
-          </div>
+        <Win
+          title="O SEU EFEITO"
+          className="criar-col"
+          right={
+            <div className="criar-abas">
+              {(['css', 'html', 'manifesto'] as Aba[]).map(a => (
+                <button key={a} className={`btn btn-sm${aba === a ? ' on' : ''}`} onClick={() => setAba(a)}>
+                  {a.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          }
+        >
           <textarea
             className="inp criar-fonte"
             spellCheck={false}
-            value={fonte}
-            onChange={e => { setFonte(e.target.value); setValores({}); }}
+            value={textoDaAba}
+            onChange={e => editar(aba, e.target.value)}
           />
-          {problema
+          {aba === 'manifesto' && (problema
             ? <div className="err">{problema}</div>
-            : <div className="criar-ok">✓ manifesto válido</div>}
+            : <div className="criar-ok">✓ manifesto válido</div>)}
+          {avisos.map((a, i) => <div className="criar-aviso" key={i}>⚠ {a}</div>)}
+          {erroRender && <div className="err">Não deu pra desenhar: {erroRender}</div>}
         </Win>
 
-        <Win title="COMO FICA NO EDITOR" className="criar-col">
-          {problema && <div className="hint">Corrija o manifesto pra ver o painel.</div>}
-          {!problema && !temParams && (
-            <div className="hint">
-              Sem <code>params</code>, o efeito não tem controle nenhum — o que é
-              legítimo. Adicione um param pra ver os campos nascerem.
-            </div>
-          )}
+        <Win title="COMO FICA" className="criar-col">
+          {/* Xadrez por baixo: o overlay é transparente, e sem isso não dá pra
+              distinguir "fundo preto" de "nada desenhado". */}
+          <div className="criar-tela-caixa">
+            {/*
+              Renderiza em 1280x720 e mostra reduzido, em vez de renderizar no
+              tamanho da caixa. Se o preview fosse 640 de largura, quem escreve
+              calibraria `vw`, `%` e desfoque pra uma composição que não existe
+              — e o efeito sairia diferente no projeto de verdade.
+            */}
+            <canvas ref={telaRef} width={1280} height={720} className="criar-tela" />
+          </div>
+
+          <div className="row criar-tempo">
+            <input
+              className="slider"
+              type="range"
+              min={0}
+              max={2}
+              step={0.01}
+              value={t}
+              onChange={e => setT(parseFloat(e.target.value))}
+            />
+            <span className="criar-relogio">{t.toFixed(2)}s · {ms}ms</span>
+          </div>
+
+          {problema && <div className="hint">Corrija o manifesto pra ver os controles.</div>}
           {!problema && temParams && (
             <>
-              <div className="field-label">{manifesto?.meta?.nome}</div>
+              <div className="field-label" style={{ marginTop: 8 }}>CONTROLES</div>
               <CamposDeParams
                 esquema={esquema}
                 valores={atuais}
                 onChange={setValores}
                 onChangeDiscreta={setValores}
               />
-
-              {/*
-                O que o CSS do autor de fato recebe. É a parte do contrato que
-                ninguém adivinha: que `raio` com unidade `px` chega como `34px`
-                e não `34`, e que booleano vira 1/0 porque CSS não tem booleano.
-              */}
-              <div className="field-label" style={{ marginTop: 12 }}>
-                O SEU CSS RECEBE
-              </div>
+              <div className="field-label" style={{ marginTop: 10 }}>O SEU CSS RECEBE</div>
               <pre className="criar-css">
-{Object.entries(css).map(([k, v]) => `${k}: ${v};`).join('\n')}
+{Object.entries(vars).map(([k, v]) => `${k}: ${v};`).join('\n')}
+{'\n--frag-t, --frag-progresso, --frag-largura, --frag-altura, --frag-duracao'}
               </pre>
-              <div className="hint">
-                Use assim: <code>filter: drop-shadow(0 0 var(--p-brilho) var(--p-cor));</code>
-              </div>
             </>
           )}
         </Win>
       </div>
 
-      {/*
-        Dizer o que ainda não existe é mais útil que esconder: quem chega aqui
-        esperando escrever o CSS e ver o vídeo precisa saber onde está.
-      */}
       <footer className="criar-rodape">
-        <b>Ainda não dá pra escrever o CSS aqui.</b> Esta página fecha o laço do
-        painel — declarar <code>params</code> e ver os controles. O efeito virando
-        pixel é a próxima fase. O que dá e o que não dá pra fazer com CSS está no{' '}
-        <code>LIMITES.md</code>.
+        Arraste o tempo e veja o quadro exato — é o mesmo <code>Overlay</code> que o
+        editor usa, então o que aparece aqui é o que vai pro vídeo.{' '}
+        <b>Ainda não dá pra salvar nem aplicar numa layer.</b> O que dá e o que não dá
+        pra fazer com CSS está no <code>LIMITES.md</code>.
       </footer>
     </div>
   );

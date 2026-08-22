@@ -1213,3 +1213,39 @@
   color: var(--gold);
   padding: 0 3px;
 }
+
+/* --- /criar: editor e preview -------------------------------------------- */
+.criar-abas { display: flex; gap: 3px; }
+
+/* Xadrez por baixo do preview: o overlay é transparente, e sem isso não dá
+   pra distinguir "fundo preto" de "nada desenhado" — a mesma razão do
+   xadrez no palco do editor. */
+.criar-tela-caixa {
+  background-color: #0d0916;
+  background-image:
+    linear-gradient(45deg, #1b1428 25%, transparent 25%),
+    linear-gradient(-45deg, #1b1428 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1b1428 75%),
+    linear-gradient(-45deg, transparent 75%, #1b1428 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  border: 2px solid var(--ink);
+  line-height: 0;
+}
+.criar-tela { display: block; width: 100%; height: auto; }
+
+.criar-tempo { align-items: center; margin-top: 6px; }
+.criar-relogio {
+  flex: 0 0 auto;
+  color: var(--ink-mute);
+  font-size: 9px;
+  min-width: 90px;
+  text-align: right;
+}
+
+.criar-aviso {
+  color: var(--gold-d);
+  font-size: 9px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
