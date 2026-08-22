@@ -176,6 +176,17 @@ Tudo abaixo foi renderizado e conferido visualmente.
 | `feDisplacementMap` (distorção líquida) | **[medido]** |
 | `feColorMatrix`, `feOffset`, `feBlend`, `feComposite` (aberração cromática) | **[medido]** |
 
+**Cuidado com `feColorMatrix`: ele é linear e incondicional.** Não existe "só
+mexe onde a cor é X" — a mesma conta é aplicada a todo pixel. **[medido]** numa
+tentativa de chroma key, o despill escrito assim puxou o canal verde de um
+retângulo **vermelho**, que saiu laranja; e os fios finos de cabelo foram
+comidos, deixando 737 px de franja verde contra 0 de uma implementação com
+`max()` de verdade.
+
+Se o seu efeito precisa decidir **por pixel** ("se for parecido com essa cor,
+então…"), filtro SVG não é o lugar. Chroma key, por isso, é recurso nativo do
+editor, não efeito.
+
 ### Unidades
 `vw`, `vh`, `%`, `em`, `rem` **[medido]** resolvem contra o tamanho do projeto,
 não contra a página. `50vw × 20vh` deu 10% da tela tanto em 1920×1080 quanto em

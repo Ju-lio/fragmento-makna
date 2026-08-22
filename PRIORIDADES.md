@@ -84,6 +84,35 @@ Destrava de uma vez: **vidro**, **vídeo em partículas**, **máscara pelo alpha
 **D2. Tipo `filtro`** — `ctx.filter = 'url(#…)'` nos pixels do vídeo: noise,
 aberração cromática, distorção. Todos medidos funcionando.
 
+**D3. Chroma key — recurso NATIVO, não efeito da comunidade.**
+Propriedade da layer de vídeo, com UI própria: conta-gotas, seletor de cor,
+tolerância, suavização da borda e quantidade de sobra (spill). Nada disso é
+expressável em CSS, e não deveria ser: é o tipo de coisa que precisa funcionar
+igual pra todo mundo.
+
+*Por que não filtro SVG* — foi medido, e falha onde importa. `feColorMatrix` é
+**linear e incondicional**: não sabe dizer "só mexe onde tem verde". Passou nos
+testes grossos (fundo a alpha 0, pele em 255, roupa verde-azulada preservada),
+mas comeu os fios de cabelo, deixou **737 px de franja verde** contra 0 da
+referência, e o despill **estragou o vermelho, que virou laranja**. Cada um dos
+seus controles (tolerância, sobra) é uma decisão condicional por pixel, e
+condição é justamente o que uma matriz linear não tem.
+
+*Por que não laço em JS* — dá o resultado certo, mas custou 14,3 ms em 960×540,
+o que é ~57 ms em 1080p. Chroma key não é um título de 3 segundos: vale pro
+clipe inteiro, todo quadro. 57 ms é preview a 17 fps.
+
+*Então WebGL* — e vale notar que já era o plano: o README do primeiro commit
+listava "chroma key (shader WebGL)" na roadmap.
+
+**Isto NÃO é WebGL dentro do overlay**, que a gente mediu que não funciona
+(canvas não serializa pro `foreignObject`). É um **estágio do compositor**: uma
+superfície GL que processa o quadro do vídeo antes de ele chegar no canvas 2D.
+Não conflita com nada, e vira a base pra qualquer efeito futuro que precise de
+matemática de verdade por pixel.
+
+*Risco:* médio. É código novo e isolado, mas entra no caminho quente do quadro.
+
 ### Fase E — o que mexe em estrutura
 
 **E1. Tipo `transicao`.** O único item que quebra uma invariante existente: hoje
