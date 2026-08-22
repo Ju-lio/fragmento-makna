@@ -29,6 +29,7 @@ import {
   CODEC_CANDIDATES, AUDIO_CODEC_CANDIDATES, evenDimensions, frameTimestamp,
   keyFrameInterval, chooseBitrate, frameCount, exportFileName,
 } from './exportPlan.ts';
+import type { Qualidade } from './exportPlan.ts';
 import { renderAudio, sliceAudio, SAMPLE_RATE, CHANNELS } from './audioRender.ts';
 import type { BlobResolver } from './audioRender.ts';
 import type { Project } from './types.ts';
@@ -158,6 +159,11 @@ export interface ExportOptions extends Range {
   fps?: number;
   /** Fração da resolução do projeto. 1 = cheia, que é o padrão pro arquivo final. */
   scale?: number;
+  /**
+   * Quanto bit gastar. Ver `BITS_POR_PIXEL` em `exportPlan.ts` pro porquê dos
+   * números — em resumo, grão de filme e desfoque pesado precisam de `alta`.
+   */
+  qualidade?: Qualidade;
   token?: CancelToken;
   onProgress?: (done: number, total: number) => void;
   /**
@@ -201,7 +207,7 @@ export interface ExportResult {
 export async function exportVideo(
   project: Project,
   {
-    from, to, fps = project.fps ?? CACHE_FPS, scale = 1,
+    from, to, fps = project.fps ?? CACHE_FPS, scale = 1, qualidade = 'normal',
     token = { cancelled: false }, onProgress, getBlob,
   }: ExportOptions,
 ): Promise<ExportResult | null> {
@@ -209,7 +215,7 @@ export async function exportVideo(
   if (!support.ok) throw new ExportUnsupportedError(support.reason ?? 'Export indisponível');
 
   const { width, height } = evenDimensions(project, scale);
-  const bitrate = chooseBitrate({ width, height }, fps);
+  const bitrate = chooseBitrate({ width, height }, fps, qualidade);
 
   const chosen = await chooseCodec(width, height, fps, bitrate);
   if (!chosen) {

@@ -35,6 +35,25 @@ test('as quatro sementes do /criar passam limpas', () => {
   }
 });
 
+test('nenhuma semente contém crase', () => {
+  /*
+   * Guarda contra um erro que já cometi TRÊS vezes: as sementes moram dentro
+   * de template literals, e uma crase num comentário do CSS fecha a string.
+   * O sintoma é péssimo de ler — erro de sintaxe de TypeScript apontando pro
+   * meio de um bloco de CSS, e o Vite devolvendo 500 pra página inteira.
+   *
+   * O typecheck pega, mas só depois de escrito. Este teste diz o que fazer.
+   */
+  for (const [tipo, semente] of Object.entries(SEMENTES)) {
+    for (const [parte, texto] of Object.entries(semente)) {
+      assert.equal(
+        texto.includes('`'), false,
+        `crase em SEMENTES.${tipo}.${parte} — ela fecha o template literal. Use aspas ou nada.`,
+      );
+    }
+  }
+});
+
 // --- erros --------------------------------------------------------------
 
 test('meta inválido é ERRO', () => {

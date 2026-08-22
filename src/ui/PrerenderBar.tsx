@@ -8,6 +8,8 @@ import { mediaBlob } from '../engine/mediaStore.ts';
 import {
   exportVideo, cancelExport, exportStatus, exportSupport, downloadBlob,
 } from '../engine/videoExport.ts';
+import { QUALIDADES } from '../engine/exportPlan.ts';
+import type { Qualidade } from '../engine/exportPlan.ts';
 import type { Project } from '../engine/types.ts';
 
 interface PrerenderBarProps {
@@ -31,6 +33,22 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
   const [range, setRange] = useState(() => player.effectiveRange());
   const [hasRange, setHasRange] = useState(player.hasRange);
   const [progress, setProgress] = useState<Progress | null>(null);
+  /**
+   * Qualidade do export, guardada por usuário.
+   *
+   * Em `localStorage` e não no projeto: é preferência de quem exporta, não
+   * conteúdo do vídeo — a mesma regra que vale pro tema (ver ideias/temas.md).
+   */
+  const [qualidade, setQualidade] = useState<Qualidade>(() => {
+    try {
+      const guardada = localStorage.getItem('fragmento:qualidade-export');
+      return QUALIDADES.includes(guardada as Qualidade) ? guardada as Qualidade : 'normal';
+    } catch { return 'normal'; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('fragmento:qualidade-export', qualidade); } catch { /* anônimo */ }
+  }, [qualidade]);
   const [cached, setCached] = useState(0);
   // A estimativa de memória depende do zoom (é ele que define a resolução de
   // render). Sem escutar o viewport, o aviso fica congelado no zoom inicial e
@@ -101,7 +119,7 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
     player.pause();
 
     try {
-      const result = await exportVideo(project, { from, to, scale: 1, getBlob: mediaBlob });
+      const result = await exportVideo(project, { from, to, scale: 1, qualidade, getBlob: mediaBlob });
       if (!result) return onMessage('Export cancelado');
 
       downloadBlob(result.blob, result.fileName);
@@ -196,6 +214,20 @@ export function PrerenderBar({ project, onMessage }: PrerenderBarProps) {
           {PREVIEW_CACHE_ENABLED && (
             <button className="btn btn-sm btn-gold" onClick={start}>⚙ PRÉ-RENDER</button>
           )}
+          {/*
+            A qualidade fica ao lado do botão, não escondida: grão de filme e
+            desfoque pesado quebram em macrobloco no `normal`, e a pessoa
+            precisa poder resolver isso sem descobrir sozinha que o problema
+            era bitrate. Ver `BITS_POR_PIXEL` em exportPlan.ts.
+          */}
+          <select
+            className="inp inp-qualidade"
+            value={qualidade}
+            onChange={e => setQualidade(e.target.value as Qualidade)}
+            title="Quanto bit gastar. Grão e desfoque pesado pedem ALTA."
+          >
+            {QUALIDADES.map(q => <option key={q} value={q}>{q}</option>)}
+          </select>
           <button className="btn btn-sm btn-mint" onClick={startExport}>⬛ EXPORTAR</button>
           {PREVIEW_CACHE_ENABLED && (
             <span className={`prerender-est${estimate.fits ? '' : ' over'}`}>

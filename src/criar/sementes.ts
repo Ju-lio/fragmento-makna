@@ -145,7 +145,9 @@ export const SEMENTES: Record<Tipo, Semente> = {
     "escala":     { "tipo": "num", "padrao": 0.85, "min": 0.1, "max": 2, "passo": 0.05,
                     "rotulo": "Escala do grão" },
     "vinheta":    { "tipo": "num", "padrao": 0.7, "min": 0, "max": 1, "passo": 0.05,
-                    "rotulo": "Vinheta" }
+                    "rotulo": "Vinheta" },
+    "fervura":    { "tipo": "num", "padrao": 1, "min": 0, "max": 2, "passo": 0.05,
+                    "rotulo": "Fervura", "ajuda": "0 = grão parado, como sujeira na lente" }
   }
 }`,
     html: `<svg width="0" height="0">
@@ -174,12 +176,40 @@ export const SEMENTES: Record<Tipo, Semente> = {
    O seed fixo é o que mantém o grão determinístico: sem ele o vídeo
    sairia fervendo. Ver LIMITES.md §2.1. */
 
+/* O grão FERVE. Grão de filme parado parece sujeira na lente, não película.
+
+   feTurbulence não dá pra animar: mexer no seed exigiria SMIL, e SMIL fica
+   congelado num snapshot estático. Então quem se mexe é a TEXTURA — a mesma
+   mancha de ruído salta de posição a cada fração de segundo.
+
+   steps(1) entre os quadros-chave é o detalhe que faz parecer película: sem
+   ele o ruído DESLIZA, e deslizar parece poeira caindo. Grão de verdade não
+   desliza, ele troca.
+
+   inset negativo dá margem pro deslocamento: sem ela, cada salto mostraria a
+   borda da textura entrando no quadro. */
 .grao {
-  position: absolute; inset: 0;
+  position: absolute; inset: -25%;
   opacity: var(--p-quantidade);
   filter: url(#grao);
   transform: scale(var(--p-escala));
   transform-origin: center;
+  animation: ferver .45s steps(1) infinite;
+}
+/* A duração é FIXA e o param controla a AMPLITUDE. Tentei o contrário
+   primeiro: duração calculada com var(), e o grão não se mexia. Um calc que
+   não parseia derruba o atalho "animation" inteiro, e o efeito fica sem
+   animação nenhuma, em silêncio. Amplitude zero dá o mesmo resultado (grão
+   parado) sem esse risco. */
+@keyframes ferver {
+  0%   { translate: 0 0 }
+  12%  { translate: calc(-7% * var(--p-fervura)) calc( 4% * var(--p-fervura)) }
+  25%  { translate: calc( 5% * var(--p-fervura)) calc(-6% * var(--p-fervura)) }
+  37%  { translate: calc(-3% * var(--p-fervura)) calc(-8% * var(--p-fervura)) }
+  50%  { translate: calc( 8% * var(--p-fervura)) calc( 2% * var(--p-fervura)) }
+  62%  { translate: calc(-6% * var(--p-fervura)) calc( 7% * var(--p-fervura)) }
+  75%  { translate: calc( 2% * var(--p-fervura)) calc(-3% * var(--p-fervura)) }
+  87%  { translate: calc(-8% * var(--p-fervura)) calc(-2% * var(--p-fervura)) }
 }
 
 /* A vinheta escurece as bordas. Em overlay, pixel TRANSPARENTE não muda nada

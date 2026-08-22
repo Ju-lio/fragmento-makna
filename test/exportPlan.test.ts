@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  evenDimensions, frameTimestamp, keyFrameInterval, chooseBitrate,
+  evenDimensions, frameTimestamp, keyFrameInterval, chooseBitrate, tamanhoAproximado,
   frameCount, exportFileName, CODEC_CANDIDATES, AUDIO_CODEC_CANDIDATES,
 } from '../src/engine/exportPlan.ts';
 
@@ -81,8 +81,37 @@ test('bitrate escala com resolução e fps', () => {
 });
 
 test('1080p30 fica na ordem de grandeza recomendada pra upload', () => {
+  // Era ~6 Mbps e passou pra ~9,3. O motivo está em `BITS_POR_PIXEL`: a 6 Mbps
+  // um efeito de grão de filme saía com os degradês quebrados em macrobloco,
+  // medido num arquivo real. 8–10 Mbps é a faixa que o YouTube recomenda pra
+  // 1080p, e é onde o `normal` tem que ficar.
   const b = chooseBitrate({ width: 1920, height: 1080 }, 30);
-  assert.ok(b > 4_000_000 && b < 9_000_000, `esperava ~6 Mbps, veio ${b}`);
+  assert.ok(b > 8_000_000 && b < 11_000_000, `esperava ~9 Mbps, veio ${b}`);
+});
+
+test('os três níveis de qualidade se ordenam, e a distância é útil', () => {
+  const dims = { width: 1920, height: 1080 };
+  const rascunho = chooseBitrate(dims, 30, 'rascunho');
+  const normal = chooseBitrate(dims, 30, 'normal');
+  const alta = chooseBitrate(dims, 30, 'alta');
+  assert.ok(rascunho < normal && normal < alta);
+  // Um nível que muda 10% não resolve macrobloco em grão — precisa DOBRAR.
+  assert.ok(alta >= normal * 1.9, `alta (${alta}) tem que ser ~2x normal (${normal})`);
+});
+
+test('a qualidade padrão é `normal`', () => {
+  const dims = { width: 1280, height: 720 };
+  assert.equal(chooseBitrate(dims, 30), chooseBitrate(dims, 30, 'normal'));
+});
+
+test('o teto vale pra todos os níveis', () => {
+  assert.equal(chooseBitrate({ width: 7680, height: 4320 }, 60, 'rascunho'), 40_000_000);
+  assert.equal(chooseBitrate({ width: 7680, height: 4320 }, 60, 'alta'), 40_000_000);
+});
+
+test('tamanho aproximado bate com bitrate x tempo', () => {
+  // 8 Mbps por 10s = 10 MB. É a conta que a interface mostra antes de exportar.
+  assert.equal(tamanhoAproximado(8_000_000, 10), 10_000_000);
 });
 
 test('projeto minúsculo ainda recebe bitrate utilizável', () => {

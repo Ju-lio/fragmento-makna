@@ -1287,3 +1287,7 @@
 .criar-rotulo-fundo { flex: 1; color: var(--ink-mute); font-size: 9px; }
 /* Com amostra opaca por baixo, o xadrez só atrapalharia a leitura da cor. */
 .criar-tela-caixa.liso { background-image: none; background-color: #000; }
+
+/* O seletor de qualidade do export, ao lado do botão. Estreito de propósito:
+   os três nomes são curtos e ele não pode competir com o EXPORTAR. */
+.inp-qualidade { width: auto; padding: 2px 4px; font-size: 9px; text-transform: uppercase; }

@@ -268,6 +268,25 @@ Pelo Fato 3, um efeito não pode nascer do quadro anterior **já renderizado**.
 
 ---
 
+### 4.4 O codificador também tem opinião sobre o seu efeito
+
+Grão de filme, película e ruído em geral são **caros de codificar**, e isso não
+aparece no preview — só no arquivo.
+
+**[medido]** num export real: um efeito de grão a ~6 Mbps saiu com os degradês
+lisos quebrados em macroblocos. Dentro da região estragada, o salto de
+luminância nas colunas múltiplas de 16 era **4,38× maior** que nas demais — a
+assinatura da grade do H.264. Na região limpa do mesmo arquivo: 0,97×. No nosso
+render, antes de codificar: 0,75× (nenhuma grade).
+
+A causa não é defeito nosso nem do codificador: ruído é alta entropia em cada
+pixel, e o H.264 não tem síntese de grão. Ele gasta o orçamento inteiro no
+ruído e não sobra pros degradês.
+
+**A saída é bitrate.** O editor tem três níveis ao lado do botão de exportar;
+efeito com grão, película ou desfoque pesado pede **alta**. O padrão subiu de
+~6 para ~9,3 Mbps em 1080p30 por causa deste caso.
+
 ## 5. O que custa caro
 
 **[medido]** Chrome 151, 1920×1080, mediana, GPU integrada antiga.

@@ -87,17 +87,50 @@ const MIN_BITRATE = 500_000;
 const MAX_BITRATE = 40_000_000;
 
 /**
+ * Quanto bit por pixel por quadro cada nível de qualidade gasta.
+ *
+ * O `normal` era 0,1 e virou 0,15 depois de um caso real: um efeito de GRÃO
+ * DE FILME exportado a ~6 Mbps saiu com os gradientes lisos quebrados em
+ * macroblocos. Medido no arquivo: dentro da região estragada, o salto de
+ * luminância nas colunas múltiplas de 16 era **4,38× maior** que nas demais —
+ * a assinatura inconfundível da grade do H.264. Fora dela, 0,97×.
+ *
+ * A causa não é defeito do codificador, é o conteúdo: grão é ruído de alta
+ * entropia em cada pixel, e o H.264 não tem síntese de grão. Ele gasta o
+ * orçamento inteiro no ruído e não sobra pros degradês. Só existe uma saída
+ * de verdade — mais bits.
+ *
+ * 0,15 dá ~9,3 Mbps em 1080p30, que é a faixa que o YouTube recomenda pra
+ * upload em 1080p. `alta` existe pra quem usa grão, película ou desfoque
+ * pesado; `rascunho` pra conferir tempo de corte sem esperar.
+ */
+const BITS_POR_PIXEL = {
+  rascunho: 0.06,
+  normal: 0.15,
+  alta: 0.30,
+} as const;
+
+export type Qualidade = keyof typeof BITS_POR_PIXEL;
+export const QUALIDADES = Object.keys(BITS_POR_PIXEL) as Qualidade[];
+
+/**
  * Bitrate a partir de quantos pixels por segundo o vídeo tem.
  *
- * O fator (~0,1 bit por pixel por quadro) é a régua usada pra H.264 em
- * qualidade de entrega: dá ~6 Mbps em 1080p30, que é a ordem de grandeza do
- * que o YouTube recomenda pra upload. Escala sozinho com resolução e fps, que
- * é o ponto — um projeto vertical curto e um 4K não podem usar o mesmo número.
+ * Escala sozinho com resolução e fps, que é o ponto — um projeto vertical
+ * curto e um 4K não podem usar o mesmo número.
  */
-export function chooseBitrate({ width, height }: Dimensions, fps: number): number {
-  const raw = width * height * fps * 0.1;
+export function chooseBitrate(
+  { width, height }: Dimensions,
+  fps: number,
+  qualidade: Qualidade = 'normal',
+): number {
+  const raw = width * height * fps * BITS_POR_PIXEL[qualidade];
   return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, raw)));
 }
+
+/** Tamanho aproximado do arquivo, pra UI avisar antes de exportar. */
+export const tamanhoAproximado = (bitrate: number, segundos: number): number =>
+  Math.round((bitrate / 8) * segundos);
 
 /** Quantos quadros um trecho produz, contando as duas pontas. */
 export function frameCount(firstIndex: number, lastIndex: number): number {

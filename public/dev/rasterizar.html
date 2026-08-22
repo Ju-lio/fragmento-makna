@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fragmento — inspetor de rasterização</title>
+<!--
+  Rasteriza um efeito no tamanho REAL do projeto e mostra o resultado 1:1.
+
+  Existe porque o `/criar` desenha em 1280×720 e o palco do editor desenha
+  reduzido: nenhum dos dois mostra o pixel que o export vai gravar. Quando um
+  artefato aparece só no arquivo final, é aqui que se descobre se ele veio do
+  render ou do codificador.
+
+  `npm run dev` e abra /dev/rasterizar.html.
+-->
+<style>
+  body { margin:0; background:#0b0c10; color:#e8e8ea; font:12px ui-monospace,monospace; padding:14px; }
+  h1 { font-size:13px; color:#ffd479; margin:0 0 8px; }
+  .barra { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  select, button, input { font:inherit; padding:3px 6px; background:#f7efdc; color:#241a33; border:2px solid #241a33; }
+  canvas { border:1px solid #333; display:block; margin-top:8px; }
+  .nota { color:#8a8d98; line-height:1.6; }
+  .linha { white-space:pre; }
+</style>
+
+<h1>Inspetor de rasterização — 1:1, no tamanho do projeto</h1>
+<div class="barra">
+  <label>efeito <select id="qual"></select></label>
+  <label>tamanho <select id="tam">
+    <option value="1920x1080">1920×1080</option>
+    <option value="1280x720">1280×720</option>
+    <option value="1080x1920">1080×1920</option>
+  </select></label>
+  <label>t <input id="t" type="number" value="0.5" step="0.05" style="width:70px"></label>
+  <label>fundo <select id="fundo">
+    <option value="amostra">amostra</option>
+    <option value="preto">preto</option>
+    <option value="nada">nada (alpha)</option>
+  </select></label>
+  <button id="ir">RASTERIZAR</button>
+  <button id="baixar">BAIXAR PNG</button>
+</div>
+<div id="saida" class="nota"></div>
+<canvas id="tela"></canvas>
+
+<script type="module">
+import { Overlay } from '/src/criar/overlay.ts';
+import { SEMENTES } from '/src/criar/sementes.ts';
+import { composicaoDe, padroes, variaveisCss, normalizar } from '/src/criar/api.ts';
+
+const qual = document.getElementById('qual');
+for (const k of Object.keys(SEMENTES)) qual.add(new Option(k, k));
+qual.value = 'filtro';
+
+const tela = document.getElementById('tela');
+const saida = document.getElementById('saida');
+const p = s => saida.insertAdjacentHTML('beforeend', `<div class="linha">${s}</div>`);
+
+function amostra(ctx, w, h) {
+  const g = ctx.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#123b63'); g.addColorStop(0.55, '#6f7f95'); g.addColorStop(1, '#0d1622');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 14; i++) {
+    ctx.fillStyle = `hsl(${i * 26},70%,${28 + (i % 5) * 12}%)`;
+    ctx.fillRect((i * 137) % w, (i * 83) % h, w * 0.07, h * 0.12);
+  }
+}
+
+document.getElementById('ir').onclick = async () => {
+  saida.innerHTML = '';
+  const semente = SEMENTES[qual.value];
+  const manifesto = JSON.parse(semente.manifesto);
+  const [w, h] = document.getElementById('tam').value.split('x').map(Number);
+  const t = parseFloat(document.getElementById('t').value);
+
+  tela.width = w; tela.height = h;
+  tela.style.width = Math.min(w, 1400) + 'px';
+  const ctx = tela.getContext('2d', { willReadFrequently: true });
+
+  const fundo = document.getElementById('fundo').value;
+  ctx.clearRect(0, 0, w, h);
+  if (fundo === 'amostra') amostra(ctx, w, h);
+  if (fundo === 'preto') { ctx.fillStyle = '#0b0c10'; ctx.fillRect(0, 0, w, h); }
+
+  const ov = new Overlay({ meta: manifesto.meta, html: semente.html, css: semente.css });
+  const inicio = performance.now();
+  const img = await ov.quadro({
+    largura: w, altura: h, t, duracao: 3,
+    params: variaveisCss(manifesto.params ?? {}, normalizar(manifesto.params ?? {}, padroes(manifesto.params ?? {}))),
+  });
+  const ms = performance.now() - inicio;
+
+  ctx.globalCompositeOperation = composicaoDe(manifesto.meta?.mistura);
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+  ov.destruir();
+
+  p(`${w}×${h} · t=${t}s · mistura=${manifesto.meta?.mistura ?? 'normal'} · ${Math.round(ms)}ms`);
+  p(`intrínseco do bitmap: ${img.naturalWidth}×${img.naturalHeight}` +
+    (img.naturalWidth !== w ? '  ← DIFERENTE do pedido: foi ESCALADO' : '  (1:1, sem escala)'));
+
+  // energia de alta frequência: grão de verdade sobe isto; chapa lisa não
+  const d = ctx.getImageData(Math.round(w * 0.62), Math.round(h * 0.62), 200, 140).data;
+  let soma = 0, n = 0;
+  for (let i = 4; i < d.length; i += 4) { soma += Math.abs(d[i] - d[i - 4]); n++; }
+  p(`granulação numa área lisa: ${(soma / n).toFixed(2)}`);
+};
+
+document.getElementById('baixar').onclick = () => {
+  const a = document.createElement('a');
+  a.download = 'rasterizado.png';
+  a.href = tela.toDataURL('image/png');
+  a.click();
+};
+</script>
