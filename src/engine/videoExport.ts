@@ -397,13 +397,15 @@ export async function exportVideo(
       await stageVideosAt(frameProvider, project, t);
       // Aqui se ESPERA, ao contrário do preview: o arquivo final não pode sair
       // com uma layer faltando porque a rasterização não tinha terminado.
-      await overlayFrames.preparar(project, t, project.width, project.height);
+      const overlays = await overlayFrames.quadrosEm(project, t, project.width, project.height);
       if (token.cancelled) return null;
 
       drawFrame(ctx, project, t, {
         fastPreview: false,
         frameFor: frameProvider.frameFor(project, t),
-        overlayFor: (layer, quando) => overlayFrames.quadroDe(layer, quando),
+        // Do mapa que ACABOU de ser preparado, não do armazém: o preview
+        // compartilha o armazém e pode trocar o quadro guardado no meio.
+        overlayFor: layer => overlays.get(layer.id) ?? null,
       });
 
       const frame = new VideoFrame(canvas, {

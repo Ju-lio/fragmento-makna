@@ -20,3 +20,5 @@ Quando uma ideia sai daqui pra ser feita, ela vira uma entrada em
 ## Aqui dentro
 
 - [temas.md](temas.md) — interface personalizável por usuário
+- [prerender.md](prerender.md) — play liso na segunda vez, e a barra do que já renderizou
+- [tela-de-export.md](tela-de-export.md) — quando os controles soltos viram poluição

@@ -36,6 +36,8 @@
     <option value="nada">nada (alpha)</option>
   </select></label>
   <button id="ir">RASTERIZAR</button>
+  <button id="sequencia">SIMULAR EXPORT (30 quadros)</button>
+  <button id="corrida">SIMULAR EXPORT + PREVIEW JUNTOS</button>
   <button id="baixar">BAIXAR PNG</button>
 </div>
 <div id="saida" class="nota"></div>
@@ -102,6 +104,117 @@ document.getElementById('ir').onclick = async () => {
   let soma = 0, n = 0;
   for (let i = 4; i < d.length; i += 4) { soma += Math.abs(d[i] - d[i - 4]); n++; }
   p(`granulação numa área lisa: ${(soma / n).toFixed(2)}`);
+};
+
+/**
+ * Roda a MESMA sequência que o export roda: `overlayFrames.preparar` seguido de
+ * consulta, quadro a quadro, na grade de 30fps. É o que separa "o runtime não
+ * anima" de "o armazém está servindo quadro velho".
+ */
+document.getElementById('sequencia').onclick = async () => {
+  saida.innerHTML = '';
+  const { overlayFrames } = await import('/src/engine/overlayFrames.ts');
+  const { makeOverlayLayer } = await import('/src/engine/project.ts');
+  const semente = SEMENTES[qual.value];
+  const manifesto = JSON.parse(semente.manifesto);
+  const [w, h] = document.getElementById('tam').value.split('x').map(Number);
+
+  const layer = makeOverlayLayer({
+    name: 'teste', start: 0, duration: 8,
+    html: semente.html, css: semente.css,
+    schema: manifesto.params ?? {}, values: {},
+    ...(manifesto.meta?.mistura ? { blend: manifesto.meta.mistura } : {}),
+  });
+  const projeto = { width: w, height: h, fps: 30, background: '#000', layers: [layer], media: [] };
+
+  tela.width = w; tela.height = h; tela.style.width = Math.min(w, 1400) + 'px';
+  const ctx = tela.getContext('2d', { willReadFrequently: true });
+
+  const hashes = [];
+  for (let i = 0; i < 30; i++) {
+    const t = i / 30;
+    await overlayFrames.preparar(projeto, t, w, h);
+    const img = overlayFrames.quadroDe(layer, t);
+    ctx.clearRect(0, 0, w, h);
+    if (img) ctx.drawImage(img, 0, 0, w, h);
+    const d = ctx.getImageData(Math.round(w * 0.1), Math.round(h * 0.6), 200, 140).data;
+    let hh = 2166136261;
+    for (let k = 0; k < d.length; k += 4) { hh ^= d[k] + d[k + 1] * 3 + d[k + 2] * 7 + d[k + 3] * 11; hh = Math.imul(hh, 16777619); }
+    hashes.push({ i, t: +t.toFixed(3), tem: !!img, h: (hh >>> 0).toString(16) });
+  }
+  overlayFrames.destruir();
+
+  const distintos = new Set(hashes.map(x => x.h)).size;
+  const semQuadro = hashes.filter(x => !x.tem).length;
+  p(`30 quadros na grade de 30fps · ${distintos} imagens distintas · ${semQuadro} sem quadro`);
+  p(hashes.map(x => `${x.i}:${x.tem ? x.h.slice(0, 6) : 'VAZIO'}`).join('  '));
+};
+
+/**
+ * O export tem que desenhar o quadro que ELE preparou, mesmo com o preview
+ * mexendo no armazém no meio.
+ *
+ * Determinístico de propósito: em vez de tentar acertar a janela de tempo de
+ * uma corrida, o teste ATROPELA o armazém entre preparar e desenhar, que é o
+ * pior caso que a corrida pode produzir. Se o mapa devolvido ainda entrega o
+ * quadro certo, a corrida não tem como estragar o arquivo.
+ */
+document.getElementById('corrida').onclick = async () => {
+  saida.innerHTML = '';
+  const { overlayFrames } = await import('/src/engine/overlayFrames.ts');
+  const { makeOverlayLayer } = await import('/src/engine/project.ts');
+  const semente = SEMENTES[qual.value];
+  const manifesto = JSON.parse(semente.manifesto);
+  const [w, h] = document.getElementById('tam').value.split('x').map(Number);
+
+  const layer = makeOverlayLayer({
+    name: 'teste', start: 0, duration: 8,
+    html: semente.html, css: semente.css,
+    schema: manifesto.params ?? {}, values: {},
+  });
+  const projeto = { width: w, height: h, fps: 30, background: '#000', layers: [layer], media: [] };
+
+  tela.width = w; tela.height = h; tela.style.width = Math.min(w, 1400) + 'px';
+  const ctx = tela.getContext('2d', { willReadFrequently: true });
+  const impressao = () => {
+    const d = ctx.getImageData(Math.round(w * 0.1), Math.round(h * 0.6), 200, 140).data;
+    let hh = 2166136261;
+    for (let k = 0; k < d.length; k += 4) { hh ^= d[k] + d[k+1]*3 + d[k+2]*7 + d[k+3]*11; hh = Math.imul(hh, 16777619); }
+    return (hh >>> 0).toString(16);
+  };
+  const desenhar = img => { ctx.clearRect(0,0,w,h); if (img) ctx.drawImage(img,0,0,w,h); return impressao(); };
+
+  let ok = 0, erro = 0, perdidosPelaConsulta = 0;
+  for (let i = 0; i < 10; i++) {
+    const t = 0.02 + i * 0.06;
+
+    // 1. o export prepara e guarda o que recebeu
+    const mapa = await overlayFrames.quadrosEm(projeto, t, w, h);
+    const meu = mapa.get(layer.id);
+    const hashEsperado = desenhar(meu);
+
+    // 2. o preview atropela o armazém com OUTROS instantes
+    for (const outro of [3.1, 3.2, 3.3, 3.4, 3.5]) {
+      await overlayFrames.quadrosEm(projeto, outro, w, h);
+    }
+
+    // 3. o quadro que o export tem em mãos continua sendo o certo?
+    const depois = desenhar(mapa.get(layer.id));
+    if (!meu) { erro++; p(`t=${t.toFixed(2)}: SEM QUADRO`); continue; }
+    if (depois !== hashEsperado) { erro++; p(`t=${t.toFixed(2)}: o quadro MUDOU depois do atropelo`); continue; }
+    ok++;
+
+    // 4. CONTROLE: o caminho antigo, consultando o armazém depois do atropelo.
+    //    Se ele também sobrevivesse, este teste não teria dentes.
+    const pelaConsulta = overlayFrames.quadroDe(layer, t);
+    if (!pelaConsulta || desenhar(pelaConsulta) !== hashEsperado) perdidosPelaConsulta++;
+  }
+  overlayFrames.destruir();
+  p(`${ok}/10 quadros sobreviveram ao armazém sendo atropelado${erro ? ` · ${erro} falha(s)` : ''}`);
+  p(`controle — consultando o armazém depois do atropelo: ${perdidosPelaConsulta}/10 perdidos`);
+  p(perdidosPelaConsulta > 0
+    ? 'o teste tem dentes: o caminho antigo perde quadro, o novo não.'
+    : 'ATENÇÃO: o caminho antigo também sobreviveu — este teste não prova nada.');
 };
 
 document.getElementById('baixar').onclick = () => {

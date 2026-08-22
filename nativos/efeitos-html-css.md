@@ -56,6 +56,13 @@ vídeo".
 pode sair com uma layer faltando, e o pré-render guarda quadros como
 definitivos — servir um sem o overlay envenenaria o cache.
 
+**Quem espera usa os quadros que ELE preparou** (`quadrosEm`), não uma consulta
+ao armazém depois. O armazém é compartilhado com o preview, e o laço de pintura
+do editor **não para durante o export** — um pedido do preview resolvendo entre
+o `await` e a consulta trocava o quadro guardado, e o efeito sumia de parte dos
+quadros do arquivo. Medido: pela consulta, 10 de 10 quadros se perdiam nesse
+cenário; pelo mapa, nenhum.
+
 **A mistura fica na LAYER, não só no manifesto.** O autor escolhe o padrão
 (`meta.mistura`); quem monta o vídeo troca no painel. O mesmo efeito de brilho
 serve como `screen` sobre um clipe escuro e `overlay` sobre um claro, e obrigar

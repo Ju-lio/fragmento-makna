@@ -172,12 +172,14 @@ export async function prerenderRange(project: Project, {
       // Espera igual ao export: o pré-render guarda o quadro como DEFINITIVO
       // (`degraded: false`), então servir um sem o overlay envenenaria o cache
       // com uma composição incompleta.
-      await overlayFrames.preparar(project, t, project.width, project.height);
+      const overlays = await overlayFrames.quadrosEm(project, t, project.width, project.height);
 
       drawFrame(ctx, project, t, {
         fastPreview: false,
         frameFor: frames?.frameFor(project, t),
-        overlayFor: (layer, quando) => overlayFrames.quadroDe(layer, quando),
+        // Do mapa que ACABOU de ser preparado, não do armazém: o preview
+        // compartilha o armazém e pode trocar o quadro guardado no meio.
+        overlayFor: layer => overlays.get(layer.id) ?? null,
       });
 
       const bitmap = await createImageBitmap(canvas);
