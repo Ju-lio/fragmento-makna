@@ -435,6 +435,68 @@
 }
 .fx-badge-out { background: var(--coral); color: var(--paper); }
 
+/* --- controles gerados de um esquema (ver ui/CamposDeParams.tsx) --------- */
+
+/* O nome do efeito virou o botão que abre os controles: mesma aparência de
+   antes, área de clique inteira. */
+.fx-name-btn {
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.fx-chip.on { border-color: var(--gold); }
+
+/* Recuado e com uma faixa à esquerda: deixa claro que os controles pertencem
+   ao efeito de cima, e não à lista inteira. */
+.fx-controles {
+  margin: 0 0 4px 10px;
+  padding: 5px 6px;
+  border-left: 3px solid var(--gold);
+  background: rgba(0, 0, 0, .13);
+}
+.params .field { margin-bottom: 5px; }
+.params .field:last-child { margin-bottom: 0; }
+
+/* A unidade fica no rótulo, não no campo — o valor digitado é só o número. */
+.unid { color: var(--ink-mute); font-size: 8px; }
+
+/* Slider e número dividem a linha: o slider serve pra TATEAR (arrastar e
+   olhar o palco), o número pra cravar um valor exato. Um sozinho não cobre os
+   dois usos. A proporção 2:1 dá curso suficiente pro arrasto no painel
+   estreito. */
+.row > .slider { flex: 2; }
+.row > .inp-num { flex: 1; }
+
+.slider {
+  appearance: none;
+  height: 14px;
+  background: var(--plum);
+  border: 2px solid var(--ink);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, .35);
+  outline: none;
+  cursor: ew-resize;
+}
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .55);
+  cursor: ew-resize;
+}
+.slider::-moz-range-thumb {
+  width: 10px;
+  height: 14px;
+  border-radius: 0;
+  background: var(--gold);
+  border: 2px solid var(--ink);
+}
+.slider:focus { box-shadow: inset 2px 2px 0 var(--gold-d); }
+
 .preset-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

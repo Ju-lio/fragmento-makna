@@ -71,6 +71,7 @@ src/
     previewStatus.ts   sinal da barra de atividade
   criar/             <- o formato de efeito da comunidade (ver LIMITES.md)
     api.ts             meta + params tipados: o contrato autor ↔ editor
+    janela.ts          a janela de tempo do efeito como esquema de params
   ui/                <- React: só o chrome da interface
   styles/            <- design system pixel
 public/
@@ -233,6 +234,12 @@ desenhar como imagem. Três achados sustentam a escolha:
 `criar/api.ts` é o contrato: `meta.tipo` diz o que é (efeito, filtro,
 transição, texto) e `params` é fonte única — o mesmo objeto gera os campos do
 painel e tipa `p` no código do autor, sem schema duplicado.
+
+Isso já está de pé no painel: clicar no nome de um efeito aplicado abre
+**controles gerados do esquema**, não campos escritos à mão. A janela de tempo
+(duração, atraso, âncora, repetir) foi a primeira cobaia porque já existia e só
+era editável colando JSON — se o esquema não desse conta nem dela, não daria
+conta de efeito nenhum. Detalhes em [nativos/efeitos.md](nativos/efeitos.md).
 
 O que dá, o que não dá e quanto custa cada recurso de CSS está em
 **[LIMITES.md](LIMITES.md)**, com cada item marcado como medido ou não
